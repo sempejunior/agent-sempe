@@ -247,6 +247,65 @@ export async function searchMemory(query: string): Promise<{ results: MemorySear
   return request(`/memory/search?q=${encodeURIComponent(query)}`);
 }
 
+// Prompts
+export interface PromptSection {
+  filename: string;
+  label: string;
+  description: string;
+  hint: string;
+  base: string;
+  extension: string;
+}
+
+export async function getPrompts(): Promise<PromptSection[]> {
+  return request("/config/prompts");
+}
+
+export async function updatePrompts(prompts: { filename: string; extension: string }[]): Promise<{ ok: boolean }> {
+  return request("/config/prompts", { method: "PUT", body: JSON.stringify(prompts) });
+}
+
+// Channels
+export interface ChannelField {
+  key: string;
+  label: string;
+  type: "text" | "password" | "number" | "bool" | "list";
+  required: boolean;
+  placeholder?: string;
+  help?: string;
+}
+
+export interface ChannelInfo {
+  name: string;
+  label: string;
+  description: string;
+  docs_url?: string;
+  fields: ChannelField[];
+  enabled: boolean;
+  running: boolean;
+  config: Record<string, unknown>;
+}
+
+export async function listChannels(): Promise<ChannelInfo[]> {
+  return request("/channels");
+}
+
+export async function getChannel(name: string): Promise<ChannelInfo> {
+  return request(`/channels/${name}`);
+}
+
+export async function updateChannel(name: string, data: Record<string, unknown>): Promise<{ ok: boolean }> {
+  return request(`/channels/${name}`, { method: "PUT", body: JSON.stringify(data) });
+}
+
+export async function startChannel(name: string): Promise<{ ok: boolean; message: string }> {
+  return request(`/channels/${name}/start`, { method: "POST" });
+}
+
+export async function stopChannel(name: string): Promise<{ ok: boolean; message: string }> {
+  return request(`/channels/${name}/stop`, { method: "POST" });
+}
+
 // WebSocket
 export type WsMessageType = "response" | "progress" | "tool_hint" | "error" | "pong";
 

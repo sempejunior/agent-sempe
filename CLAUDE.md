@@ -19,11 +19,13 @@ nanobot/
 │   └── tools/      # Tool implementations (filesystem, web, browser, cron, mcp…)
 ├── bus/            # Pub/sub message routing (InboundMessage → Agent → OutboundMessage)
 ├── channels/       # Chat platform adapters (Telegram, Discord, Slack, WhatsApp…)
+│                   #   registry.py = UI metadata, manager.py = server-global + per-user instances
 ├── cli/            # Typer CLI commands
 ├── config/         # Pydantic schema and loader
 ├── cron/           # Scheduled task service
 ├── db/             # Repository protocols + SQLite implementations
 ├── heartbeat/      # Periodic proactive wake-up
+├── prompts/        # Base agent prompt templates (SOUL.md, AGENTS.md, USER.md) — read-only
 ├── providers/      # LLM provider abstraction (LiteLLM, custom, OAuth)
 ├── session/        # Conversation state management
 ├── skills/         # Built-in skill definitions (markdown)
@@ -36,8 +38,10 @@ nanobot/
 
 - **Protocol-based repositories** (`db/repositories.py`): all storage is behind Protocols. SQLite is the current backend; switching to MongoDB requires only new implementations, no interface changes.
 - **Dual-mode everywhere**: MemoryStore, SessionManager, SkillsLoader, ContextBuilder all support both filesystem and database mode. Mode is detected at construction.
-- **Registry pattern**: providers (`providers/registry.py`) and tools (`agent/tools/registry.py`) use declarative registries instead of if-elif chains.
+- **Registry pattern**: providers (`providers/registry.py`) and tools (`agent/tools/registry.py`) use declarative registries instead of if-elif chains. Channels use `channels/registry.py` for UI metadata.
 - **Event bus**: channels publish inbound messages → agent loop processes → publishes outbound → channels deliver. No direct coupling between channels and agent.
+- **Per-user prompts**: Base prompts live in `prompts/` (SOUL.md, AGENTS.md, USER.md) as read-only code. Users extend them via `users.bootstrap` in the DB. ContextBuilder combines base + workspace + user extension.
+- **Per-user channels**: Each user can configure and run their own channel instances (Telegram, Discord, etc.) stored in `users.channel_configs`. ChannelManager tracks both server-global and per-user channel instances. `BaseChannel.owner_id` tags inbound messages for correct user routing.
 - **Lazy initialization**: MCP servers connect on first message, desktop tools register only if DISPLAY is set, browser tool only if CDP port is reachable.
 
 ### Dependency flow (no cycles allowed)
@@ -134,9 +138,10 @@ config ← cli → agent → providers
 
 ### Adding a new channel
 
-1. Create `nanobot/channels/my_channel.py` inheriting from `BaseChannel`.
+1. Create `nanobot/channels/my_channel.py` inheriting from `BaseChannel`. Accept `**kwargs` in `__init__` and pass to `super().__init__(config, bus, **kwargs)`.
 2. Add config class in `config/schema.py` `ChannelsConfig`.
-3. Register in `channels/manager.py`.
+3. Register in `channels/manager.py` `CHANNEL_MAP`.
+4. Add UI metadata (label, description, fields) in `channels/registry.py` `CHANNEL_META` and `CHANNEL_ORDER`.
 
 ### Frontend changes
 
@@ -145,3 +150,12 @@ config ← cli → agent → providers
 - Global state: `nanobot/web/frontend/src/lib/store.ts`
 - Dev server: `http://localhost:5173` (Vite with HMR)
 - Build: `npm run build` in the frontend directory (output goes to `frontend/static/`)
+- Key panels: `ChannelsPanel.tsx` (per-user channel config/start/stop), `PromptsPanel.tsx` (per-user prompt extensions)
+
+### Adding or editing per-user prompts
+
+- Base prompts (read-only, shipped with code): `nanobot/prompts/SOUL.md`, `AGENTS.md`, `USER.md`
+- Prompt metadata (label, description, hint): `nanobot/prompts/__init__.py` `PROMPT_FILES`
+- User extensions are stored in `users.bootstrap` JSON field in the DB
+- ContextBuilder combines: base (code) + workspace file + user extension (DB)
+- API: `GET /api/config/prompts`, `PUT /api/config/prompts`

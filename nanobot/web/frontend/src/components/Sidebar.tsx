@@ -12,6 +12,8 @@ import {
   Brain,
   Blocks,
   Clock,
+  Radio,
+  Sparkles,
   Bot,
   Search,
   SquarePen,
@@ -20,6 +22,8 @@ import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { key: "new-chat" as const, label: "New Chat", icon: SquarePen },
+  { key: "prompts" as const, label: "Agent Prompts", icon: Sparkles },
+  { key: "channels" as const, label: "Channels", icon: Radio },
   { key: "memory" as const, label: "Memory", icon: Brain },
   { key: "skills" as const, label: "Skills & MCP", icon: Blocks },
   { key: "cron" as const, label: "Scheduler", icon: Clock },
@@ -60,7 +64,7 @@ export function Sidebar() {
     if (key === "new-chat") {
       newChat();
     } else {
-      setPanelState(key as "memory" | "skills" | "cron" | "settings", true);
+      setPanelState(key as "memory" | "skills" | "cron" | "settings" | "channels" | "prompts", true);
     }
   };
 

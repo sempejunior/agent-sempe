@@ -97,8 +97,8 @@ class DingTalkChannel(BaseChannel):
 
     name = "dingtalk"
 
-    def __init__(self, config: DingTalkConfig, bus: MessageBus):
-        super().__init__(config, bus)
+    def __init__(self, config: DingTalkConfig, bus: MessageBus, **kwargs):
+        super().__init__(config, bus, **kwargs)
         self.config: DingTalkConfig = config
         self._client: Any = None
         self._http: httpx.AsyncClient | None = None

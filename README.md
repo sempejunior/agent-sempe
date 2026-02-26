@@ -30,8 +30,8 @@ O nanobot original e um assistente pessoal AI ultra-leve (~4.000 linhas). Este f
 │  /api/auth/register  /api/auth/login  /api/me                    │
 │  /api/sessions       /api/cron        /api/memory                │
 │  /api/skills         /api/config      /api/config/provider       │
-│  /api/config/mcp     /ws/chat (streaming com tool hints)         │
-│  /api/health                                                     │
+│  /api/config/mcp     /api/config/prompts   /api/channels         │
+│  /ws/chat (streaming com tool hints)  /api/health                │
 └───────────┬────────────────────────────────┬─────────────────────┘
             │                                │
     ┌───────▼────────┐              ┌────────▼───────────┐
@@ -223,6 +223,8 @@ Cada usuario tem **isolamento completo**:
 - **Cron jobs** individuais — agendamento de tarefas com cron expressions ou intervalos
 - **Rate limits** por usuario — tokens/dia e requests/minuto
 - **Ferramentas habilitaveis** — cada usuario escolhe quais tools estao ativas
+- **Prompts do agente** — cada usuario customiza a personalidade (Soul), comportamento (Behavior) e contexto pessoal (User) do agente. Base prompts sao read-only (codigo), extensoes sao editaveis (banco)
+- **Canais de chat per-user** — cada usuario configura e conecta seus proprios bots (Telegram, Discord, Slack, WhatsApp, Email, DingTalk, Feishu, QQ) pelo frontend, com isolamento completo de mensagens
 
 ### Frontend Web
 
@@ -235,6 +237,8 @@ O frontend React oferece:
 - **Painel de Memoria** — editor de long-term memory + busca no historico de conversas
 - **Painel de Skills** — listar skills (builtin + custom), editar, ativar/desativar, deletar
 - **Painel de Settings** — modelo LLM, max_tokens, temperatura, provider proprio, MCP servers
+- **Painel de Prompts** — editar prompts do agente por usuario (Soul, Behavior, User Context) com base read-only + extensao editavel
+- **Painel de Channels** — configurar e conectar canais de chat (Telegram, Discord, Slack, etc.) por usuario com formularios dinamicos e start/stop
 
 ## Database Layer
 
@@ -252,6 +256,8 @@ SQLite com WAL mode e Repository Pattern (8 repositorios):
 | `AuditRepository` | Audit trail append-only com TTL cleanup |
 
 Todas as interfaces estao definidas como **Protocols** em `db/repositories.py`. A implementacao atual e SQLite (`db/sqlite/`), mas migrar para MongoDB ou Postgres requer apenas implementar as interfaces — sem alterar nenhum codigo de negocio.
+
+Para a estrutura completa das tabelas, campos, indices, migrations e exemplos de JSON, veja **[DATABASE.md](DATABASE.md)**.
 
 ## Configuracao
 
@@ -320,7 +326,11 @@ Suporta transporte **stdio** (processos locais) e **HTTP** (endpoints remotos). 
 
 ### Channels
 
-Telegram, Discord, WhatsApp, Feishu, Slack, Email, QQ, DingTalk, Mochat. Em modo multi-user, canais sao mapeados a usuarios via `ChannelBindingRepository`. Consulte a [documentacao do nanobot original](https://github.com/HKUDS/nanobot) para configuracao detalhada de cada canal.
+Telegram, Discord, WhatsApp, Feishu, Slack, Email, QQ, DingTalk, Mochat.
+
+Em modo multi-user, cada usuario configura e conecta seus proprios canais pelo **Painel de Channels** no frontend. As configuracoes sao armazenadas per-user no banco (`users.channel_configs`) e cada instancia de canal roda com `owner_id` para isolamento de mensagens. Tokens e senhas sao mascarados nas respostas da API.
+
+Tambem e possivel configurar canais globais (servidor) via `config.json` e mapear sender_ids a usuarios via `ChannelBindingRepository`.
 
 ## Estrutura do Projeto
 
@@ -348,6 +358,8 @@ nanobot/
 │       └── spawn.py       Spawn de subagentes
 ├── bus/                   Roteamento pub/sub de mensagens
 ├── channels/              Adaptadores de chat (Telegram, Discord, Slack, ...)
+│   ├── registry.py        Metadados de canais para o frontend (fields, labels, masking)
+│   └── manager.py         Gerencia canais globais + per-user, roteamento outbound
 ├── cli/                   Comandos CLI (Typer)
 ├── config/                Schema Pydantic + loader
 ├── cron/                  Servico de tarefas agendadas (fs/db)
@@ -356,6 +368,7 @@ nanobot/
 │   ├── factory.py         Factory para instanciar repos
 │   └── sqlite/            Implementacoes SQLite (connection, migrations, repos)
 ├── heartbeat/             Wake-up periodico proativo
+├── prompts/               Base prompt templates (SOUL.md, AGENTS.md, USER.md) — read-only
 ├── providers/             Abstracacao de providers LLM (registry + LiteLLM)
 ├── session/               Gerenciamento de sessoes de conversa (fs/db)
 ├── skills/                Skills builtin (markdown)
@@ -365,7 +378,7 @@ nanobot/
 │   ├── server.py          API REST + WebSocket + auth
 │   └── frontend/          Vite + React + TypeScript
 │       └── src/
-│           ├── components/ AuthPage, ChatArea, Sidebar, Paineis, ...
+│           ├── components/ AuthPage, ChatArea, Sidebar, ChannelsPanel, PromptsPanel, ...
 │           └── lib/        API client, Zustand store, types
 ├── utils/                 Helpers (paths, filenames)
 └── docker/
@@ -386,7 +399,9 @@ Usa pytest com pytest-asyncio (auto mode). Dependencias externas (LLM, rede) sao
 ### Unreleased
 
 - Plataforma multi-user com isolamento completo por usuario (8 repositorios SQLite)
-- Frontend web React com autenticacao, chat streaming, e paineis de cron/memory/skills/settings
+- Frontend web React com autenticacao, chat streaming, e paineis de cron/memory/skills/settings/prompts/channels
+- Per-user prompts — base prompts read-only (SOUL.md, AGENTS.md, USER.md) + extensoes editaveis por usuario no banco
+- Per-user channels — cada usuario configura e conecta seus proprios bots (Telegram, Discord, Slack, etc.) pelo frontend
 - Browser tool com navegacao web autonoma via Chrome DevTools Protocol e stealth patches
 - Computer use tool com controle de desktop via xdotool (click, type, key, scroll, window_info)
 - Screenshot tool com captura de tela, grid de coordenadas e OCR via Tesseract

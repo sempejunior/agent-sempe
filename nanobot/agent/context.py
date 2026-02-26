@@ -29,7 +29,7 @@ class ContextBuilder:
       falling back to workspace files for any missing entries.
     """
 
-    BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+    BOOTSTRAP_FILES = ["SOUL.md", "AGENTS.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
 
     def __init__(
         self,
@@ -204,22 +204,40 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         return self._load_bootstrap_fs()
 
     async def _load_bootstrap_db(self) -> str:
-        """Load bootstrap from user's DB record, falling back to workspace files."""
-        user_bootstrap: dict[str, str] = {}
+        """Load bootstrap: base prompts (code) + user extensions (DB) + workspace fallback."""
+        from nanobot.prompts import load_base_prompt, PROMPT_FILES
+
+        user_extensions: dict[str, str] = {}
         if self._user_repo and self._user_id:
             user = await self._user_repo.get_by_id(self._user_id)
             if user:
-                user_bootstrap = user.get("bootstrap", {})
+                user_extensions = user.get("bootstrap", {})
 
         parts = []
         for filename in self.BOOTSTRAP_FILES:
-            content = user_bootstrap.get(filename)
-            if not content:
-                file_path = self.workspace / filename
-                if file_path.exists():
-                    content = file_path.read_text(encoding="utf-8")
-            if content:
-                parts.append(f"## {filename}\n\n{content}")
+            base = load_base_prompt(filename)
+
+            ws_content = ""
+            file_path = self.workspace / filename
+            if file_path.exists():
+                ws_content = file_path.read_text(encoding="utf-8").strip()
+
+            extension = (user_extensions.get(filename) or "").strip()
+
+            if filename in PROMPT_FILES:
+                sections = []
+                if base:
+                    sections.append(base)
+                if ws_content:
+                    sections.append(ws_content)
+                if extension:
+                    sections.append(extension)
+                if sections:
+                    parts.append(f"## {filename}\n\n" + "\n\n".join(sections))
+            else:
+                content = extension or ws_content or base
+                if content:
+                    parts.append(f"## {filename}\n\n{content}")
 
         return "\n\n".join(parts) if parts else ""
 

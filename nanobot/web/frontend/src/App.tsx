@@ -9,9 +9,11 @@ import { CronPanel } from "@/components/CronPanel";
 import { MemoryPanel } from "@/components/MemoryPanel";
 import { SkillsPanel } from "@/components/SkillsPanel";
 import { SettingsPanel } from "@/components/SettingsPanel";
+import { ChannelsPanel } from "@/components/ChannelsPanel";
+import { PromptsPanel } from "@/components/PromptsPanel";
 
 function App() {
-  const { user, authLoading, initAuth, cronOpen, setPanelState } = useStore();
+  const { user, authLoading, initAuth, cronOpen, channelsOpen, promptsOpen, setPanelState } = useStore();
 
   useEffect(() => {
     initAuth();
@@ -42,6 +44,8 @@ function App() {
           <ChatArea />
         </div>
         <CronPanel open={cronOpen} onClose={() => setPanelState("cron", false)} />
+        <ChannelsPanel open={channelsOpen} onClose={() => setPanelState("channels", false)} />
+        <PromptsPanel open={promptsOpen} onClose={() => setPanelState("prompts", false)} />
         <MemoryPanel />
         <SkillsPanel />
         <SettingsPanel />

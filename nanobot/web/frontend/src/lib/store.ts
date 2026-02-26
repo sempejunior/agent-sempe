@@ -43,6 +43,8 @@ interface AppState {
   skillsOpen: boolean;
   memoryOpen: boolean;
   cronOpen: boolean;
+  channelsOpen: boolean;
+  promptsOpen: boolean;
 
   // Actions
   initAuth: () => Promise<void>;
@@ -60,13 +62,15 @@ interface AppState {
   sendMessage: (content: string) => void;
 
   toggleSidebar: () => void;
-  setPanelState: (panel: "settings" | "skills" | "memory" | "cron", open: boolean) => void;
+  setPanelState: (panel: "settings" | "skills" | "memory" | "cron" | "channels" | "prompts", open: boolean) => void;
 }
 
 let msgCounter = 0;
 function nextId(): string {
   return `msg_${Date.now()}_${++msgCounter}`;
 }
+
+let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useStore = create<AppState>((set, get) => ({
   user: null,
@@ -88,6 +92,8 @@ export const useStore = create<AppState>((set, get) => ({
   skillsOpen: false,
   memoryOpen: false,
   cronOpen: false,
+  channelsOpen: false,
+  promptsOpen: false,
 
   // ---- Auth ----
 
@@ -190,13 +196,23 @@ export const useStore = create<AppState>((set, get) => ({
   connectWs() {
     const { token, ws: existingWs } = get();
     if (!token) return;
-    if (existingWs) existingWs.close();
+
+    if (_reconnectTimer) {
+      clearTimeout(_reconnectTimer);
+      _reconnectTimer = null;
+    }
+
+    if (existingWs) {
+      existingWs.onclose = null;
+      existingWs.onerror = null;
+      existingWs.onmessage = null;
+      existingWs.close();
+    }
 
     const ws = createChatSocket(token);
 
     ws.onopen = () => {
       set({ connected: true });
-      // Ping every 30s
       const interval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "ping" }));
@@ -279,8 +295,11 @@ export const useStore = create<AppState>((set, get) => ({
 
     ws.onclose = () => {
       set({ connected: false });
-      // Auto-reconnect after 3s
-      setTimeout(() => {
+      if (_reconnectTimer) {
+        clearTimeout(_reconnectTimer);
+      }
+      _reconnectTimer = setTimeout(() => {
+        _reconnectTimer = null;
         if (get().token) get().connectWs();
       }, 3000);
     };
@@ -289,8 +308,15 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   disconnectWs() {
+    if (_reconnectTimer) {
+      clearTimeout(_reconnectTimer);
+      _reconnectTimer = null;
+    }
     const { ws } = get();
     if (ws) {
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
       ws.close();
       set({ ws: null, connected: false });
     }

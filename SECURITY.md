@@ -38,6 +38,7 @@ chmod 600 ~/.nanobot/config.json
 
 **IMPORTANT**: Always configure `allowFrom` lists for production use.
 
+**Server-global channels** (config.json):
 ```json
 {
   "channels": {
@@ -45,19 +46,19 @@ chmod 600 ~/.nanobot/config.json
       "enabled": true,
       "token": "YOUR_BOT_TOKEN",
       "allowFrom": ["123456789", "987654321"]
-    },
-    "whatsapp": {
-      "enabled": true,
-      "allowFrom": ["+1234567890"]
     }
   }
 }
 ```
 
+**Per-user channels** (multi-user mode): Each user configures their own channels via the web frontend. Channel configs are stored per-user in the database (`users.channel_configs`). Secrets (tokens, passwords) are masked in API responses.
+
 **Security Notes:**
 - Empty `allowFrom` list will **ALLOW ALL** users (open by default for personal use)
 - Get your Telegram user ID from `@userinfobot`
 - Use full phone numbers with country code for WhatsApp
+- Per-user channel instances are isolated: each user's channel has its own `owner_id` for message routing
+- Channel tokens are stored in the database and masked in API responses (only last 4 chars visible)
 - Review access logs regularly for unauthorized access attempts
 
 ### 3. Shell Command Execution
@@ -230,11 +231,11 @@ If you suspect a security breach:
 
 ⚠️ **Current Security Limitations:**
 
-1. **No Rate Limiting** - Users can send unlimited messages (add your own if needed)
-2. **Plain Text Config** - API keys stored in plain text (use keyring for production)
-3. **No Session Management** - No automatic session expiry
-4. **Limited Command Filtering** - Only blocks obvious dangerous patterns
-5. **No Audit Trail** - Limited security event logging (enhance as needed)
+1. **Plain Text Config** - API keys and channel tokens stored in plain text in DB (use keyring for production)
+2. **No Session Expiry** - No automatic session expiry
+3. **Limited Command Filtering** - Only blocks obvious dangerous patterns
+4. **No Sandbox** - User code execution runs on host (Fase 3 will add Docker sandbox)
+5. **Channel tokens in DB** - Per-user channel tokens stored in SQLite (masked in API responses, but not encrypted at rest)
 
 ## Security Checklist
 
@@ -242,7 +243,7 @@ Before deploying nanobot:
 
 - [ ] API keys stored securely (not in code)
 - [ ] Config file permissions set to 0600
-- [ ] `allowFrom` lists configured for all channels
+- [ ] `allowFrom` lists configured for all channels (server-global and per-user)
 - [ ] Running as non-root user
 - [ ] File system permissions properly restricted
 - [ ] Dependencies updated to latest secure versions
@@ -250,10 +251,11 @@ Before deploying nanobot:
 - [ ] Rate limits configured on API providers
 - [ ] Backup and disaster recovery plan in place
 - [ ] Security review of custom skills/tools
+- [ ] Per-user channel tokens reviewed (stored in DB, masked in API)
 
 ## Updates
 
-**Last Updated**: 2026-02-03
+**Last Updated**: 2026-02-26
 
 For the latest security updates and announcements, check:
 - GitHub Security Advisories: https://github.com/HKUDS/nanobot/security/advisories

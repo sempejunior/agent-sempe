@@ -19,17 +19,19 @@ class BaseChannel(ABC):
     
     name: str = "base"
     
-    def __init__(self, config: Any, bus: MessageBus):
+    def __init__(self, config: Any, bus: MessageBus, *, owner_id: str | None = None):
         """
         Initialize the channel.
-        
+
         Args:
             config: Channel-specific configuration.
             bus: The message bus for communication.
+            owner_id: Optional user_id that owns this channel instance (per-user channels).
         """
         self.config = config
         self.bus = bus
         self._running = False
+        self._owner_id = owner_id
     
     @abstractmethod
     async def start(self) -> None:
@@ -121,6 +123,7 @@ class BaseChannel(ABC):
             media=media or [],
             metadata=metadata or {},
             session_key_override=session_key,
+            user_id=self._owner_id,
         )
         
         await self.bus.publish_inbound(msg)

@@ -401,6 +401,8 @@ def gateway(
         app.state.agent = agent
         app.state.cron = cron
         app.state.repos = repos
+        app.state.channels = channels
+        app.state.config = config
         if db_conn:
             app.state.db = db_conn
         

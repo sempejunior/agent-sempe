@@ -207,6 +207,12 @@ BEGIN
     INSERT INTO memories_fts(rowid, content) VALUES (NEW.id, NEW.content);
 END;
 """),
+
+    (3, """
+-- ===================== v3: per-user channel configs =====================
+
+ALTER TABLE users ADD COLUMN channel_configs TEXT NOT NULL DEFAULT '{}';
+"""),
 ]
 
 

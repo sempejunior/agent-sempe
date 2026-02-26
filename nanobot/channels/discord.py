@@ -47,8 +47,8 @@ class DiscordChannel(BaseChannel):
 
     name = "discord"
 
-    def __init__(self, config: DiscordConfig, bus: MessageBus):
-        super().__init__(config, bus)
+    def __init__(self, config: DiscordConfig, bus: MessageBus, **kwargs):
+        super().__init__(config, bus, **kwargs)
         self.config: DiscordConfig = config
         self._ws: websockets.WebSocketClientProtocol | None = None
         self._seq: int | None = None

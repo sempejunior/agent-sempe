@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
@@ -32,8 +30,8 @@ async def _ensure_db(app_state: Any, data_dir: Path) -> bool:
 
     logger.warning("SQLite connection lost — reconnecting…")
     try:
-        from nanobot.db.sqlite.connection import create_database
         from nanobot.db.factory import create_sqlite_factory
+        from nanobot.db.sqlite.connection import create_database
 
         db_path = data_dir / "nanobot.db"
         db = await create_database(db_path)
@@ -59,11 +57,11 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             logger.info("Using injected dependencies for web server")
             return
 
-        from nanobot.db.sqlite.connection import create_database
-        from nanobot.db.factory import create_sqlite_factory
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.queue import MessageBus
         from nanobot.cron.service import CronService
+        from nanobot.db.factory import create_sqlite_factory
+        from nanobot.db.sqlite.connection import create_database
 
         db_path = data_dir / "nanobot.db"
         db = await create_database(db_path)
@@ -212,10 +210,16 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         if not session:
             return []
         msgs = await repos.messages.get_messages(session["id"], limit=200)
-        return [
-            {"role": m.get("role", "user"), "content": m.get("content", "")}
-            for m in msgs
-        ]
+        result = []
+        for m in msgs:
+            role = m.get("role", "")
+            if role == "user":
+                result.append({"role": "user", "content": m.get("content", "")})
+            elif role == "assistant" and not m.get("tool_calls"):
+                content = (m.get("content") or "").strip()
+                if content:
+                    result.append({"role": "assistant", "content": content})
+        return result
 
     @app.delete("/api/sessions/{session_key:path}")
     async def delete_session(request: Request, session_key: str):
@@ -386,10 +390,10 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         user = await _require_user(request)
         uid = user["user_id"]
         repos = app.state.repos
-        
+
         long_term = await repos.memories.get_long_term(uid)
         history = await repos.memories.get_history(uid)
-        
+
         return {
             "long_term": long_term,
             "history": history
@@ -425,6 +429,159 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         content = body.get("content", "")
         await app.state.repos.memories.save_long_term(uid, content)
         return {"ok": True}
+
+    @app.get("/api/config/prompts")
+    async def get_prompts(request: Request):
+        user = await _require_user(request)
+        from nanobot.prompts import PROMPT_FILES, PROMPT_ORDER, load_base_prompt
+
+        user_extensions = user.get("bootstrap", {})
+        result = []
+        for filename in PROMPT_ORDER:
+            meta = PROMPT_FILES[filename]
+            result.append({
+                "filename": filename,
+                "label": meta["label"],
+                "description": meta["description"],
+                "hint": meta["hint"],
+                "base": load_base_prompt(filename),
+                "extension": user_extensions.get(filename, ""),
+            })
+        return result
+
+    @app.put("/api/config/prompts")
+    async def update_prompts(request: Request):
+        user = await _require_user(request)
+        body = await request.json()
+        from nanobot.prompts import PROMPT_FILES
+
+        extensions = user.get("bootstrap", {})
+        for item in body:
+            filename = item.get("filename", "")
+            if filename in PROMPT_FILES:
+                ext = item.get("extension", "")
+                if ext.strip():
+                    extensions[filename] = ext
+                elif filename in extensions:
+                    del extensions[filename]
+
+        await app.state.repos.users.update(user["user_id"], {"bootstrap": extensions})
+        if hasattr(app.state, "agent") and hasattr(app.state.agent, "_user_contexts"):
+            app.state.agent._user_contexts.pop(user["user_id"], None)
+        return {"ok": True}
+
+    def _get_user_channel_configs(user: dict) -> dict:
+        return user.get("channel_configs", {})
+
+    @app.get("/api/channels")
+    async def list_channels(request: Request):
+        user = await _require_user(request)
+        uid = user["user_id"]
+        from nanobot.channels.registry import CHANNEL_META, CHANNEL_ORDER, mask_channel_config
+
+        user_cfgs = _get_user_channel_configs(user)
+        channels_mgr = getattr(app.state, "channels", None)
+        user_status = channels_mgr.get_user_channel_status(uid) if channels_mgr else {}
+
+        result = []
+        for name in CHANNEL_ORDER:
+            meta = CHANNEL_META.get(name, {})
+            cfg_dict = user_cfgs.get(name, {})
+            enabled = cfg_dict.get("enabled", False)
+            running = user_status.get(name, {}).get("running", False)
+
+            result.append({
+                "name": name,
+                "label": meta.get("label", name),
+                "description": meta.get("description", ""),
+                "docs_url": meta.get("docs_url"),
+                "fields": meta.get("fields", []),
+                "enabled": enabled,
+                "running": running,
+                "config": mask_channel_config(name, cfg_dict),
+            })
+        return result
+
+    @app.put("/api/channels/{channel_name}")
+    async def update_channel(request: Request, channel_name: str):
+        user = await _require_user(request)
+        uid = user["user_id"]
+        from nanobot.channels.registry import CHANNEL_META
+
+        if channel_name not in CHANNEL_META:
+            raise HTTPException(404, f"Unknown channel: {channel_name}")
+
+        body = await request.json()
+        meta = CHANNEL_META[channel_name]
+        secret_keys = {f["key"] for f in meta.get("fields", []) if f.get("type") == "password"}
+
+        all_cfgs = _get_user_channel_configs(user)
+        current = all_cfgs.get(channel_name, {})
+
+        for key, value in body.items():
+            if key in secret_keys and isinstance(value, str) and "*" in value:
+                continue
+            current[key] = value
+
+        all_cfgs[channel_name] = current
+        await app.state.repos.users.update(uid, {"channel_configs": all_cfgs})
+        return {"ok": True}
+
+    @app.post("/api/channels/{channel_name}/start")
+    async def start_channel(request: Request, channel_name: str):
+        user = await _require_user(request)
+        uid = user["user_id"]
+        from nanobot.channels.registry import CHANNEL_META
+        from nanobot.config.schema import ChannelsConfig
+
+        if channel_name not in CHANNEL_META:
+            raise HTTPException(404, f"Unknown channel: {channel_name}")
+
+        channels_mgr = getattr(app.state, "channels", None)
+        if not channels_mgr:
+            raise HTTPException(503, "Channel manager not available")
+
+        user_cfgs = _get_user_channel_configs(user)
+        ch_cfg_dict = user_cfgs.get(channel_name, {})
+        if not ch_cfg_dict.get("enabled"):
+            raise HTTPException(400, f"Channel {channel_name} is not enabled. Save config first.")
+
+        user_chs = channels_mgr.user_channels.get(uid, {})
+        existing = user_chs.get(channel_name)
+        if existing and existing.is_running:
+            return {"ok": True, "message": "Already running"}
+
+        try:
+            channels_cfg_obj = getattr(ChannelsConfig(), channel_name)
+            cfg_cls = channels_cfg_obj.__class__
+            cfg = cfg_cls.model_validate(ch_cfg_dict)
+        except Exception as e:
+            raise HTTPException(400, f"Invalid config for {channel_name}: {e}")
+
+        try:
+            channels_mgr.create_user_channel(uid, channel_name, cfg)
+            await channels_mgr.start_user_channel(uid, channel_name)
+        except Exception as e:
+            raise HTTPException(500, f"Failed to start {channel_name}: {e}")
+
+        await app.state.repos.channel_bindings.bind(uid, channel_name, uid)
+        return {"ok": True, "message": f"{channel_name} starting"}
+
+    @app.post("/api/channels/{channel_name}/stop")
+    async def stop_channel(request: Request, channel_name: str):
+        user = await _require_user(request)
+        uid = user["user_id"]
+        from nanobot.channels.registry import CHANNEL_META
+
+        if channel_name not in CHANNEL_META:
+            raise HTTPException(404, f"Unknown channel: {channel_name}")
+
+        channels_mgr = getattr(app.state, "channels", None)
+        if not channels_mgr:
+            raise HTTPException(503, "Channel manager not available")
+
+        await channels_mgr.stop_user_channel(uid, channel_name)
+        return {"ok": True, "message": f"{channel_name} stopped"}
 
     @app.websocket("/ws/chat")
     async def ws_chat(ws: WebSocket):
@@ -482,14 +639,19 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                             on_progress=on_progress,
                             user_id=uid,
                         )
+                    except Exception as e:
+                        logger.exception("Chat error for {}", uid)
+                        response = f"Error: {e}"
+
+                    try:
                         await ws.send_json({
                             "type": "response",
                             "content": response,
                             "session_key": session_key,
                         })
-                    except Exception as e:
-                        logger.exception("Chat error for {}", uid)
-                        await ws.send_json({"type": "error", "content": str(e)})
+                    except Exception:
+                        logger.warning("WS closed before response for {}", uid)
+                        break
 
                 elif msg_type == "ping":
                     await ws.send_json({"type": "pong"})

@@ -1,11 +1,11 @@
 # nanobot Multi-Tenant: Documento Tecnico de Migracao
 
-> **Versao**: 3.3 — 2026-02-24
+> **Versao**: 4.0 — 2026-02-26
 > **Base analisada**: nanobot-ai v0.1.4.post1 (~10.334 linhas, 56 arquivos Python)
 > **Banco de dados**: SQLite (via aiosqlite) com Repository Pattern para futura migracao a MongoDB
 > **Objetivo**: Transformar o nanobot de single-user em plataforma multi-tenant
 >
-> **Status atual**: Fase 1 em andamento — 6 de 7 sub-fases concluidas. Proximo: **1.7 Migracao de dados existentes**.
+> **Status atual**: Fases 1 (6/7), 2 e 4 concluidas. Proximo: **1.7 Migracao de dados existentes** e **Fase 3 Sandbox Docker**.
 
 ---
 
@@ -20,16 +20,21 @@
 | **1.5** Adaptar AgentLoop + UserContext | ✅ Concluido | 29 |
 | **1.6** Adaptar CronService + Gateway Wiring | ✅ Concluido | 19 |
 | **1.7** Migracao de dados existentes | ⏳ **Proximo** | — |
-| **Fase 2** API HTTP | ⬚ Pendente | — |
+| **Fase 2** API HTTP + Web Frontend | ✅ Concluido | — |
+| **2.5** Per-user Prompts (base + extensions) | ✅ Concluido | 17 |
+| **2.6** Per-user Channels (config + management) | ✅ Concluido | 36 |
 | **Fase 3** Sandbox Docker | ⬚ Pendente | — |
-| **Fase 4** Channels Multi-Tenant + Polish | ⬚ Pendente | — |
+| **Fase 4** Channels Multi-Tenant + Polish | ✅ Concluido | — |
 
-**Total de testes**: 257 passando | **Infraestrutura**: Docker Desktop com noVNC operacional
+**Total de testes**: 320 passando | **Infraestrutura**: Docker Desktop com noVNC operacional
 
 ### Changelog
 
 | Data | O que foi feito |
 |------|-----------------|
+| 2026-02-26 | **Fase 4** Per-user channels: `channels/registry.py` (UI metadata), `BaseChannel.owner_id`, `ChannelManager` per-user (create/start/stop), `users.channel_configs` (migration v3), ChannelsPanel.tsx frontend. 36 testes novos. |
+| 2026-02-26 | **2.5+2.6** Per-user prompts: `nanobot/prompts/` (SOUL.md, AGENTS.md, USER.md base), `ContextBuilder` combina base+workspace+extension, `users.bootstrap` para extensions, PromptsPanel.tsx frontend. 17 testes novos. |
+| 2026-02-26 | **Fase 2** Web frontend React + API HTTP: FastAPI server com auth, WebSocket chat, endpoints CRUD (sessions, memory, skills, cron, prompts, channels), React 19 + Tailwind + Zustand. 320 testes totais. |
 | 2026-02-24 | **1.6+** Gateway wiring (`--multiuser`), CLI user commands (create/bind/list/unbind), teste E2E multi-user (8 testes). 257 testes. |
 | 2026-02-24 | **1.6** CronService dual-mode (fs + db), CronTool async + user_id, CLI cron commands async, HeartbeatService test fix. 249 testes. |
 | 2026-02-24 | **1.5** UserContext, build_user_context(), build_tool_registry(), RateLimiter, AgentLoop multi-user reescrito. 236 testes. |
@@ -46,15 +51,27 @@ nanobot/db/                          # NOVO — todo o layer de persistencia
   repositories.py                    # 8 Protocol interfaces
   factory.py                         # RepositoryFactory + create_sqlite_factory()
   sqlite/
-    migrations.py                    # DDL: users, sessions, messages, memories, skills, cron_jobs, channel_bindings
+    migrations.py                    # DDL v1-v3: users, sessions, messages, memories, skills, cron_jobs, channel_bindings, channel_configs
     user_repo.py, session_repo.py, memory_repo.py, skill_repo.py, cron_repo.py, channel_binding_repo.py
 
 nanobot/agent/
   user_context.py                    # NOVO — UserContext, build_user_context(), RateLimiter
   loop.py                            # REESCRITO — multi-user: resolve user, cache UserContext, rate limit
-  context.py                         # REESCRITO — dual-mode (fs + db), async bootstrap
+  context.py                         # REESCRITO — dual-mode (fs + db), async bootstrap, combina base+ws+extension
   memory.py                          # MODIFICADO — dual-mode (fs + db)
   skills.py                          # MODIFICADO — dual-mode (fs + db)
+
+nanobot/prompts/                     # NOVO — base prompt templates (read-only, shipped with code)
+  __init__.py                        # PROMPT_FILES metadata, PROMPT_ORDER, load_base_prompt()
+  SOUL.md                            # Base: personality, tone, core values
+  AGENTS.md                          # Base: task execution rules, work style
+  USER.md                            # Base: user context placeholder
+
+nanobot/channels/
+  registry.py                        # NOVO — CHANNEL_META (UI fields), CHANNEL_ORDER, mask_secret()
+  manager.py                         # REESCRITO — server-global + per-user channels, outbound routing by owner_id
+  base.py                            # MODIFICADO — owner_id param, tags InboundMessage.user_id
+  telegram.py ... qq.py              # MODIFICADO — **kwargs passthrough para super().__init__
 
 nanobot/session/manager.py           # MODIFICADO — dual-mode (fs + db)
 nanobot/bus/events.py                # MODIFICADO — user_id field
@@ -65,7 +82,17 @@ nanobot/cron/
   service.py                         # REESCRITO — dual-mode (fs + db), todos metodos async, user_id em todas APIs
 
 nanobot/agent/tools/cron.py          # MODIFICADO — metodos async, set_context(user_id), passa user_id ao CronService
-nanobot/cli/commands.py              # MODIFICADO — gateway --multiuser, CLI user commands, cron async
+nanobot/cli/commands.py              # MODIFICADO — gateway --multiuser, CLI user commands, cron async, app.state.channels/config
+
+nanobot/web/
+  server.py                          # MODIFICADO — endpoints: prompts (GET/PUT), channels (GET/PUT/start/stop), WebSocket chat
+  frontend/src/components/
+    ChannelsPanel.tsx                 # NOVO — per-user channel config UI (forms, start/stop, status badges)
+    PromptsPanel.tsx                  # NOVO — per-user prompt extensions editor (base read-only + extension editable)
+    Sidebar.tsx                       # MODIFICADO — nav items: Agent Prompts, Channels
+  frontend/src/lib/
+    api.ts                           # MODIFICADO — PromptSection, ChannelInfo types + API functions
+    store.ts                         # MODIFICADO — channelsOpen, promptsOpen state
 
 docker/desktop/                      # NOVO — Docker Desktop com noVNC
   Dockerfile, start.sh, supervisord.conf, config.json, xstartup
@@ -75,11 +102,13 @@ tests/
   db/                                # 64 testes de repositorios
   agent/
     test_context_builder.py          # 20 testes
+    test_prompts_per_user.py         # 17 testes (base loading, per-user extensions, isolation, workspace combo)
     test_user_context.py             # 17 testes
     test_agent_loop_multiuser.py     # 12 testes
     test_session_manager.py          # 11 testes
     test_memory_store.py             # 9 testes
     test_skills_loader.py            # 14 testes
+  test_channels_per_user.py          # 36 testes (registry, migration v3, DB CRUD, BaseChannel owner_id, ChannelManager, routing, isolation)
   test_events.py                     # 8 testes
   test_server_config.py              # 5 testes
   test_heartbeat_service.py          # 2 testes (reescrito)
@@ -1479,9 +1508,9 @@ sqlite3 ~/.nanobot/nanobot.db "SELECT COUNT(*) FROM memories;"
 
 ---
 
-### Fase 2: API HTTP (2-3 semanas) ⬚ PENDENTE
+### Fase 2: API HTTP + Web Frontend (2-3 semanas) ✅ CONCLUIDO
 
-**Objetivo**: API REST para integracao com agent builder.
+**Objetivo**: API REST + web frontend para integracao com agent builder.
 **Depende de**: Fase 1 completa.
 
 #### 2.1 Setup FastAPI + Auth (3-4 dias)
@@ -1592,7 +1621,42 @@ done
 # Ultimas devem retornar 429
 ```
 
-**Entregavel da Fase 2**: API HTTP funcional, agent builder pode enviar mensagens e gerenciar resources.
+#### 2.5 Per-user Prompts — Base + Extensions ✅ CONCLUIDO
+
+**Implementado**:
+- `nanobot/prompts/` com SOUL.md, AGENTS.md, USER.md (base read-only, shipped with code)
+- `nanobot/prompts/__init__.py`: PROMPT_FILES metadata, PROMPT_ORDER, load_base_prompt()
+- `ContextBuilder._load_bootstrap_db()` combina: base (code) + workspace file + user extension (DB)
+- API: `GET /api/config/prompts` (retorna base + extension por secao), `PUT /api/config/prompts` (salva extensions em `users.bootstrap`)
+- Frontend: `PromptsPanel.tsx` com base read-only collapsible + textarea editavel para extensions
+- Cache invalidation: atualizar prompts limpa UserContext cache
+- 17 testes em `tests/agent/test_prompts_per_user.py`
+
+**Fluxo**:
+1. Base prompts (code) sao sempre incluidos no system prompt
+2. Workspace files (SOUL.md etc. no workspace dir) sao adicionados se existem
+3. User extensions (DB `users.bootstrap`) sao adicionados por cima
+4. Para arquivos nao-prompt (TOOLS.md etc.), fallback chain: extension > workspace > base
+
+#### 2.6 Per-user Channels — Config + Management ✅ CONCLUIDO
+
+**Implementado**:
+- Migration v3: `ALTER TABLE users ADD COLUMN channel_configs TEXT NOT NULL DEFAULT '{}'`
+- `channels/registry.py`: CHANNEL_META (8 channels com fields UI), CHANNEL_ORDER, mask_secret(), mask_channel_config()
+- `BaseChannel.__init__` aceita `owner_id` kwarg, propaga como `InboundMessage.user_id`
+- Todos os 9 channels adaptados com `**kwargs` passthrough
+- `ChannelManager` reescrito: `user_channels` dict, create/start/stop per-user, outbound routing por `_owner_id`
+- API: `GET /api/channels`, `PUT /api/channels/{name}`, `POST /api/channels/{name}/start`, `POST /api/channels/{name}/stop`
+- Frontend: `ChannelsPanel.tsx` com cards expandiveis, forms dinamicos, status badges, start/stop
+- 36 testes em `tests/test_channels_per_user.py`
+
+**Fluxo**:
+1. User configura channel via frontend (token, settings) → salva em `users.channel_configs`
+2. User clica Start → API cria instancia per-user com `owner_id`, inicia polling
+3. Mensagens recebidas sao tagueadas com `user_id` do owner → roteadas para o user correto
+4. Outbound: `_find_channel_for_outbound()` busca por `_owner_id` metadata primeiro, fallback para global
+
+**Entregavel da Fase 2**: API HTTP + web frontend funcionais, agent builder pode enviar mensagens, gerenciar resources, customizar prompts e conectar channels. Per-user prompts e channels com isolamento completo.
 
 ---
 
@@ -1675,72 +1739,59 @@ pytest tests/sandbox/test_load.py -v
 
 ---
 
-### Fase 4: Channels Multi-Tenant + Polish (2-3 semanas) ⬚ PENDENTE
+### Fase 4: Channels Multi-Tenant + Polish (2-3 semanas) ✅ CONCLUIDO
 
-#### 4.1 Channel Bindings (2-3 dias)
+> Implementado como parte da Fase 2 (2.5 e 2.6). Per-user channels e per-user prompts
+> foram desenvolvidos junto com a API HTTP e o frontend React.
 
-**Tarefas**:
-- Implementar `SQLiteChannelBindingRepository`
-- Adaptar `BaseChannel.resolve_user()`
-- Adaptar channels individuais
+#### 4.1 Channel Bindings + Per-user Channels ✅ CONCLUIDO
+
+**Implementado**:
+- `SQLiteChannelBindingRepository` — vincular sender_id a user_id
+- `BaseChannel.owner_id` — tags InboundMessage com user_id do owner
+- Todos os 9 channels adaptados (`**kwargs` passthrough)
+- `ChannelManager` reescrito com `user_channels` dict e outbound routing por owner
+- `users.channel_configs` JSON column (migration v3) para config per-user
+- `channels/registry.py` com UI metadata para 8 channels
+- Frontend `ChannelsPanel.tsx` com forms dinamicos e start/stop
 
 **Como testar**:
 ```bash
-pytest tests/channels/test_bindings.py -v
-
-# Teste manual: vincular Telegram user a user interno
-sqlite3 ~/.nanobot/nanobot.db "
-INSERT INTO channel_bindings (user_id, channel, sender_id)
-VALUES ('usr_test1', 'telegram', '123456789');
-"
-# Enviar mensagem pelo Telegram -> deve resolver para usr_test1
+pytest tests/test_channels_per_user.py -v  # 36 testes
 ```
 
-#### 4.2 CLI Admin + Onboarding (2-3 dias)
+#### 4.2 CLI Admin + Onboarding ✅ CONCLUIDO
 
-**Tarefas**:
+**Implementado** (na Fase 1.6):
 - `nanobot admin create-user --name "Carlos" --email "carlos@test.com"`
 - `nanobot admin list-users`
 - `nanobot admin bind-channel --user usr_abc --channel telegram --sender 123456`
 
-**Como testar**:
-```bash
-nanobot admin create-user --name "Carlos" --email "carlos@test.com"
-# Output: Created user usr_abc123 with API key nk_...
+#### 4.3 Per-user Prompts ✅ CONCLUIDO
 
-nanobot admin list-users
-# Output: tabela com users
-
-nanobot admin bind-channel --user usr_abc123 --channel telegram --sender 123456789
-```
-
-#### 4.3 Testes End-to-End (3-4 dias)
+**Implementado**:
+- `nanobot/prompts/` com base templates (SOUL.md, AGENTS.md, USER.md)
+- ContextBuilder combina base + workspace + user extension
+- API `GET/PUT /api/config/prompts`
+- Frontend `PromptsPanel.tsx`
 
 **Como testar**:
 ```bash
-# E2E completo: criar user, enviar msg via API, verificar sessao, memoria, etc.
-pytest tests/e2e/test_full_flow.py -v
-
-# E2E com channels: simular mensagem Telegram
-pytest tests/e2e/test_telegram_flow.py -v
-
-# E2E com cron: criar job, esperar execucao, verificar resultado
-pytest tests/e2e/test_cron_flow.py -v
-
-# Teste de 2 users simultaneos via API
-pytest tests/e2e/test_two_users.py -v
+pytest tests/agent/test_prompts_per_user.py -v  # 17 testes
+pytest tests/test_channels_per_user.py -v       # 36 testes
+pytest tests/ -v                                # 320 testes totais
 ```
 
 ### Resumo do Timeline
 
 | Fase | Duracao | Acumulado | Status |
 |---|---|---|---|
-| Fase 1: Foundation (SQLite + multi-user) | 3-4 semanas | 3-4 sem | 🟡 5/7 concluidas |
-| Fase 2: API HTTP | 2-3 semanas | 5-7 sem | ⬚ Pendente |
+| Fase 1: Foundation (SQLite + multi-user) | 3-4 semanas | 3-4 sem | 🟡 6/7 concluidas |
+| Fase 2: API HTTP + Web Frontend + Per-user | 2-3 semanas | 5-7 sem | ✅ Concluido |
 | Fase 3: Sandbox Docker | 3-4 semanas | 8-11 sem | ⬚ Pendente |
-| Fase 4: Channels + Polish | 2-3 semanas | 10-14 sem | ⬚ Pendente |
+| Fase 4: Channels Multi-Tenant + Polish | 2-3 semanas | 10-14 sem | ✅ Concluido |
 
-**Total estimado: 10-14 semanas** (1 dev full-time).
+**Total estimado: 10-14 semanas** (1 dev full-time). Restam: 1.7 (migracao dados) e Fase 3 (sandbox).
 
 **Infraestrutura de teste**: Docker Desktop (Debian + XFCE + noVNC) disponivel via `docker-compose.desktop.yml`.
 Acesso pelo browser em `http://localhost:6080/vnc.html` (senha: `nanobot`).
@@ -1786,7 +1837,7 @@ Acesso pelo browser em `http://localhost:6080/vnc.html` (senha: `nanobot`).
 
 ### 10.4 Fora do Escopo (futuro)
 
-- Multi-tenant de LLM providers (cada user com sua API key)
+- Multi-tenant de LLM providers (cada user com sua propria API key de LLM)
 - Marketplace de skills
 - Billing/metering
 - Multi-region
@@ -1797,7 +1848,7 @@ Acesso pelo browser em `http://localhost:6080/vnc.html` (senha: `nanobot`).
 
 ## Apendice A: Mapeamento Antes -> Depois
 
-| Antes (filesystem) | Depois (SQLite) |
+| Antes (filesystem) | Depois (SQLite + code) |
 |---|---|
 | `~/.nanobot/config.json` | `users` table + ServerConfig file |
 | `workspace/sessions/*.jsonl` | `sessions` + `messages` tables |
@@ -1805,21 +1856,23 @@ Acesso pelo browser em `http://localhost:6080/vnc.html` (senha: `nanobot`).
 | `workspace/memory/HISTORY.md` | `memories` (type='history', N rows) |
 | `workspace/skills/*/SKILL.md` | `skills` table (builtins no filesystem) |
 | `workspace/cron.json` | `cron_jobs` table |
-| `workspace/SOUL.md` | `users.bootstrap.soul` |
-| `workspace/AGENTS.md` | `users.bootstrap.agents_instructions` |
-| `workspace/USER.md` | `users.bootstrap.user_info` |
-| `workspace/TOOLS.md` | `users.bootstrap.tools_instructions` |
-| `workspace/IDENTITY.md` | `users.bootstrap.identity` |
-| `workspace/HEARTBEAT.md` | `users.bootstrap.heartbeat` -> cron job |
+| `workspace/SOUL.md` | Base: `nanobot/prompts/SOUL.md` (code, read-only) + Extension: `users.bootstrap["SOUL.md"]` (DB, per-user) |
+| `workspace/AGENTS.md` | Base: `nanobot/prompts/AGENTS.md` (code, read-only) + Extension: `users.bootstrap["AGENTS.md"]` (DB, per-user) |
+| `workspace/USER.md` | Base: `nanobot/prompts/USER.md` (code, read-only) + Extension: `users.bootstrap["USER.md"]` (DB, per-user) |
+| `workspace/TOOLS.md` | `users.bootstrap["TOOLS.md"]` (DB) ou workspace fallback |
+| `workspace/IDENTITY.md` | `users.bootstrap["IDENTITY.md"]` (DB) ou workspace fallback |
+| `workspace/HEARTBEAT.md` | `users.bootstrap["HEARTBEAT.md"]` -> cron job |
 | (nao existia) | `channel_bindings` table |
 | (nao existia) | `audit_log` table |
+| (nao existia) | `users.channel_configs` (JSON, per-user channel configs — migration v3) |
 
 ## Apendice B: Dependencias por Fase
 
 | Fase | Pacotes Novos |
 |---|---|
 | Fase 1 | `aiosqlite>=0.20.0` |
-| Fase 2 | `fastapi>=0.100`, `uvicorn>=0.20`, `python-jose[cryptography]>=3.3` |
+| Fase 2 | `fastapi>=0.100`, `uvicorn>=0.20` (ja existentes no nanobot) |
+| Fase 2 Frontend | `react`, `react-dom`, `zustand`, `lucide-react`, `tailwindcss` (Vite + npm) |
 | Fase 3 | `docker>=7.0` |
 | Futuro (MongoDB) | `motor>=3.0`, `pymongo>=4.0` |
 
@@ -1829,10 +1882,11 @@ Acesso pelo browser em `http://localhost:6080/vnc.html` (senha: `nanobot`).
 nanobot/
   agent/
     loop.py              # AgentLoop com UserContext + paralelo
-    context.py           # ContextBuilder async + user_doc
+    context.py           # ContextBuilder async + combina base+workspace+extension
     memory.py            # MemoryStore via Repository
     skills.py            # SkillsLoader via Repository + builtins
     subagent.py          # SubagentManager com user_id
+    user_context.py      # UserContext, build_user_context(), RateLimiter
     tools/
       base.py            # (sem mudanca)
       registry.py        # (sem mudanca, 1 por user)
@@ -1843,40 +1897,28 @@ nanobot/
       spawn.py           # user_id
       cron.py            # user_id
       mcp.py             # (global fase 1)
-  api/                   # NOVO (fase 2)
-    server.py
-    auth.py
-    deps.py
-    routes/
-      chat.py
-      sessions.py
-      memory.py
-      skills.py
-      cron.py
-      admin.py
   bus/
     events.py            # +user_id no InboundMessage
     queue.py             # (sem mudanca)
   channels/
-    base.py              # +resolve_user()
-    manager.py           # +repos
-    telegram.py, ...     # +user_id propagation
+    registry.py          # NOVO — CHANNEL_META (UI fields), CHANNEL_ORDER, mask_secret()
+    base.py              # +owner_id, tags InboundMessage.user_id
+    manager.py           # server-global + per-user channels, outbound routing por owner_id
+    telegram.py, ...     # +**kwargs passthrough para super().__init__
   cli/
-    commands.py          # Rewiring + admin commands
+    commands.py          # Rewiring + admin commands + app.state.channels/config
   config/
     schema.py            # Split em ServerConfig/UserConfig
     loader.py            # Banco + file config
-    server_config.py     # NOVO
   cron/
     service.py           # Via Repository
-    types.py             # (sem mudanca)
-  db/                    # NOVO
+    types.py             # +user_id field
+  db/
     repositories.py      # Protocols (interfaces)
     factory.py           # RepositoryFactory
     sqlite/
-      connection.py
-      migrations.py
-      user_repo.py
+      migrations.py      # v1: schema, v2: FTS5, v3: channel_configs
+      user_repo.py       # +channel_configs JSON parsing
       session_repo.py
       memory_repo.py
       skill_repo.py
@@ -1885,15 +1927,31 @@ nanobot/
       audit_repo.py
     mongo/               # FUTURO
       ...
-  sandbox/               # NOVO (fase 3)
+  prompts/               # NOVO — base prompt templates (read-only, shipped with code)
+    __init__.py          # PROMPT_FILES, PROMPT_ORDER, load_base_prompt()
+    SOUL.md              # Personality, tone, core values
+    AGENTS.md            # Task execution rules, work style
+    USER.md              # User context placeholder
+  providers/             # (sem mudanca)
+  sandbox/               # NOVO (fase 3 — pendente)
     manager.py
     container.py
     Dockerfile
-  providers/             # (sem mudanca)
   session/
     manager.py           # Via Repository
   skills/                # Builtins (sem mudanca)
   templates/             # (sem mudanca)
   utils/
     helpers.py           # Manter helpers uteis
+  web/
+    server.py            # FastAPI: auth, WebSocket chat, REST endpoints (prompts, channels, etc.)
+    frontend/
+      src/components/
+        ChannelsPanel.tsx   # Per-user channel config UI
+        PromptsPanel.tsx    # Per-user prompt extensions editor
+        Sidebar.tsx         # Nav: Chat, Sessions, Skills, Cron, Prompts, Channels
+        ...
+      src/lib/
+        api.ts              # API types + fetch functions
+        store.ts            # Zustand global state
 ```

@@ -3,189 +3,193 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 from typing import Any
 
 from loguru import logger
 
-from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Config
 
+CHANNEL_MAP: dict[str, tuple[str, str]] = {
+    "telegram": ("nanobot.channels.telegram", "TelegramChannel"),
+    "whatsapp": ("nanobot.channels.whatsapp", "WhatsAppChannel"),
+    "discord": ("nanobot.channels.discord", "DiscordChannel"),
+    "feishu": ("nanobot.channels.feishu", "FeishuChannel"),
+    "mochat": ("nanobot.channels.mochat", "MochatChannel"),
+    "dingtalk": ("nanobot.channels.dingtalk", "DingTalkChannel"),
+    "email": ("nanobot.channels.email", "EmailChannel"),
+    "slack": ("nanobot.channels.slack", "SlackChannel"),
+    "qq": ("nanobot.channels.qq", "QQChannel"),
+}
+
+
+def _create_channel_instance(
+    name: str,
+    config: Any,
+    bus: MessageBus,
+    *,
+    owner_id: str | None = None,
+    groq_api_key: str = "",
+) -> BaseChannel:
+    if name not in CHANNEL_MAP:
+        raise ValueError(f"Unknown channel: {name}")
+
+    module_path, class_name = CHANNEL_MAP[name]
+    mod = importlib.import_module(module_path)
+    cls = getattr(mod, class_name)
+
+    if name == "telegram":
+        return cls(config, bus, groq_api_key=groq_api_key, owner_id=owner_id)
+    return cls(config, bus, owner_id=owner_id)
+
 
 class ChannelManager:
-    """
-    Manages chat channels and coordinates message routing.
-    
-    Responsibilities:
-    - Initialize enabled channels (Telegram, WhatsApp, etc.)
-    - Start/stop channels
-    - Route outbound messages
-    """
-    
+    """Manages server-global and per-user chat channels."""
+
     def __init__(self, config: Config, bus: MessageBus):
         self.config = config
         self.bus = bus
         self.channels: dict[str, BaseChannel] = {}
+        self.user_channels: dict[str, dict[str, BaseChannel]] = {}
         self._dispatch_task: asyncio.Task | None = None
-        
+
         self._init_channels()
-    
+
     def _init_channels(self) -> None:
-        """Initialize channels based on config."""
-        
-        if self.config.channels.telegram.enabled:
-            try:
-                from nanobot.channels.telegram import TelegramChannel
-                self.channels["telegram"] = TelegramChannel(
-                    self.config.channels.telegram,
-                    self.bus,
-                    groq_api_key=self.config.providers.groq.api_key,
-                )
-                logger.info("Telegram channel enabled")
-            except ImportError as e:
-                logger.warning("Telegram channel not available: {}", e)
-        
-        if self.config.channels.whatsapp.enabled:
-            try:
-                from nanobot.channels.whatsapp import WhatsAppChannel
-                self.channels["whatsapp"] = WhatsAppChannel(
-                    self.config.channels.whatsapp, self.bus
-                )
-                logger.info("WhatsApp channel enabled")
-            except ImportError as e:
-                logger.warning("WhatsApp channel not available: {}", e)
+        """Initialize server-global channels from config."""
+        for name in CHANNEL_MAP:
+            cfg = getattr(self.config.channels, name, None)
+            if cfg and cfg.enabled:
+                try:
+                    self.channels[name] = _create_channel_instance(
+                        name, cfg, self.bus,
+                        groq_api_key=self.config.providers.groq.api_key,
+                    )
+                    logger.info("{} channel enabled", name)
+                except ImportError as e:
+                    logger.warning("{} channel not available: {}", name, e)
 
-        if self.config.channels.discord.enabled:
-            try:
-                from nanobot.channels.discord import DiscordChannel
-                self.channels["discord"] = DiscordChannel(
-                    self.config.channels.discord, self.bus
-                )
-                logger.info("Discord channel enabled")
-            except ImportError as e:
-                logger.warning("Discord channel not available: {}", e)
-        
-        if self.config.channels.feishu.enabled:
-            try:
-                from nanobot.channels.feishu import FeishuChannel
-                self.channels["feishu"] = FeishuChannel(
-                    self.config.channels.feishu, self.bus
-                )
-                logger.info("Feishu channel enabled")
-            except ImportError as e:
-                logger.warning("Feishu channel not available: {}", e)
+    def _init_single_channel(self, name: str) -> None:
+        """Initialize a single server-global channel from current config."""
+        cfg = getattr(self.config.channels, name, None)
+        if not cfg:
+            raise ValueError(f"No config for channel: {name}")
+        self.channels[name] = _create_channel_instance(
+            name, cfg, self.bus,
+            groq_api_key=self.config.providers.groq.api_key,
+        )
+        logger.info("{} channel initialized", name)
 
-        if self.config.channels.mochat.enabled:
-            try:
-                from nanobot.channels.mochat import MochatChannel
+    def create_user_channel(
+        self,
+        user_id: str,
+        name: str,
+        config: Any,
+    ) -> BaseChannel:
+        """Create a channel instance owned by a specific user."""
+        ch = _create_channel_instance(
+            name, config, self.bus,
+            owner_id=user_id,
+            groq_api_key=self.config.providers.groq.api_key,
+        )
+        self.user_channels.setdefault(user_id, {})[name] = ch
+        logger.info("User {} channel {} created", user_id, name)
+        return ch
 
-                self.channels["mochat"] = MochatChannel(
-                    self.config.channels.mochat, self.bus
-                )
-                logger.info("Mochat channel enabled")
-            except ImportError as e:
-                logger.warning("Mochat channel not available: {}", e)
+    async def start_user_channel(self, user_id: str, name: str) -> None:
+        user_chs = self.user_channels.get(user_id, {})
+        ch = user_chs.get(name)
+        if not ch:
+            raise ValueError(f"User {user_id} has no {name} channel")
+        asyncio.create_task(self._start_channel(f"{user_id}:{name}", ch))
 
-        if self.config.channels.dingtalk.enabled:
-            try:
-                from nanobot.channels.dingtalk import DingTalkChannel
-                self.channels["dingtalk"] = DingTalkChannel(
-                    self.config.channels.dingtalk, self.bus
-                )
-                logger.info("DingTalk channel enabled")
-            except ImportError as e:
-                logger.warning("DingTalk channel not available: {}", e)
+    async def stop_user_channel(self, user_id: str, name: str) -> None:
+        user_chs = self.user_channels.get(user_id, {})
+        ch = user_chs.get(name)
+        if not ch:
+            return
+        try:
+            await ch.stop()
+        except Exception as e:
+            logger.error("Error stopping {}:{}: {}", user_id, name, e)
+        user_chs.pop(name, None)
+        if not user_chs:
+            self.user_channels.pop(user_id, None)
+        logger.info("User {} channel {} stopped", user_id, name)
 
-        if self.config.channels.email.enabled:
-            try:
-                from nanobot.channels.email import EmailChannel
-                self.channels["email"] = EmailChannel(
-                    self.config.channels.email, self.bus
-                )
-                logger.info("Email channel enabled")
-            except ImportError as e:
-                logger.warning("Email channel not available: {}", e)
+    def get_user_channel_status(self, user_id: str) -> dict[str, dict[str, Any]]:
+        user_chs = self.user_channels.get(user_id, {})
+        return {
+            name: {"running": ch.is_running}
+            for name, ch in user_chs.items()
+        }
 
-        if self.config.channels.slack.enabled:
-            try:
-                from nanobot.channels.slack import SlackChannel
-                self.channels["slack"] = SlackChannel(
-                    self.config.channels.slack, self.bus
-                )
-                logger.info("Slack channel enabled")
-            except ImportError as e:
-                logger.warning("Slack channel not available: {}", e)
-
-        if self.config.channels.qq.enabled:
-            try:
-                from nanobot.channels.qq import QQChannel
-                self.channels["qq"] = QQChannel(
-                    self.config.channels.qq,
-                    self.bus,
-                )
-                logger.info("QQ channel enabled")
-            except ImportError as e:
-                logger.warning("QQ channel not available: {}", e)
-    
-    async def _start_channel(self, name: str, channel: BaseChannel) -> None:
-        """Start a channel and log any exceptions."""
+    async def _start_channel(self, label: str, channel: BaseChannel) -> None:
         try:
             await channel.start()
         except Exception as e:
-            logger.error("Failed to start channel {}: {}", name, e)
+            logger.error("Failed to start channel {}: {}", label, e)
 
     async def start_all(self) -> None:
-        """Start all channels and the outbound dispatcher."""
+        """Start all server-global channels and the outbound dispatcher."""
+        self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
+
         if not self.channels:
             logger.warning("No channels enabled")
             return
-        
-        self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
 
         tasks = []
         for name, channel in self.channels.items():
             logger.info("Starting {} channel...", name)
             tasks.append(asyncio.create_task(self._start_channel(name, channel)))
-        
         await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     async def stop_all(self) -> None:
-        """Stop all channels and the dispatcher."""
+        """Stop all channels (global + per-user) and the dispatcher."""
         logger.info("Stopping all channels...")
-        
+
         if self._dispatch_task:
             self._dispatch_task.cancel()
             try:
                 await self._dispatch_task
             except asyncio.CancelledError:
                 pass
-        
+
         for name, channel in self.channels.items():
             try:
                 await channel.stop()
                 logger.info("Stopped {} channel", name)
             except Exception as e:
                 logger.error("Error stopping {}: {}", name, e)
-    
+
+        for user_id, user_chs in list(self.user_channels.items()):
+            for name, channel in list(user_chs.items()):
+                try:
+                    await channel.stop()
+                    logger.info("Stopped {}:{} channel", user_id, name)
+                except Exception as e:
+                    logger.error("Error stopping {}:{}: {}", user_id, name, e)
+        self.user_channels.clear()
+
     async def _dispatch_outbound(self) -> None:
         """Dispatch outbound messages to the appropriate channel."""
         logger.info("Outbound dispatcher started")
-        
+
         while True:
             try:
                 msg = await asyncio.wait_for(
-                    self.bus.consume_outbound(),
-                    timeout=1.0
+                    self.bus.consume_outbound(), timeout=1.0,
                 )
-                
+
                 if msg.metadata.get("_progress"):
                     if msg.metadata.get("_tool_hint") and not self.config.channels.send_tool_hints:
                         continue
                     if not msg.metadata.get("_tool_hint") and not self.config.channels.send_progress:
                         continue
-                
-                channel = self.channels.get(msg.channel)
+
+                channel = self._find_channel_for_outbound(msg)
                 if channel:
                     try:
                         await channel.send(msg)
@@ -193,27 +197,38 @@ class ChannelManager:
                         logger.error("Error sending to {}: {}", msg.channel, e)
                 else:
                     logger.warning("Unknown channel: {}", msg.channel)
-                    
+
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
-    
+
+    def _find_channel_for_outbound(self, msg: Any) -> BaseChannel | None:
+        """Find the right channel instance for an outbound message."""
+        owner = msg.metadata.get("_owner_id")
+        if owner:
+            user_chs = self.user_channels.get(owner, {})
+            ch = user_chs.get(msg.channel)
+            if ch:
+                return ch
+        ch = self.channels.get(msg.channel)
+        if ch:
+            return ch
+        for user_chs in self.user_channels.values():
+            ch = user_chs.get(msg.channel)
+            if ch:
+                return ch
+        return None
+
     def get_channel(self, name: str) -> BaseChannel | None:
-        """Get a channel by name."""
         return self.channels.get(name)
-    
+
     def get_status(self) -> dict[str, Any]:
-        """Get status of all channels."""
         return {
-            name: {
-                "enabled": True,
-                "running": channel.is_running
-            }
+            name: {"enabled": True, "running": channel.is_running}
             for name, channel in self.channels.items()
         }
-    
+
     @property
     def enabled_channels(self) -> list[str]:
-        """Get list of enabled channel names."""
         return list(self.channels.keys())

@@ -38,7 +38,7 @@ _DEFAULT_TOOLS = [
 
 def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
     d = dict(row)
-    for key in ("agent_config", "bootstrap", "limits", "tools_enabled"):
+    for key in ("agent_config", "bootstrap", "limits", "tools_enabled", "channel_configs"):
         if key in d and isinstance(d[key], str):
             d[key] = json.loads(d[key])
     return d
@@ -95,6 +95,7 @@ class SQLiteUserRepository:
     _ALLOWED_UPDATE_FIELDS = frozenset({
         "display_name", "email", "api_key_hash", "role",
         "agent_config", "bootstrap", "limits", "tools_enabled",
+        "channel_configs",
         "status", "updated_at",
         "tokens_today", "requests_today", "tokens_total",
         "usage_reset_date", "last_request_at",
@@ -108,7 +109,7 @@ class SQLiteUserRepository:
         if bad_fields:
             raise ValueError(f"Disallowed fields: {bad_fields}")
 
-        for key in ("agent_config", "bootstrap", "limits", "tools_enabled"):
+        for key in ("agent_config", "bootstrap", "limits", "tools_enabled", "channel_configs"):
             if key in fields and not isinstance(fields[key], str):
                 fields[key] = json.dumps(fields[key])
 

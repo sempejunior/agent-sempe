@@ -5,6 +5,10 @@ set -e
 Xvfb :99 -screen 0 1280x720x24 -ac &
 sleep 2
 
+# Disable fluxbox wallpaper popup (fbsetbg fails without full ImageMagick display)
+mkdir -p /root/.fluxbox
+echo "session.screen0.rootCommand:" > /root/.fluxbox/init
+
 # Start a lightweight window manager so windows display properly
 fluxbox -display :99 &
 sleep 1

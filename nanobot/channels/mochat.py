@@ -217,8 +217,8 @@ class MochatChannel(BaseChannel):
 
     name = "mochat"
 
-    def __init__(self, config: MochatConfig, bus: MessageBus):
-        super().__init__(config, bus)
+    def __init__(self, config: MochatConfig, bus: MessageBus, **kwargs):
+        super().__init__(config, bus, **kwargs)
         self.config: MochatConfig = config
         self._http: httpx.AsyncClient | None = None
         self._socket: Any = None

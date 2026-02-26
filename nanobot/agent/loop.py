@@ -7,7 +7,7 @@ import json
 import re
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from loguru import logger
 
@@ -28,10 +28,10 @@ from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
+    from nanobot.agent.user_context import UserContext
     from nanobot.config.schema import ChannelsConfig, ExecToolConfig
     from nanobot.cron.service import CronService
     from nanobot.db.factory import RepositoryFactory
-    from nanobot.agent.user_context import UserContext
 
 
 class AgentLoop:
@@ -122,6 +122,7 @@ class AgentLoop:
     def _register_default_tools(self) -> None:
         """Register the default set of tools (FS mode only)."""
         import os
+
         from nanobot.agent.tools.skill import SaveSkillTool
         allowed_dir = self.workspace if self.restrict_to_workspace else None
         for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool):
@@ -142,8 +143,8 @@ class AgentLoop:
         self.tools.register(SaveMemoryTool(fs_memory))
         self.tools.register(SearchMemoryTool(fs_memory))
         if os.environ.get("DISPLAY"):
-            from nanobot.agent.tools.screenshot import ScreenshotTool
             from nanobot.agent.tools.computer import ComputerTool
+            from nanobot.agent.tools.screenshot import ScreenshotTool
             self.tools.register(ScreenshotTool())
             self.tools.register(ComputerTool())
             from nanobot.agent.tools.browser import BrowserTool, cdp_available
@@ -362,7 +363,7 @@ class AgentLoop:
         from loguru import logger
         logger.info("Reloading MCP servers...")
         await self.close_mcp()
-        
+
         for name in list(self.tools._tools.keys()):
             if name.startswith("mcp_"):
                 self.tools.unregister(name)
@@ -371,12 +372,12 @@ class AgentLoop:
             for name in list(uctx.tools._tools.keys()):
                 if name.startswith("mcp_"):
                     uctx.tools.unregister(name)
-                    
+
         self._mcp_servers = mcp_servers
         self._mcp_connected = False
         self._mcp_connecting = False
         await self._connect_mcp()
-        
+
         if self._mcp_connected:
             for name, tool in self.tools._tools.items():
                 if name.startswith("mcp_"):
@@ -458,6 +459,8 @@ class AgentLoop:
                 max_tokens=_max_tokens, max_iterations=_max_iterations,
                 provider=_provider,
             )
+            if final_content:
+                all_msgs.append({"role": "assistant", "content": final_content})
             self._save_turn(session, all_msgs, 1 + len(history))
             await sessions.save(session)
             return OutboundMessage(channel=channel, chat_id=chat_id,
@@ -558,6 +561,7 @@ class AgentLoop:
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
 
+        all_msgs.append({"role": "assistant", "content": final_content})
         self._save_turn(session, all_msgs, 1 + len(history))
         await sessions.save(session)
 
