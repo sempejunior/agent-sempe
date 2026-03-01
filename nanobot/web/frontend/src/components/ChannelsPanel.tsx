@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { PanelWrapper } from "@/components/ui/panel-wrapper";
 import {
   listChannels,
   updateChannel,
@@ -12,8 +12,6 @@ import type { ChannelInfo, ChannelField } from "@/lib/api";
 import { toast } from "@/lib/toast";
 import {
   Radio,
-  ChevronDown,
-  ChevronUp,
   ExternalLink,
   Play,
   Square,
@@ -23,45 +21,70 @@ import {
   X,
   Plus,
   Loader2,
+  Send,
+  MessageSquare,
+  Hash,
+  Mail,
+  Phone,
+  ChevronRight,
+  Settings2
 } from "lucide-react";
 
-interface Props {
-  open: boolean;
-  onClose: () => void;
-}
-
 function ChannelIcon({ name }: { name: string }) {
+  const n = name.toLowerCase();
+
+  if (n.includes("telegram")) {
+    return (
+      <div className="w-10 h-10 rounded-xl bg-[#0088cc]/10 border border-[#0088cc]/20 flex items-center justify-center shrink-0">
+        <Send className="w-5 h-5 text-[#0088cc] -ml-0.5 mt-0.5" />
+      </div>
+    );
+  }
+  if (n.includes("discord")) {
+    return (
+      <div className="w-10 h-10 rounded-xl bg-[#5865F2]/10 border border-[#5865F2]/20 flex items-center justify-center shrink-0">
+        <MessageSquare className="w-5 h-5 text-[#5865F2]" />
+      </div>
+    );
+  }
+  if (n.includes("slack")) {
+    return (
+      <div className="w-10 h-10 rounded-xl bg-[#E01E5A]/10 border border-[#E01E5A]/20 flex items-center justify-center shrink-0">
+        <Hash className="w-5 h-5 text-[#E01E5A]" />
+      </div>
+    );
+  }
+  if (n.includes("whatsapp")) {
+    return (
+      <div className="w-10 h-10 rounded-xl bg-[#25D366]/10 border border-[#25D366]/20 flex items-center justify-center shrink-0">
+        <Phone className="w-5 h-5 text-[#25D366]" />
+      </div>
+    );
+  }
+  if (n.includes("email") || n.includes("mail")) {
+    return (
+      <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center shrink-0">
+        <Mail className="w-5 h-5 text-amber-500" />
+      </div>
+    );
+  }
+
   const label = name.charAt(0).toUpperCase();
   return (
-    <div className="w-9 h-9 rounded-lg bg-white/[0.06] border border-white/[0.08] flex items-center justify-center text-sm font-bold text-text-secondary shrink-0">
+    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-slate-50 to-slate-100 border border-slate-200/60 flex items-center justify-center text-base font-bold text-slate-500 shrink-0">
       {label}
     </div>
   );
 }
 
-function StatusBadge({ enabled, running }: { enabled: boolean; running: boolean }) {
+function StatusIndicator({ enabled, running }: { enabled: boolean; running: boolean }) {
   if (running) {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-green-muted text-green">
-        <span className="w-1.5 h-1.5 rounded-full bg-green animate-pulse" />
-        Connected
-      </span>
-    );
+    return <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" title="Connected" />;
   }
   if (enabled) {
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-yellow-muted text-yellow">
-        <span className="w-1.5 h-1.5 rounded-full bg-yellow" />
-        Enabled
-      </span>
-    );
+    return <div className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]" title="Enabled (Not Running)" />;
   }
-  return (
-    <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-white/[0.04] text-text-muted">
-      <span className="w-1.5 h-1.5 rounded-full bg-text-muted/40" />
-      Disabled
-    </span>
-  );
+  return <div className="w-2.5 h-2.5 rounded-full bg-slate-300" title="Disabled" />;
 }
 
 function FieldInput({
@@ -80,14 +103,12 @@ function FieldInput({
       <button
         type="button"
         onClick={() => onChange(!value)}
-        className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
-          value ? "bg-green" : "bg-white/[0.1]"
-        }`}
+        className={`relative w-12 h-6 rounded-full transition-colors cursor-pointer ${value ? "bg-emerald-500" : "bg-slate-200"
+          }`}
       >
         <span
-          className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-            value ? "translate-x-5.5" : "translate-x-0.5"
-          }`}
+          className={`absolute top-[3px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform ${value ? "translate-x-[26px]" : "translate-x-[3px]"
+            }`}
         />
       </button>
     );
@@ -96,7 +117,7 @@ function FieldInput({
   if (field.type === "list") {
     const items = Array.isArray(value) ? (value as string[]) : [];
     return (
-      <div className="space-y-2">
+      <div className="space-y-3">
         {items.map((item, i) => (
           <div key={i} className="flex gap-2">
             <Input
@@ -107,7 +128,7 @@ function FieldInput({
                 onChange(next);
               }}
               placeholder={field.placeholder}
-              className="flex-1"
+              className="flex-1 bg-slate-50/50 border-slate-200 focus:bg-white h-11 rounded-xl shadow-sm text-base"
             />
             <Button
               type="button"
@@ -116,21 +137,21 @@ function FieldInput({
               onClick={() => {
                 onChange(items.filter((_, j) => j !== i));
               }}
-              className="shrink-0 h-10 w-10 text-text-muted hover:text-red"
+              className="shrink-0 h-11 w-11 text-slate-400 hover:text-red-500 rounded-xl"
             >
-              <X className="w-4 h-4" />
+              <X className="w-5 h-5" />
             </Button>
           </div>
         ))}
         <Button
           type="button"
-          variant="ghost"
+          variant="outline"
           size="sm"
           onClick={() => onChange([...items, ""])}
-          className="text-text-muted"
+          className="text-slate-500 font-bold border-slate-200 hover:bg-slate-50 rounded-xl"
         >
-          <Plus className="w-3.5 h-3.5 mr-1.5" />
-          Add
+          <Plus className="w-4 h-4 mr-1.5" />
+          Add Item
         </Button>
       </div>
     );
@@ -144,14 +165,14 @@ function FieldInput({
           value={(value as string) || ""}
           onChange={(e) => onChange(e.target.value)}
           placeholder={field.placeholder}
-          className="pr-10"
+          className="pr-12 bg-slate-50/50 border-slate-200 focus:bg-white h-11 rounded-xl shadow-sm text-base"
         />
         <button
           type="button"
           onClick={() => setShowPassword(!showPassword)}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
         >
-          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
         </button>
       </div>
     );
@@ -165,24 +186,25 @@ function FieldInput({
         onChange(field.type === "number" ? Number(e.target.value) : e.target.value)
       }
       placeholder={field.placeholder}
+      className="bg-slate-50/50 border-slate-200 focus:bg-white h-11 rounded-xl shadow-sm text-base"
     />
   );
 }
 
-function ChannelCard({
+function ChannelDetail({
   channel,
   onRefresh,
 }: {
   channel: ChannelInfo;
   onRefresh: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [dirty, setDirty] = useState(false);
 
+  // Reload form data when channel changes
   useEffect(() => {
     const initial: Record<string, unknown> = {};
     for (const field of channel.fields) {
@@ -240,141 +262,145 @@ function ChannelCard({
   };
 
   return (
-    <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] overflow-hidden transition-colors hover:bg-white/[0.03]">
-      {/* Header - always visible */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-3 px-4 py-3.5 cursor-pointer"
-      >
+    <div className="flex flex-col h-full bg-slate-50/50 border border-slate-200 rounded-3xl overflow-hidden shadow-sm animate-fade-in">
+      {/* Detail Header */}
+      <div className="flex items-center gap-5 px-8 pt-8 pb-6 bg-white border-b border-slate-200">
         <ChannelIcon name={channel.name} />
-        <div className="flex-1 min-w-0 text-left">
-          <div className="text-sm font-medium text-text-primary">{channel.label}</div>
-          <div className="text-xs text-text-muted mt-0.5 truncate">
-            {channel.description}
-          </div>
-        </div>
-        <StatusBadge enabled={channel.enabled} running={channel.running} />
-        {expanded ? (
-          <ChevronUp className="w-4 h-4 text-text-muted shrink-0" />
-        ) : (
-          <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
-        )}
-      </button>
-
-      {/* Expanded config */}
-      {expanded && (
-        <div className="border-t border-white/[0.06] px-4 py-4 space-y-4">
-          {/* Enable toggle */}
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-text-secondary">Enable channel</span>
-            <button
-              type="button"
-              onClick={() => updateField("enabled", !formData["enabled"])}
-              className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
-                formData["enabled"] ? "bg-green" : "bg-white/[0.1]"
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
-                  formData["enabled"] ? "translate-x-5.5" : "translate-x-0.5"
-                }`}
-              />
-            </button>
-          </div>
-
-          {/* Fields */}
-          {channel.fields.map((field) => (
-            <div key={field.key}>
-              <label className="flex items-center gap-1.5 text-sm text-text-secondary mb-1.5">
-                {field.label}
-                {field.required && <span className="text-red text-xs">*</span>}
-              </label>
-              <FieldInput
-                field={field}
-                value={formData[field.key]}
-                onChange={(val) => updateField(field.key, val)}
-              />
-              {field.help && (
-                <p className="text-xs text-text-muted mt-1">{field.help}</p>
-              )}
-            </div>
-          ))}
-
-          {/* Docs link */}
-          {channel.docs_url && (
-            <a
-              href={channel.docs_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-xs text-green/70 hover:text-green transition-colors"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              Setup instructions
-            </a>
-          )}
-
-          {/* Action buttons */}
-          <div className="flex gap-2 pt-2 border-t border-white/[0.04]">
-            <Button
-              size="sm"
-              onClick={handleSave}
-              disabled={!dirty || saving}
-              className="flex-1"
-            >
-              {saving ? (
-                <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
-              ) : (
-                <Save className="w-4 h-4 mr-1.5" />
-              )}
-              {dirty ? "Save" : "Saved"}
-            </Button>
-
-            {channel.running ? (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleStop}
-                disabled={stopping}
-                className="text-red border-red/20 hover:bg-red/10"
-              >
-                {stopping ? (
-                  <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
-                ) : (
-                  <Square className="w-3.5 h-3.5 mr-1.5" />
-                )}
-                Stop
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={handleStart}
-                disabled={starting || dirty || !formData["enabled"]}
-                className="text-green border-green/20 hover:bg-green/10"
-              >
-                {starting ? (
-                  <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
-                ) : (
-                  <Play className="w-3.5 h-3.5 mr-1.5" />
-                )}
-                Start
-              </Button>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3">
+            <h2 className="text-xl font-bold text-slate-900 leading-tight">{channel.label}</h2>
+            {channel.running && (
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200/50">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Connected
+              </span>
             )}
           </div>
+          <p className="text-sm font-medium text-slate-500 mt-1">
+            {channel.description}
+          </p>
         </div>
-      )}
+      </div>
+
+      {/* Detail Scrollable Body */}
+      <div className="flex-1 overflow-y-auto p-8 space-y-6">
+        <div className="flex items-center justify-between bg-white p-6 rounded-2xl border border-slate-200 shadow-[0_2px_8px_rgb(0,0,0,0.02)]">
+          <div>
+            <span className="text-base font-bold text-slate-900 block">Enable Channel</span>
+            <span className="text-sm text-slate-500 font-medium">Allow this channel to start with the agent</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => updateField("enabled", !formData["enabled"])}
+            className={`relative w-14 h-7 rounded-full transition-colors cursor-pointer ${formData["enabled"] ? "bg-emerald-500" : "bg-slate-200"
+              }`}
+          >
+            <span
+              className={`absolute top-[3px] w-[22px] h-[22px] rounded-full bg-white shadow transition-transform ${formData["enabled"] ? "translate-x-[31px]" : "translate-x-[3px]"
+                }`}
+            />
+          </button>
+        </div>
+
+        <div className="space-y-6 bg-white p-8 rounded-2xl border border-slate-200 shadow-[0_2px_8px_rgb(0,0,0,0.02)]">
+          {channel.fields.length === 0 ? (
+            <div className="text-sm text-slate-500 text-center py-4">No configuration needed for this channel.</div>
+          ) : (
+            channel.fields.map((field) => (
+              <div key={field.key}>
+                <label className="flex items-center gap-1.5 text-sm font-bold text-slate-700 mb-2">
+                  {field.label}
+                  {field.required && <span className="text-red-500 text-xs">*</span>}
+                </label>
+                <div className="w-full">
+                  <FieldInput
+                    field={field}
+                    value={formData[field.key]}
+                    onChange={(val) => updateField(field.key, val)}
+                  />
+                  {field.help && (
+                    <p className="text-xs font-medium text-slate-400 mt-2 leading-relaxed">{field.help}</p>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Detail Footer */}
+      <div className="bg-white border-t border-slate-200 p-6 flex flex-col xl:flex-row items-center justify-between gap-5">
+        {channel.docs_url ? (
+          <a
+            href={channel.docs_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-emerald-600 transition-colors shrink-0"
+          >
+            <ExternalLink className="w-4 h-4" />
+            Setup instructions
+          </a>
+        ) : <div className="hidden xl:block" />}
+
+        <div className="flex items-center gap-3 w-full xl:w-auto">
+          {channel.running ? (
+            <Button
+              onClick={handleStop}
+              disabled={stopping}
+              className="flex-1 xl:flex-none bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl px-6 h-12 shadow-sm transition-all font-bold"
+            >
+              {stopping ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Square className="w-4 h-4 mr-2 fill-current" />
+              )}
+              Stop Channel
+            </Button>
+          ) : (
+            <Button
+              onClick={handleStart}
+              disabled={starting || dirty || !formData["enabled"]}
+              className="flex-1 xl:flex-none bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl px-6 h-12 shadow-sm transition-all font-bold disabled:opacity-50"
+            >
+              {starting ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4 mr-2 fill-current" />
+              )}
+              Start Channel
+            </Button>
+          )}
+
+          <Button
+            onClick={handleSave}
+            disabled={!dirty || saving}
+            className="flex-1 xl:flex-none px-8 h-12 text-white bg-slate-900 hover:bg-slate-800 border-none rounded-xl shadow-md font-bold transition-all disabled:opacity-50"
+          >
+            {saving ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              dirty ? "Save Config" : "Saved"
+            )}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
 
-export function ChannelsPanel({ open, onClose }: Props) {
+export function ChannelsPanel() {
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [loading, setLoading] = useState(false);
+  const [selectedChannelName, setSelectedChannelName] = useState<string | null>(null);
 
   const loadChannels = async () => {
     setLoading(true);
     try {
-      setChannels(await listChannels());
+      const data = await listChannels();
+      setChannels(data);
+      if (data.length > 0 && !selectedChannelName) {
+        setSelectedChannelName(data[0].name);
+      }
     } catch (e) {
       toast("error", `Failed to load channels: ${(e as Error).message}`);
     }
@@ -382,43 +408,123 @@ export function ChannelsPanel({ open, onClose }: Props) {
   };
 
   useEffect(() => {
-    if (open) loadChannels();
-  }, [open]);
+    loadChannels();
+  }, []);
 
   const connectedCount = channels.filter((c) => c.running).length;
+  const selectedChannel = channels.find(c => c.name === selectedChannelName);
 
   return (
-    <PanelWrapper open={open} onClose={onClose} title="Channels" icon={Radio}>
-      <div className="flex-1 overflow-y-auto p-5 space-y-3">
-        {/* Summary */}
-        {!loading && channels.length > 0 && (
-          <div className="flex items-center gap-2 px-1 pb-2 text-xs text-text-muted">
-            <Radio className="w-3.5 h-3.5" />
-            {connectedCount > 0
-              ? `${connectedCount} channel${connectedCount > 1 ? "s" : ""} connected`
-              : "No channels connected"}
+    <div className="flex-1 flex flex-col h-full overflow-hidden">
+      {/* Header Area */}
+      <div className="px-8 pt-8 pb-6 shrink-0">
+        <div className="content-container-wide">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center">
+              <Radio className="w-5 h-5 text-emerald-600" />
+            </div>
+            <div>
+              <h1 className="font-display text-2xl font-bold text-slate-900">Channels</h1>
+              <div className="flex items-center gap-3 mt-1">
+                <p className="text-sm font-medium text-slate-500">
+                  Connect your agent to messaging platforms
+                </p>
+                {channels.length > 0 && (
+                  <>
+                    <span className="w-1 h-1 rounded-full bg-slate-300" />
+                    <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
+                      {connectedCount} Active
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
-        )}
-
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <div className="w-5 h-5 border-2 border-green/30 border-t-green rounded-full animate-spin" />
-          </div>
-        ) : channels.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-text-muted">
-            <Radio className="w-10 h-10 mb-3 opacity-20" />
-            <p className="text-sm">No channels available</p>
-          </div>
-        ) : (
-          channels.map((channel) => (
-            <ChannelCard
-              key={channel.name}
-              channel={channel}
-              onRefresh={loadChannels}
-            />
-          ))
-        )}
+        </div>
       </div>
-    </PanelWrapper>
+
+      {/* Main Content Area */}
+      <div className="flex-1 overflow-hidden px-8 pb-8">
+        <div className="content-container-wide h-full">
+          {loading ? (
+            <div className="flex items-center justify-center h-full">
+              <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
+            </div>
+          ) : channels.length === 0 ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 h-full flex items-center justify-center">
+              <div className="flex flex-col items-center justify-center text-slate-400">
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center mb-5">
+                  <Radio className="w-8 h-8 text-emerald-500 opacity-60" />
+                </div>
+                <p className="text-base font-bold text-slate-900">No channels available</p>
+                <p className="text-sm mt-1.5 text-slate-500 font-medium">Add connection plugins to see them here.</p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex h-full gap-8 animate-fade-in-up">
+              {/* Master List (Left Sidebar) */}
+              <div className="w-80 shrink-0 flex flex-col h-full bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-sm">
+                <div className="px-5 py-4 border-b border-slate-100/80 bg-slate-50/50">
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+                    Available Channels
+                  </h3>
+                </div>
+                <div className="flex-1 overflow-y-auto p-3 space-y-1.5 scrollbar-thin">
+                  {channels.map((channel) => {
+                    const isActive = selectedChannelName === channel.name;
+                    return (
+                      <button
+                        key={channel.name}
+                        onClick={() => setSelectedChannelName(channel.name)}
+                        className={cn(
+                          "w-full flex items-center gap-3.5 px-3 py-3 rounded-2xl transition-all cursor-pointer text-left border",
+                          isActive
+                            ? "bg-slate-900 border-slate-900 shadow-md transform scale-[1.02]"
+                            : "bg-transparent border-transparent hover:bg-slate-50 hover:border-slate-200"
+                        )}
+                      >
+                        <div className={cn(
+                          "transition-transform",
+                          isActive ? "scale-90 opacity-90 brightness-200 grayscale" : "scale-100"
+                        )}>
+                          <ChannelIcon name={channel.name} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className={cn(
+                            "text-sm font-bold truncate leading-tight",
+                            isActive ? "text-white" : "text-slate-900"
+                          )}>
+                            {channel.label}
+                          </div>
+                        </div>
+                        <StatusIndicator enabled={channel.enabled} running={channel.running} />
+                        <ChevronRight className={cn(
+                          "w-4 h-4 shrink-0 transition-colors",
+                          isActive ? "text-slate-400" : "text-transparent"
+                        )} />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Detail View (Right Panel) */}
+              <div className="flex-1 h-full min-w-0">
+                {selectedChannel ? (
+                  <ChannelDetail channel={selectedChannel} onRefresh={loadChannels} />
+                ) : (
+                  <div className="h-full bg-slate-50/50 border border-slate-200 rounded-3xl flex items-center justify-center">
+                    <div className="text-center text-slate-400">
+                      <Settings2 className="w-10 h-10 mx-auto mb-3 opacity-20" />
+                      <p className="text-sm font-medium">Select a channel to configure</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

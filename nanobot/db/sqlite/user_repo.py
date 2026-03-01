@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, date
+from datetime import date, datetime
 from typing import Any
 
 import aiosqlite
-
 
 _DEFAULT_AGENT_CONFIG = {
     "model": "anthropic/claude-sonnet-4-20250514",
@@ -32,7 +31,8 @@ _DEFAULT_LIMITS = {
 _DEFAULT_TOOLS = [
     "web_search", "web_fetch", "exec", "read_file",
     "write_file", "edit_file", "list_dir", "spawn", "cron", "message", "save_skill",
-    "save_memory", "search_memory",
+    "save_memory", "search_memory", "rag_search", "rag_ingest",
+    "computer", "browser",
 ]
 
 

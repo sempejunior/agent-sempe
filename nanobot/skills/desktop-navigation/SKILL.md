@@ -1,7 +1,8 @@
 ---
 name: desktop-navigation
 description: Navigate the desktop, open browsers, click elements, fill forms, and interact with GUI applications using browser, screenshot, and computer tools.
-metadata: {"nanobot":{"emoji":"🖥️","requires":{"env":["DISPLAY"]}}}
+always: true
+metadata: {"nanobot":{"emoji":"🖥️","always":true,"requires":{"env":["DISPLAY"]}}}
 ---
 
 # Desktop Navigation

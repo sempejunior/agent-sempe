@@ -10,9 +10,9 @@ const icons = {
 };
 
 const styles = {
-  success: "border-green/30 bg-green/10 text-green-light",
-  error: "border-red/30 bg-red/10 text-red",
-  info: "border-white/10 bg-white/[0.06] text-text-primary",
+  success: "border-green/20 bg-emerald-50 text-emerald-700",
+  error: "border-red/20 bg-red-50 text-red-600",
+  info: "border-slate-200 bg-white text-text-primary",
 };
 
 function ToastItem({ toast }: { toast: Toast }) {
@@ -21,12 +21,12 @@ function ToastItem({ toast }: { toast: Toast }) {
   return (
     <div
       className={cn(
-        "flex items-center gap-3 px-4 py-3 rounded-lg border backdrop-blur-xl shadow-lg animate-toast-in",
-        styles[toast.type]
+        "flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg backdrop-blur-sm animate-toast-in",
+        styles[toast.type],
       )}
     >
       <Icon className="w-4 h-4 shrink-0" />
-      <span className="text-sm flex-1">{toast.message}</span>
+      <span className="text-sm flex-1 font-medium">{toast.message}</span>
       <button
         onClick={() => removeToast(toast.id)}
         className="p-0.5 hover:opacity-70 cursor-pointer shrink-0"

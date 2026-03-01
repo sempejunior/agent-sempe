@@ -94,7 +94,28 @@ async def build_user_context(
     tools_enabled: list[str] = user_doc.get("tools_enabled", [])
     limits: dict[str, Any] = user_doc.get("limits", {})
 
+    from nanobot.agent.retriever import RetrieverStore
     memory = MemoryStore(memory_repo=repos.memories, user_id=user_id)
+    rag_config = agent_config.get("rag", {})
+    retriever: RetrieverStore | None = None
+    if rag_config.get("enabled"):
+        backend_name = rag_config.get("default_backend", "local")
+        backends = rag_config.get("backends", {})
+        backend_cfg = backends.get(backend_name, {})
+        if backend_cfg.get("type") == "http" and backend_cfg.get("api_url"):
+            from nanobot.agent.retriever import HttpRetriever
+            http_repo = HttpRetriever(
+                api_url=backend_cfg["api_url"],
+                api_key=backend_cfg.get("api_key", ""),
+                headers=backend_cfg.get("headers", {}),
+                search_path=backend_cfg.get("search_path", "/search"),
+                ingest_path=backend_cfg.get("ingest_path", "/ingest"),
+                delete_path=backend_cfg.get("delete_path", "/delete"),
+                timeout=backend_cfg.get("timeout", 30),
+            )
+            retriever = RetrieverStore(retriever_repo=http_repo, user_id=user_id)
+        else:
+            retriever = RetrieverStore(retriever_repo=repos.retriever, user_id=user_id)
     skills = SkillsLoader(
         skill_repo=repos.skills,
         user_id=user_id,
@@ -113,6 +134,7 @@ async def build_user_context(
         user_id=user_id,
         language=agent_config.get("language", ""),
         custom_instructions=agent_config.get("custom_instructions", ""),
+        rag_enabled=retriever is not None,
     )
     tools = build_tool_registry(
         tools_enabled=tools_enabled,
@@ -125,6 +147,7 @@ async def build_user_context(
         user_id=user_id,
         skill_repo=repos.skills,
         memory_store=memory,
+        retriever_store=retriever,
     )
 
     return UserContext(
@@ -156,6 +179,7 @@ def build_tool_registry(
     user_id: str | None = None,
     skill_repo: Any | None = None,
     memory_store: Any | None = None,
+    retriever_store: Any | None = None,
 ) -> ToolRegistry:
     """Build a ToolRegistry with only the enabled tools."""
     from nanobot.agent.tools.cron import CronTool
@@ -167,8 +191,8 @@ def build_tool_registry(
     )
     from nanobot.agent.tools.message import MessageTool
     from nanobot.agent.tools.shell import ExecTool
-    from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
     from nanobot.agent.tools.skill import SaveSkillTool
+    from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 
     registry = ToolRegistry()
     allowed_dir = workspace if restrict_to_workspace else None
@@ -194,12 +218,17 @@ def build_tool_registry(
         factories["save_memory"] = lambda: SaveMemoryTool(memory_store)
         factories["search_memory"] = lambda: SearchMemoryTool(memory_store)
 
+    if retriever_store:
+        from nanobot.agent.tools.rag import RAGIngestTool, RAGSearchTool
+        factories["rag_search"] = lambda: RAGSearchTool(retriever_store)
+        factories["rag_ingest"] = lambda: RAGIngestTool(retriever_store)
+
     if cron_service:
         factories["cron"] = lambda: CronTool(cron_service)
 
     if os.environ.get("DISPLAY"):
-        from nanobot.agent.tools.computer import ComputerTool
         from nanobot.agent.tools.browser import BrowserTool
+        from nanobot.agent.tools.computer import ComputerTool
         factories["computer"] = lambda: ComputerTool()
         factories["browser"] = lambda: BrowserTool()
 
@@ -215,6 +244,13 @@ def build_tool_registry(
             registry.register(SaveMemoryTool(memory_store))
         if not registry.has("search_memory"):
             registry.register(SearchMemoryTool(memory_store))
+
+    if retriever_store:
+        from nanobot.agent.tools.rag import RAGIngestTool, RAGSearchTool
+        if not registry.has("rag_search"):
+            registry.register(RAGSearchTool(retriever_store))
+        if not registry.has("rag_ingest"):
+            registry.register(RAGIngestTool(retriever_store))
 
     if os.environ.get("DISPLAY"):
         from nanobot.agent.tools.screenshot import ScreenshotTool

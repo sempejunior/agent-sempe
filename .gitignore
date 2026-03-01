@@ -3,7 +3,8 @@
 *.pyc
 dist/
 build/
-docs/
+docs/_build/
+!docs/architecture/
 *.egg-info/
 *.egg
 *.pyc

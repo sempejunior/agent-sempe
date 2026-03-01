@@ -28,9 +28,16 @@ PROMPT_FILES = {
         "hint": "Tell the agent about yourself: your name, role, company, "
                 "projects, preferences, and anything relevant.",
     },
+    "RAG.md": {
+        "label": "RAG",
+        "description": "Knowledge base behavior: when to search, ingest, and cite.",
+        "hint": "Customize when the agent should use the knowledge base. "
+                "Examples: use as fallback only, always search before answering, "
+                "never ingest without asking, etc.",
+    },
 }
 
-PROMPT_ORDER = ["SOUL.md", "AGENTS.md", "USER.md"]
+PROMPT_ORDER = ["SOUL.md", "AGENTS.md", "USER.md", "RAG.md"]
 
 
 def load_base_prompt(filename: str) -> str:

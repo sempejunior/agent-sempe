@@ -20,7 +20,6 @@ export function ChatInput() {
     adjustHeight();
   }, [text, adjustHeight]);
 
-  // Re-focus textarea ONLY after a send completes (sending: true → false)
   useEffect(() => {
     if (wasSendingRef.current && !sending) {
       textareaRef.current?.focus();
@@ -46,9 +45,9 @@ export function ChatInput() {
   };
 
   return (
-    <div className="border-t border-white/[0.06] bg-white/[0.02] backdrop-blur-md px-4 py-4">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex items-end gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.03] p-3 focus-within:border-green/40 focus-within:ring-2 focus-within:ring-green/15 focus-within:shadow-[0_0_20px_rgba(17,199,111,0.1)] transition-all duration-200">
+    <div className="border-t border-slate-100 bg-white/80 backdrop-blur-sm px-4 py-4">
+      <div className="w-full px-4 md:px-8 xl:px-24 mx-auto">
+        <div className="flex items-end gap-3 rounded-[20px] border border-slate-200 bg-white p-2 pr-3 focus-within:border-emerald-300 focus-within:ring-4 focus-within:ring-emerald-500/10 focus-within:shadow-lg focus-within:shadow-emerald-500/5 transition-all duration-300 shadow-sm">
           <textarea
             ref={textareaRef}
             value={text}
@@ -57,13 +56,13 @@ export function ChatInput() {
             placeholder={connected ? "Send a message..." : "Reconnecting..."}
             disabled={sending}
             rows={2}
-            className="flex-1 bg-transparent text-text-primary placeholder:text-text-muted text-[15px] leading-relaxed resize-none focus:outline-none px-2 py-2 max-h-[240px]"
+            className="flex-1 bg-transparent text-slate-800 placeholder:text-slate-400 text-base leading-relaxed resize-none focus:outline-none pl-3 py-2.5 max-h-[240px]"
           />
           <Button
             size="icon"
             onClick={handleSubmit}
             disabled={!text.trim() || sending || !connected}
-            className="shrink-0 w-10 h-10"
+            className="shrink-0 w-10 h-10 rounded-xl"
           >
             {sending ? (
               <Loader2 className="w-5 h-5 animate-spin" />
@@ -72,9 +71,6 @@ export function ChatInput() {
             )}
           </Button>
         </div>
-        <p className="text-xs text-text-muted text-center mt-2 opacity-60">
-          nanobot can make mistakes. Verify important information.
-        </p>
       </div>
     </div>
   );

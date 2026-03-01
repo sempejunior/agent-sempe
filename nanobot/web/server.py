@@ -108,6 +108,13 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             except Exception:
                 pass
 
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        if isinstance(exc, HTTPException):
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        logger.exception("Unhandled error on {} {}", request.method, request.url.path)
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
     @app.get("/api/health")
     async def health():
         return {"status": "ok"}
@@ -263,6 +270,9 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             name=body.get("name", "Web job"),
             schedule=sched,
             message=body.get("message", ""),
+            deliver=bool(body.get("deliver", False)),
+            channel=body.get("channel"),
+            to=body.get("to"),
             user_id=user["user_id"],
         )
         return {"id": job.id, "name": job.name}
@@ -272,6 +282,24 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         user = await _require_user(request)
         ok = await app.state.cron.remove_job(job_id, user_id=user["user_id"])
         return {"ok": ok}
+
+    @app.put("/api/cron/{job_id}/enable")
+    async def enable_cron(request: Request, job_id: str):
+        user = await _require_user(request)
+        body = await request.json()
+        enabled = bool(body.get("enabled", True))
+        job = await app.state.cron.enable_job(job_id, enabled=enabled, user_id=user["user_id"])
+        if not job:
+            raise HTTPException(404, "Job not found")
+        return {"ok": True, "enabled": enabled}
+
+    @app.post("/api/cron/{job_id}/run")
+    async def run_cron(request: Request, job_id: str):
+        user = await _require_user(request)
+        ok = await app.state.cron.run_job(job_id, force=True, user_id=user["user_id"])
+        if not ok:
+            raise HTTPException(404, "Job not found or could not be run")
+        return {"ok": True}
 
     @app.get("/api/config")
     async def get_config(request: Request):
@@ -345,6 +373,27 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             logger.warning("MCP reload failed (config saved anyway): {}", e)
 
         return {"ok": True}
+
+    @app.get("/api/skills/builtin")
+    async def get_builtin_skills():
+        from nanobot.agent.skills import SkillsLoader
+        loader = SkillsLoader(workspace=config.workspace_path)
+        all_skills = loader._list_skills_fs(filter_unavailable=False)
+        result = []
+        for s in all_skills:
+            if s.get("source") != "builtin":
+                continue
+            meta_raw = await loader.get_skill_metadata(s["name"]) or {}
+            nanobot_meta = loader._parse_nanobot_metadata(meta_raw.get("metadata", ""))
+            content = await loader.load_skill(s["name"]) or ""
+            result.append({
+                "name": s["name"],
+                "description": meta_raw.get("description", s["name"]),
+                "available": loader._check_requirements(nanobot_meta),
+                "always": nanobot_meta.get("always", False) or meta_raw.get("always") == "true",
+                "content": content,
+            })
+        return result
 
     @app.get("/api/skills")
     async def get_skills(request: Request):
@@ -428,6 +477,40 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         body = await request.json()
         content = body.get("content", "")
         await app.state.repos.memories.save_long_term(uid, content)
+        return {"ok": True}
+
+    @app.get("/api/config/rag")
+    async def get_rag_config(request: Request):
+        user = await _require_user(request)
+        agent_cfg = user.get("agent_config", {})
+        rag = dict(agent_cfg.get("rag", {"enabled": False, "default_backend": "local", "backends": {}}))
+        backends = dict(rag.get("backends", {}))
+        for name, b in backends.items():
+            b = dict(b)
+            if b.get("api_key"):
+                key = b["api_key"]
+                b["api_key"] = f"{'*' * max(0, len(key) - 4)}{key[-4:]}" if len(key) > 4 else "****"
+            backends[name] = b
+        rag["backends"] = backends
+        return rag
+
+    @app.put("/api/config/rag")
+    async def update_rag_config(request: Request):
+        user = await _require_user(request)
+        body = await request.json()
+        agent_cfg = user.get("agent_config", {})
+        current_rag = agent_cfg.get("rag", {})
+        current_backends = current_rag.get("backends", {})
+        new_backends = body.get("backends", {})
+        for name, b in new_backends.items():
+            if "*" in b.get("api_key", ""):
+                old = current_backends.get(name, {})
+                b["api_key"] = old.get("api_key", "")
+        body["backends"] = new_backends
+        agent_cfg["rag"] = body
+        await app.state.repos.users.update(user["user_id"], {"agent_config": agent_cfg})
+        if hasattr(app.state, "agent") and hasattr(app.state.agent, "_user_contexts"):
+            app.state.agent._user_contexts.pop(user["user_id"], None)
         return {"ok": True}
 
     @app.get("/api/config/prompts")

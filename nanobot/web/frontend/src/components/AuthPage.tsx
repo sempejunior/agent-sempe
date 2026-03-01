@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useStore } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Bot, LogIn, UserPlus } from "lucide-react";
+import { Bot, LogIn, UserPlus, Zap, BrainCircuit, Shield } from "lucide-react";
 
 export function AuthPage() {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -23,43 +23,75 @@ export function AuthPage() {
 
   return (
     <div className="flex h-full bg-background">
-      {/* Left side - Branding (hidden on mobile) */}
-      <div className="hidden lg:flex w-1/2 relative overflow-hidden bg-gradient-to-br from-[#0D1117] via-[#0f1a14] to-[#0D1117] items-center justify-center">
-        {/* Decorative orbs */}
-        <div className="absolute top-1/4 left-1/4 w-64 h-64 rounded-full bg-green/10 blur-3xl animate-float-orb" />
-        <div className="absolute bottom-1/3 right-1/4 w-48 h-48 rounded-full bg-green/8 blur-3xl animate-float-orb-delayed" />
-        <div className="absolute top-2/3 left-1/3 w-32 h-32 rounded-full bg-green/5 blur-3xl animate-float-orb-slow" />
+      {/* Left side - Branding */}
+      <div className="hidden lg:flex w-1/2 relative overflow-hidden items-center justify-center bg-gradient-to-br from-emerald-400 via-green to-emerald-600">
+        {/* Grid overlay */}
+        <div
+          className="absolute inset-0 opacity-[0.07]"
+          style={{
+            backgroundImage: "radial-gradient(circle, white 1px, transparent 1px)",
+            backgroundSize: "32px 32px",
+          }}
+        />
 
-        <div className="relative z-10 flex flex-col items-center text-center px-12">
-          <div className="w-24 h-24 rounded-3xl bg-green/10 border border-green/20 flex items-center justify-center mb-8 shadow-[0_0_40px_rgba(17,199,111,0.2)]">
-            <Bot className="w-12 h-12 text-green" />
+        {/* Animated orbs */}
+        <div className="absolute top-1/4 left-1/4 w-72 h-72 rounded-full bg-white/10 blur-3xl animate-float-orb" />
+        <div className="absolute bottom-1/3 right-1/4 w-56 h-56 rounded-full bg-white/8 blur-3xl animate-float-orb-delayed" />
+        <div className="absolute top-2/3 left-1/3 w-40 h-40 rounded-full bg-white/5 blur-3xl animate-float-orb-slow" />
+
+        {/* Diagonal accent line */}
+        <div className="absolute top-0 right-0 w-[1px] h-full bg-gradient-to-b from-transparent via-white/20 to-transparent rotate-12 translate-x-20" />
+
+        <div className="relative z-10 flex flex-col items-center text-center px-12 animate-fade-in-up">
+          <div className="w-24 h-24 rounded-3xl bg-white/15 border border-white/25 flex items-center justify-center mb-8 shadow-2xl backdrop-blur-sm">
+            <Bot className="w-12 h-12 text-white" />
           </div>
-          <h1 className="text-4xl font-bold text-text-primary mb-3 tracking-tight">nanobot</h1>
-          <p className="text-lg text-text-secondary font-light">AI Agent Platform</p>
-          <div className="mt-8 w-16 h-px bg-gradient-to-r from-transparent via-green/40 to-transparent" />
+          <h1 className="font-display text-5xl font-extrabold text-white mb-3 tracking-tight">
+            Agent Semp&eacute;
+          </h1>
+          <p className="text-lg text-white/80 font-light">Your AI Agent Platform</p>
+
+          <div className="mt-10 w-16 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent" />
+
+          {/* Feature pills */}
+          <div className="mt-8 flex flex-col gap-3">
+            {[
+              { icon: Zap, text: "Autonomous tool execution" },
+              { icon: BrainCircuit, text: "Persistent memory & learning" },
+              { icon: Shield, text: "Multi-channel integration" },
+            ].map(({ icon: Icon, text }) => (
+              <div
+                key={text}
+                className="flex items-center gap-3 bg-white/10 border border-white/15 rounded-xl px-4 py-2.5 backdrop-blur-sm"
+              >
+                <Icon className="w-4 h-4 text-white/80" />
+                <span className="text-sm text-white/90 font-medium">{text}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* Right side - Form */}
-      <div className="flex-1 flex items-center justify-center px-6">
-        <div className="w-full max-w-md">
-          {/* Mobile logo (visible only on small screens) */}
+      <div className="flex-1 flex items-center justify-center px-6 bg-gradient-to-b from-slate-50 to-background">
+        <div className="w-full max-w-md animate-fade-in-up">
+          {/* Mobile logo */}
           <div className="flex flex-col items-center mb-8 lg:hidden">
-            <div className="w-14 h-14 rounded-2xl bg-green/10 border border-green/20 flex items-center justify-center mb-3 shadow-[0_0_30px_rgba(17,199,111,0.15)]">
+            <div className="w-14 h-14 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center mb-3 shadow-sm">
               <Bot className="w-7 h-7 text-green" />
             </div>
-            <h1 className="text-xl font-bold text-text-primary">nanobot</h1>
+            <h1 className="font-display text-xl font-bold text-text-primary">Agent Semp&eacute;</h1>
           </div>
 
-          {/* Glass card */}
-          <div className="backdrop-blur-xl bg-white/[0.03] rounded-2xl border border-white/[0.06] p-8 shadow-[0_0_40px_rgba(0,0,0,0.3)]">
+          {/* White card */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-[0_8px_30px_rgb(0,0,0,0.04)]">
             {/* Tab toggle */}
-            <div className="flex rounded-xl bg-white/[0.04] border border-white/[0.06] p-1 mb-8">
+            <div className="flex rounded-xl bg-slate-100 border border-slate-200 p-1 mb-8">
               <button
                 onClick={() => setMode("login")}
-                className={`flex-1 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 cursor-pointer ${
+                className={`flex-1 py-2.5 text-sm font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
                   mode === "login"
-                    ? "bg-green text-black shadow-[0_0_15px_rgba(17,199,111,0.3)]"
+                    ? "bg-gradient-to-b from-green to-green-hover text-white shadow-sm"
                     : "text-text-secondary hover:text-text-primary"
                 }`}
               >
@@ -67,9 +99,9 @@ export function AuthPage() {
               </button>
               <button
                 onClick={() => setMode("register")}
-                className={`flex-1 py-2.5 text-sm font-medium rounded-lg transition-all duration-200 cursor-pointer ${
+                className={`flex-1 py-2.5 text-sm font-semibold rounded-lg transition-all duration-200 cursor-pointer ${
                   mode === "register"
-                    ? "bg-green text-black shadow-[0_0_15px_rgba(17,199,111,0.3)]"
+                    ? "bg-gradient-to-b from-green to-green-hover text-white shadow-sm"
                     : "text-text-secondary hover:text-text-primary"
                 }`}
               >
@@ -92,7 +124,7 @@ export function AuthPage() {
 
               {mode === "register" && (
                 <>
-                  <div>
+                  <div className="animate-fade-in-up">
                     <label className="block text-sm text-text-secondary mb-2 font-medium">
                       Display Name
                     </label>
@@ -102,7 +134,7 @@ export function AuthPage() {
                       placeholder="Your name (optional)"
                     />
                   </div>
-                  <div>
+                  <div className="animate-fade-in-up stagger-2">
                     <label className="block text-sm text-text-secondary mb-2 font-medium">
                       Email
                     </label>
@@ -117,7 +149,7 @@ export function AuthPage() {
               )}
 
               {authError && (
-                <div className="rounded-lg bg-red-muted/50 border border-red/20 px-4 py-3 text-sm text-red">
+                <div className="rounded-xl bg-red-50 border border-red/20 px-4 py-3 text-sm text-red-600 animate-fade-in">
                   {authError}
                 </div>
               )}
@@ -129,7 +161,7 @@ export function AuthPage() {
                 disabled={authLoading || !userId.trim()}
               >
                 {authLoading ? (
-                  <div className="w-5 h-5 border-2 border-black/30 border-t-black rounded-full animate-spin" />
+                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 ) : mode === "login" ? (
                   <>
                     <LogIn className="w-4 h-4 mr-2" />
@@ -144,6 +176,10 @@ export function AuthPage() {
               </Button>
             </form>
           </div>
+
+          <p className="text-xs text-text-muted text-center mt-6">
+            Powered by Agent Semp&eacute; &middot; AI Agent Platform
+          </p>
         </div>
       </div>
     </div>

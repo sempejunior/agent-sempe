@@ -271,11 +271,34 @@ class MCPServerConfig(Base):
     tool_timeout: int = 30
 
 
+class RAGBackendConfig(Base):
+    """Configuration for a single RAG backend."""
+
+    type: str = "sqlite_fts"
+    api_url: str = ""
+    api_key: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+    collection: str = "default"
+    search_path: str = "/search"
+    ingest_path: str = "/ingest"
+    delete_path: str = "/delete"
+    timeout: int = 30
+
+
+class RAGConfig(Base):
+    """RAG system configuration."""
+
+    enabled: bool = False
+    default_backend: str = "local"
+    backends: dict[str, RAGBackendConfig] = Field(default_factory=dict)
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
     exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    rag: RAGConfig = Field(default_factory=RAGConfig)
     restrict_to_workspace: bool = False
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 

@@ -42,6 +42,16 @@ chromium --display=:99 --no-sandbox --no-first-run --no-default-browser-check \
   --disable-features=ChromeWhatsNewUI \
   "about:blank" &>/dev/null &
 
+# Wait for Chromium CDP port to be ready (up to 30s)
+echo "  Waiting for Chromium CDP on port 9222..."
+for i in $(seq 1 30); do
+  if curl -sf http://localhost:9222/json >/dev/null 2>&1; then
+    echo "  Chromium CDP ready (${i}s)"
+    break
+  fi
+  sleep 1
+done
+
 echo ""
 echo "  ┌──────────────────────────────────────────┐"
 echo "  │  Desktop ready!                          │"

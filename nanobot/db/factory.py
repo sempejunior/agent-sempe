@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         CronRepository,
         MemoryRepository,
         MessageRepository,
+        RetrieverRepository,
         SessionRepository,
         SkillRepository,
         UserRepository,
@@ -34,6 +35,7 @@ class RepositoryFactory:
     cron: CronRepository
     channel_bindings: ChannelBindingRepository
     audit: AuditRepository
+    retriever: RetrieverRepository
 
 
 def create_sqlite_factory(db) -> RepositoryFactory:
@@ -46,6 +48,7 @@ def create_sqlite_factory(db) -> RepositoryFactory:
     from nanobot.db.sqlite.channel_binding_repo import SQLiteChannelBindingRepository
     from nanobot.db.sqlite.cron_repo import SQLiteCronRepository
     from nanobot.db.sqlite.memory_repo import SQLiteMemoryRepository
+    from nanobot.db.sqlite.rag_repo import SQLiteRetrieverRepository
     from nanobot.db.sqlite.session_repo import SQLiteMessageRepository, SQLiteSessionRepository
     from nanobot.db.sqlite.skill_repo import SQLiteSkillRepository
     from nanobot.db.sqlite.user_repo import SQLiteUserRepository
@@ -59,4 +62,5 @@ def create_sqlite_factory(db) -> RepositoryFactory:
         cron=SQLiteCronRepository(db),
         channel_bindings=SQLiteChannelBindingRepository(db),
         audit=SQLiteAuditRepository(db),
+        retriever=SQLiteRetrieverRepository(db),
     )

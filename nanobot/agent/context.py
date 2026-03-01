@@ -13,7 +13,7 @@ from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 
 if TYPE_CHECKING:
-    from nanobot.db.repositories import MemoryRepository, SkillRepository, UserRepository
+    from nanobot.db.repositories import UserRepository
 
 
 class ContextBuilder:
@@ -41,6 +41,7 @@ class ContextBuilder:
         user_id: str | None = None,
         language: str = "",
         custom_instructions: str = "",
+        rag_enabled: bool = False,
     ):
         self.workspace = workspace
         self.memory = memory_store or MemoryStore(workspace)
@@ -49,6 +50,7 @@ class ContextBuilder:
         self._user_id = user_id
         self._language = language
         self._custom_instructions = custom_instructions
+        self._rag_enabled = rag_enabled
         self._mode: str = "db" if user_repo is not None and user_id is not None else "fs"
 
     async def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
@@ -120,8 +122,8 @@ IMPORTANT: Always use `--no-sandbox` with Chromium (required in container)."""
 
     def _get_identity(self) -> str:
         """Get the core identity section."""
-        from datetime import datetime
         import time as _time
+        from datetime import datetime
         now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         tz = _time.strftime("%Z") or "UTC"
         workspace_path = str(self.workspace.expanduser().resolve())
@@ -197,6 +199,12 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
             parts.append(f"\n\n## User Instructions\n{self._custom_instructions}")
         return "".join(parts)
 
+    def _get_bootstrap_files(self) -> list[str]:
+        files = list(self.BOOTSTRAP_FILES)
+        if self._rag_enabled:
+            files.append("RAG.md")
+        return files
+
     async def _load_bootstrap_files(self) -> str:
         """Load bootstrap files from DB (with filesystem fallback) or filesystem only."""
         if self._mode == "db":
@@ -205,7 +213,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
     async def _load_bootstrap_db(self) -> str:
         """Load bootstrap: base prompts (code) + user extensions (DB) + workspace fallback."""
-        from nanobot.prompts import load_base_prompt, PROMPT_FILES
+        from nanobot.prompts import PROMPT_FILES, load_base_prompt
 
         user_extensions: dict[str, str] = {}
         if self._user_repo and self._user_id:
@@ -214,7 +222,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                 user_extensions = user.get("bootstrap", {})
 
         parts = []
-        for filename in self.BOOTSTRAP_FILES:
+        for filename in self._get_bootstrap_files():
             base = load_base_prompt(filename)
 
             ws_content = ""
@@ -245,7 +253,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         """Load all bootstrap files from workspace (filesystem mode)."""
         parts = []
 
-        for filename in self.BOOTSTRAP_FILES:
+        for filename in self._get_bootstrap_files():
             file_path = self.workspace / filename
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8")

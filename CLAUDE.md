@@ -2,7 +2,7 @@
 
 ## Project
 
-nanobot is an ultra-lightweight personal AI assistant. The guiding principle is **keep it simple** — small codebase, minimal abstractions, no over-engineering.
+nanobot is an agent builder platform powered by an ultra-lightweight AI engine. The guiding principle is **keep it simple** — small codebase, minimal abstractions, no over-engineering. Creators configure agents (prompts, tools, RAG, model) via a web UI; end-users (clients) interact with those agents through channels (Telegram, Discord, WhatsApp, etc.).
 
 - **Stack**: Python 3.11+ / FastAPI / aiosqlite / LiteLLM / React 19 / Tailwind CSS 4 / Zustand
 - **Entry point**: `nanobot/cli/commands.py` → `gateway` command starts the server
@@ -10,13 +10,15 @@ nanobot is an ultra-lightweight personal AI assistant. The guiding principle is 
 - **Run dev**: `make dev` (Docker Compose with hot-reload for both Python and frontend)
 - **Run tests**: `pytest`
 - **Lint**: `ruff check .` (line limit 100, rules: E, F, I, N, W)
+- **Docs**: `docs/architecture/` — architecture decision records and design docs
 
 ## Architecture
 
 ```
 nanobot/
 ├── agent/          # Core loop, context builder, memory, skills, subagent
-│   └── tools/      # Tool implementations (filesystem, web, browser, cron, mcp…)
+│   ├── tools/      # Tool implementations (filesystem, web, browser, cron, mcp, rag…)
+│   └── retriever.py # RAG retriever (dual-mode: filesystem JSONL / DB FTS5 / HTTP backends)
 ├── bus/            # Pub/sub message routing (InboundMessage → Agent → OutboundMessage)
 ├── channels/       # Chat platform adapters (Telegram, Discord, Slack, WhatsApp…)
 │                   #   registry.py = UI metadata, manager.py = server-global + per-user instances
@@ -25,13 +27,15 @@ nanobot/
 ├── cron/           # Scheduled task service
 ├── db/             # Repository protocols + SQLite implementations
 ├── heartbeat/      # Periodic proactive wake-up
-├── prompts/        # Base agent prompt templates (SOUL.md, AGENTS.md, USER.md) — read-only
+├── prompts/        # Base agent prompt templates (SOUL.md, AGENTS.md, USER.md, RAG.md) — read-only
 ├── providers/      # LLM provider abstraction (LiteLLM, custom, OAuth)
 ├── session/        # Conversation state management
 ├── skills/         # Built-in skill definitions (markdown)
 ├── web/            # FastAPI server + React frontend
 │   └── frontend/   # Vite + React + TypeScript
-└── utils/          # Small helpers (paths, filenames)
+├── utils/          # Small helpers (paths, filenames)
+docs/
+└── architecture/   # Architecture decision records (client-layer.md, etc.)
 ```
 
 ### Key design decisions
@@ -40,9 +44,12 @@ nanobot/
 - **Dual-mode everywhere**: MemoryStore, SessionManager, SkillsLoader, ContextBuilder all support both filesystem and database mode. Mode is detected at construction.
 - **Registry pattern**: providers (`providers/registry.py`) and tools (`agent/tools/registry.py`) use declarative registries instead of if-elif chains. Channels use `channels/registry.py` for UI metadata.
 - **Event bus**: channels publish inbound messages → agent loop processes → publishes outbound → channels deliver. No direct coupling between channels and agent.
-- **Per-user prompts**: Base prompts live in `prompts/` (SOUL.md, AGENTS.md, USER.md) as read-only code. Users extend them via `users.bootstrap` in the DB. ContextBuilder combines base + workspace + user extension.
+- **Per-user prompts**: Base prompts live in `prompts/` (SOUL.md, AGENTS.md, USER.md, RAG.md) as read-only code. Users extend them via `users.bootstrap` in the DB. ContextBuilder combines base + workspace + user extension.
 - **Per-user channels**: Each user can configure and run their own channel instances (Telegram, Discord, etc.) stored in `users.channel_configs`. ChannelManager tracks both server-global and per-user channel instances. `BaseChannel.owner_id` tags inbound messages for correct user routing.
+- **RAG system**: Retrieval-augmented generation with per-user config. Supports local SQLite FTS5 and external HTTP backends (Pinecone, Qdrant, Weaviate, etc.). Tools: `rag_search` and `rag_ingest`. Config stored in `users.agent_config.rag`. Prompt behavior defined in `prompts/RAG.md`.
+- **Browser auto-launch**: Chromium launched automatically with stealth JS (anti-detection) when CDP is unavailable. Retry logic with graceful fallback. Docker entrypoint waits for CDP readiness.
 - **Lazy initialization**: MCP servers connect on first message, desktop tools register only if DISPLAY is set, browser tool only if CDP port is reachable.
+- **Creator vs Client model** (planned): Architecture documented in `docs/architecture/client-layer.md`. Creators configure agents; clients (end-users) interact via channels with isolated memory and sessions per client.
 
 ### Dependency flow (no cycles allowed)
 
@@ -146,16 +153,29 @@ config ← cli → agent → providers
 ### Frontend changes
 
 - Components: `nanobot/web/frontend/src/components/`
-- API types: `nanobot/web/frontend/src/lib/api.ts`
-- Global state: `nanobot/web/frontend/src/lib/store.ts`
+- API types + functions: `nanobot/web/frontend/src/lib/api.ts`
+- Global state: `nanobot/web/frontend/src/lib/store.ts` (Zustand, `View` type exported here)
 - Dev server: `http://localhost:5173` (Vite with HMR)
 - Build: `npm run build` in the frontend directory (output goes to `frontend/static/`)
-- Key panels: `ChannelsPanel.tsx` (per-user channel config/start/stop), `PromptsPanel.tsx` (per-user prompt extensions)
+- Navigation: single `activeView` state routes to full-page views (not modals)
+- Key pages: `CapabilitiesPage.tsx` (tools + skills + MCP), `SettingsPage.tsx` (model + provider), `MemoryPage.tsx` (long-term + history), `RagPanel.tsx` (RAG backend config)
+- Key panels: `ChannelsPanel.tsx` (master-detail channel config/start/stop), `PromptsPanel.tsx` (per-user prompt extensions), `CronPanel.tsx` (scheduler with enable/disable/run-now)
 
 ### Adding or editing per-user prompts
 
-- Base prompts (read-only, shipped with code): `nanobot/prompts/SOUL.md`, `AGENTS.md`, `USER.md`
-- Prompt metadata (label, description, hint): `nanobot/prompts/__init__.py` `PROMPT_FILES`
+- Base prompts (read-only, shipped with code): `nanobot/prompts/SOUL.md`, `AGENTS.md`, `USER.md`, `RAG.md`
+- Prompt metadata (label, description, hint): `nanobot/prompts/__init__.py` `PROMPT_FILES` and `PROMPT_ORDER`
 - User extensions are stored in `users.bootstrap` JSON field in the DB
 - ContextBuilder combines: base (code) + workspace file + user extension (DB)
+- RAG.md is conditionally included when `rag_enabled=True` in ContextBuilder
 - API: `GET /api/config/prompts`, `PUT /api/config/prompts`
+
+### Adding or editing RAG configuration
+
+- Core: `agent/retriever.py` (RetrieverStore, HttpRetriever, chunk_text)
+- Tools: `agent/tools/rag.py` (RAGSearchTool, RAGIngestTool)
+- DB: `db/sqlite/rag_repo.py` (SQLiteRetrieverRepository with FTS5)
+- Config: `config/schema.py` (RAGConfig, RAGBackendConfig in ToolsConfig.rag)
+- Per-user config stored in `users.agent_config.rag` JSON
+- API: `GET /api/config/rag`, `PUT /api/config/rag` (masks API keys)
+- Frontend: `RagPanel.tsx` with backend provider templates

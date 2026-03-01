@@ -11,6 +11,8 @@ import {
 } from "./api";
 import { toast } from "./toast";
 
+export type View = "chat" | "capabilities" | "memory" | "prompts" | "channels" | "rag" | "cron" | "settings";
+
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -37,14 +39,9 @@ interface AppState {
   connected: boolean;
   sending: boolean;
 
-  // Sidebar & Navigation Panels
+  // Navigation
   sidebarOpen: boolean;
-  settingsOpen: boolean;
-  skillsOpen: boolean;
-  memoryOpen: boolean;
-  cronOpen: boolean;
-  channelsOpen: boolean;
-  promptsOpen: boolean;
+  activeView: View;
 
   // Actions
   initAuth: () => Promise<void>;
@@ -62,7 +59,7 @@ interface AppState {
   sendMessage: (content: string) => void;
 
   toggleSidebar: () => void;
-  setPanelState: (panel: "settings" | "skills" | "memory" | "cron" | "channels" | "prompts", open: boolean) => void;
+  setActiveView: (view: View) => void;
 }
 
 let msgCounter = 0;
@@ -88,12 +85,7 @@ export const useStore = create<AppState>((set, get) => ({
   sending: false,
 
   sidebarOpen: true,
-  settingsOpen: false,
-  skillsOpen: false,
-  memoryOpen: false,
-  cronOpen: false,
-  channelsOpen: false,
-  promptsOpen: false,
+  activeView: "chat",
 
   // ---- Auth ----
 
@@ -164,7 +156,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   async selectSession(key: string) {
-    set({ activeSessionKey: key, messages: [] });
+    set({ activeSessionKey: key, messages: [], activeView: "chat" });
     try {
       const msgs = await getMessages(key);
       const chatMsgs: ChatMessage[] = msgs.map((m: Message) => ({
@@ -179,7 +171,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   newChat() {
-    set({ activeSessionKey: null, messages: [] });
+    set({ activeSessionKey: null, messages: [], activeView: "chat" });
   },
 
   async removeSession(key: string) {
@@ -227,7 +219,6 @@ export const useStore = create<AppState>((set, get) => ({
       const { messages } = get();
 
       if (data.type === "progress") {
-        // Update the last assistant message with streaming content
         const last = messages[messages.length - 1];
         if (last && last.role === "assistant" && last.isStreaming) {
           set({
@@ -258,7 +249,6 @@ export const useStore = create<AppState>((set, get) => ({
           });
         }
       } else if (data.type === "response") {
-        // Replace streaming message with final response
         const last = messages[messages.length - 1];
         if (last && last.role === "assistant" && last.isStreaming) {
           set({
@@ -280,7 +270,6 @@ export const useStore = create<AppState>((set, get) => ({
             activeSessionKey: data.session_key || get().activeSessionKey,
           });
         }
-        // Refresh sessions list
         get().loadSessions();
       } else if (data.type === "error") {
         set({
@@ -353,7 +342,7 @@ export const useStore = create<AppState>((set, get) => ({
     set({ sidebarOpen: !get().sidebarOpen });
   },
 
-  setPanelState(panel, open) {
-    set({ [`${panel}Open`]: open } as Partial<AppState>);
+  setActiveView(view: View) {
+    set({ activeView: view });
   },
 }));

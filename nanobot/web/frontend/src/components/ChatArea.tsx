@@ -3,7 +3,7 @@ import { useStore } from "@/lib/store";
 import { ChatMessage } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
 import { Button } from "@/components/ui/button";
-import { Bot, Menu, Plus } from "lucide-react";
+import { Bot, Menu, Plus, Cpu } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function ChatArea() {
@@ -23,27 +23,32 @@ export function ChatArea() {
   return (
     <div className="flex-1 flex flex-col min-w-0 h-full">
       {/* Top bar */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-md">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100 bg-white/80 backdrop-blur-sm">
         {!sidebarOpen && (
           <Button variant="ghost" size="icon" onClick={toggleSidebar}>
             <Menu className="w-5 h-5" />
           </Button>
         )}
-        <div className="flex-1 flex items-center gap-2">
-          <Bot className="w-5 h-5 text-green" />
-          <span className="text-sm font-medium text-text-primary">
+        <div className="flex-1 flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-emerald-50 flex items-center justify-center">
+            <Bot className="w-4 h-4 text-green" />
+          </div>
+          <span className="text-sm font-semibold text-text-primary font-display">
             {activeSessionKey ? "Chat" : "New Chat"}
           </span>
-          {/* Connection status indicator */}
-          <div
-            className={cn(
-              "w-2 h-2 rounded-full transition-colors",
-              connected
-                ? "bg-green shadow-[0_0_6px_rgba(17,199,111,0.5)]"
-                : "bg-yellow animate-pulse"
-            )}
-            title={connected ? "Connected" : "Reconnecting..."}
-          />
+          <div className="flex items-center gap-1.5">
+            <div
+              className={cn(
+                "w-2 h-2 rounded-full transition-colors",
+                connected
+                  ? "bg-green shadow-[0_0_6px_rgba(17,199,111,0.5)]"
+                  : "bg-yellow animate-pulse",
+              )}
+            />
+            <span className="text-[10px] text-text-muted font-medium">
+              {connected ? "Connected" : "Reconnecting..."}
+            </span>
+          </div>
         </div>
         <Button variant="ghost" size="icon" onClick={newChat} title="New Chat">
           <Plus className="w-5 h-5" />
@@ -51,16 +56,21 @@ export function ChatArea() {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto bg-gradient-to-b from-slate-50/50 to-background">
         {isEmpty ? (
-          <div className="flex flex-col items-center justify-center h-full px-4 text-center">
-            <div className="w-20 h-20 rounded-3xl bg-green/10 border border-green/20 flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(17,199,111,0.15)]">
-              <Bot className="w-10 h-10 text-green" />
+          <div className="flex flex-col items-center justify-center h-full px-4 text-center animate-fade-in-up">
+            <div className="relative mb-8">
+              <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center shadow-lg shadow-emerald-500/5">
+                <Cpu className="w-10 h-10 text-green" />
+              </div>
+              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-400 to-green flex items-center justify-center shadow-md">
+                <Bot className="w-3.5 h-3.5 text-white" />
+              </div>
             </div>
-            <h2 className="text-xl font-semibold text-text-primary mb-2">
+            <h2 className="font-display text-2xl font-bold text-text-primary mb-2">
               How can I help you?
             </h2>
-            <p className="text-text-secondary text-sm max-w-md">
+            <p className="text-text-secondary text-sm max-w-md leading-relaxed">
               Ask me anything. I can help with research, coding, writing,
               analysis, and much more.
             </p>

@@ -213,6 +213,44 @@ END;
 
 ALTER TABLE users ADD COLUMN channel_configs TEXT NOT NULL DEFAULT '{}';
 """),
+
+    (4, """
+-- ===================== v4: RAG chunk storage with FTS5 =====================
+
+CREATE TABLE IF NOT EXISTS rag_chunks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    content    TEXT NOT NULL,
+    metadata   TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_user ON rag_chunks(user_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
+    content,
+    content='rag_chunks',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS rag_ai AFTER INSERT ON rag_chunks
+BEGIN
+    INSERT INTO rag_chunks_fts(rowid, content) VALUES (NEW.id, NEW.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS rag_ad AFTER DELETE ON rag_chunks
+BEGIN
+    INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content)
+    VALUES('delete', OLD.id, OLD.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS rag_au AFTER UPDATE OF content ON rag_chunks
+BEGIN
+    INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content)
+    VALUES('delete', OLD.id, OLD.content);
+    INSERT INTO rag_chunks_fts(rowid, content) VALUES (NEW.id, NEW.content);
+END;
+"""),
 ]
 
 

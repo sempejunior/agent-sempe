@@ -89,6 +89,10 @@ export interface CronJob {
   schedule_kind: string;
   schedule_expr: string;
   message: string;
+  deliver?: boolean;
+  channel?: string | null;
+  to?: string | null;
+  tz?: string | null;
 }
 
 export async function listCronJobs(): Promise<CronJob[]> {
@@ -102,12 +106,23 @@ export async function addCronJob(data: {
   every_seconds?: number;
   expr?: string;
   tz?: string;
+  deliver?: boolean;
+  channel?: string | null;
+  to?: string | null;
 }): Promise<{ id: string; name: string }> {
   return request("/cron", { method: "POST", body: JSON.stringify(data) });
 }
 
 export async function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   return request(`/cron/${jobId}`, { method: "DELETE" });
+}
+
+export async function enableCronJob(jobId: string, enabled: boolean): Promise<{ ok: boolean, enabled: boolean }> {
+  return request(`/cron/${jobId}/enable`, { method: "PUT", body: JSON.stringify({ enabled }) });
+}
+
+export async function runCronJob(jobId: string): Promise<{ ok: boolean }> {
+  return request(`/cron/${jobId}/run`, { method: "POST" });
 }
 
 // Config
@@ -155,6 +170,18 @@ export async function getSkills(): Promise<SkillsData> {
 
 export async function updateSkills(tools_enabled: string[]): Promise<{ ok: boolean; tools_enabled: string[] }> {
   return request("/skills", { method: "PUT", body: JSON.stringify({ tools_enabled }) });
+}
+
+export interface BuiltinSkill {
+  name: string;
+  description: string;
+  available: boolean;
+  always: boolean;
+  content: string;
+}
+
+export async function getBuiltinSkills(): Promise<BuiltinSkill[]> {
+  return request("/skills/builtin");
 }
 
 export interface CustomSkill {
@@ -290,10 +317,6 @@ export async function listChannels(): Promise<ChannelInfo[]> {
   return request("/channels");
 }
 
-export async function getChannel(name: string): Promise<ChannelInfo> {
-  return request(`/channels/${name}`);
-}
-
 export async function updateChannel(name: string, data: Record<string, unknown>): Promise<{ ok: boolean }> {
   return request(`/channels/${name}`, { method: "PUT", body: JSON.stringify(data) });
 }
@@ -304,6 +327,33 @@ export async function startChannel(name: string): Promise<{ ok: boolean; message
 
 export async function stopChannel(name: string): Promise<{ ok: boolean; message: string }> {
   return request(`/channels/${name}/stop`, { method: "POST" });
+}
+
+// RAG
+export interface RAGBackendConfig {
+  type: string;
+  api_url: string;
+  api_key: string;
+  headers: Record<string, string>;
+  collection: string;
+  search_path: string;
+  ingest_path: string;
+  delete_path: string;
+  timeout: number;
+}
+
+export interface RAGConfig {
+  enabled: boolean;
+  default_backend: string;
+  backends: Record<string, RAGBackendConfig>;
+}
+
+export async function getRagConfig(): Promise<RAGConfig> {
+  return request("/config/rag");
+}
+
+export async function updateRagConfig(data: RAGConfig): Promise<{ ok: boolean }> {
+  return request("/config/rag", { method: "PUT", body: JSON.stringify(data) });
 }
 
 // WebSocket

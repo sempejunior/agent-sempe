@@ -23,13 +23,13 @@ export function PanelWrapper({
   return (
     <>
       <div
-        className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 animate-fade-in"
+        className="fixed inset-0 bg-black/20 backdrop-blur-sm z-50 animate-fade-in"
         onClick={onClose}
       />
       <div
-        className={`fixed right-0 top-0 h-full w-full ${maxWidth} backdrop-blur-2xl bg-background/80 border-l border-white/[0.06] z-50 flex flex-col animate-slide-in-right`}
+        className={`fixed right-0 top-0 h-full w-full ${maxWidth} bg-white/95 backdrop-blur-2xl border-l border-slate-200 z-50 flex flex-col animate-slide-in-right`}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.06] bg-white/[0.02]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-slate-50">
           <div className="flex items-center gap-2.5">
             <Icon className="w-5 h-5 text-green" />
             <h2 className="text-base font-semibold">{title}</h2>

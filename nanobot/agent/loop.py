@@ -29,7 +29,7 @@ from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
     from nanobot.agent.user_context import UserContext
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig
+    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, RAGConfig
     from nanobot.cron.service import CronService
     from nanobot.db.factory import RepositoryFactory
 
@@ -69,6 +69,7 @@ class AgentLoop:
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
         repos: RepositoryFactory | None = None,
+        rag_config: RAGConfig | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -86,6 +87,7 @@ class AgentLoop:
         self.restrict_to_workspace = restrict_to_workspace
 
         self._repos = repos
+        self._rag_config = rag_config
         self._user_contexts: dict[str, UserContext] = {}
         if repos:
             from nanobot.agent.user_context import RateLimiter
@@ -93,7 +95,10 @@ class AgentLoop:
         else:
             self._rate_limiter = None
 
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(
+            workspace,
+            rag_enabled=bool(rag_config and rag_config.enabled),
+        )
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
@@ -142,14 +147,19 @@ class AgentLoop:
         fs_memory = MemoryStore(self.workspace)
         self.tools.register(SaveMemoryTool(fs_memory))
         self.tools.register(SearchMemoryTool(fs_memory))
+        if self._rag_config and self._rag_config.enabled:
+            from nanobot.agent.retriever import RetrieverStore
+            from nanobot.agent.tools.rag import RAGIngestTool, RAGSearchTool
+            fs_retriever = RetrieverStore(self.workspace)
+            self.tools.register(RAGSearchTool(fs_retriever))
+            self.tools.register(RAGIngestTool(fs_retriever))
         if os.environ.get("DISPLAY"):
             from nanobot.agent.tools.computer import ComputerTool
             from nanobot.agent.tools.screenshot import ScreenshotTool
             self.tools.register(ScreenshotTool())
             self.tools.register(ComputerTool())
-            from nanobot.agent.tools.browser import BrowserTool, cdp_available
-            if cdp_available():
-                self.tools.register(BrowserTool())
+            from nanobot.agent.tools.browser import BrowserTool
+            self.tools.register(BrowserTool())
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""

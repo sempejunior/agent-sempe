@@ -150,6 +150,20 @@ class ChannelBindingRepository(Protocol):
 
 
 @runtime_checkable
+class RetrieverRepository(Protocol):
+    """RAG chunk storage with full-text search."""
+
+    async def ingest(self, user_id: str, content: str, metadata: dict[str, Any] | None = None) -> str: ...
+
+    async def search(self, user_id: str, query: str, *, top_k: int = 5) -> list[dict[str, Any]]: ...
+
+    async def delete(self, user_id: str, chunk_id: str) -> bool: ...
+
+    async def list_sources(self, user_id: str) -> list[dict[str, Any]]: ...
+
+
+
+@runtime_checkable
 class AuditRepository(Protocol):
     """Append-only audit trail with TTL cleanup."""
 

@@ -1,11 +1,8 @@
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { PanelWrapper } from "@/components/ui/panel-wrapper";
 import { getConfig, updateConfig, getProviderConfig, updateProviderConfig } from "@/lib/api";
 import type { AgentConfig, ProviderConfig } from "@/lib/api";
 import { toast } from "@/lib/toast";
-import { useStore } from "@/lib/store";
 import {
     Settings,
     Save,
@@ -17,6 +14,7 @@ import {
     Check,
     SlidersHorizontal,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 const LANGUAGES = [
     { value: "", label: "Auto (server default)" },
@@ -41,9 +39,9 @@ const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: st
 
 function FieldLabel({ children, hint }: { children: React.ReactNode; hint?: string }) {
     return (
-        <div className="mb-2">
-            <label className="text-sm font-medium text-text-secondary">{children}</label>
-            {hint && <p className="text-xs text-text-muted mt-0.5 leading-relaxed">{hint}</p>}
+        <div className="mb-2.5">
+            <label className="font-display text-base font-bold text-slate-700">{children}</label>
+            {hint && <p className="text-sm text-slate-400 mt-1 leading-relaxed">{hint}</p>}
         </div>
     );
 }
@@ -53,8 +51,8 @@ function TabGeneral({ config, onChange }: {
     onChange: (key: keyof AgentConfig, value: string | number) => void;
 }) {
     return (
-        <div className="space-y-6">
-            <div>
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,450px),1fr))] gap-6 animate-fade-in-up">
+            <div className="col-span-full">
                 <FieldLabel hint="Tell the agent about yourself, your preferences, or how it should behave.">
                     Custom Instructions
                 </FieldLabel>
@@ -62,8 +60,8 @@ function TabGeneral({ config, onChange }: {
                     value={config.custom_instructions || ""}
                     onChange={(e) => onChange("custom_instructions", e.target.value)}
                     placeholder={"Example:\n- I'm a backend developer working with Python and FastAPI\n- Always explain your reasoning before acting\n- Prefer concise answers"}
-                    rows={5}
-                    className="w-full resize-none text-sm leading-relaxed bg-glass border border-glass-border rounded-lg p-3.5 text-text-primary placeholder:text-text-muted/40 focus:outline-none focus:border-green/30 transition-colors"
+                    rows={6}
+                    className="w-full resize-none text-base leading-relaxed bg-white border border-slate-200 rounded-xl p-5 text-slate-900 placeholder:text-slate-300 focus:outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500/10 transition-colors"
                 />
             </div>
 
@@ -75,15 +73,15 @@ function TabGeneral({ config, onChange }: {
                     <select
                         value={config.language || ""}
                         onChange={(e) => onChange("language", e.target.value)}
-                        className="w-full h-10 px-3 pr-8 text-sm bg-glass border border-glass-border rounded-lg text-text-primary appearance-none focus:outline-none focus:border-green/30 transition-colors cursor-pointer"
+                        className="w-full h-12 px-4 pr-10 text-base bg-white border border-slate-200 rounded-xl text-slate-900 appearance-none focus:outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500/10 transition-colors cursor-pointer"
                     >
                         {LANGUAGES.map((lang) => (
-                            <option key={lang.value} value={lang.value} className="bg-surface text-text-primary">
+                            <option key={lang.value} value={lang.value} className="bg-white text-slate-900">
                                 {lang.label}
                             </option>
                         ))}
                     </select>
-                    <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted pointer-events-none" />
+                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 pointer-events-none" />
                 </div>
             </div>
         </div>
@@ -103,11 +101,10 @@ function TabModel({ config, providerConfig, apiKeyInput, apiKeyDirty, showApiKey
     setShowApiKey: (v: boolean | ((prev: boolean) => boolean)) => void;
 }) {
     return (
-        <div className="space-y-6">
-            {/* Provider selector */}
-            <div>
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,450px),1fr))] gap-6 items-start animate-fade-in-up">
+            <div className="col-span-full">
                 <FieldLabel hint="Leave empty to use the server default.">Provider</FieldLabel>
-                <div className="flex gap-2.5">
+                <div className="flex flex-wrap gap-3">
                     {(["openai", "anthropic", "custom"] as const).map((p) => (
                         <button
                             key={p}
@@ -121,11 +118,12 @@ function TabModel({ config, providerConfig, apiKeyInput, apiKeyDirty, showApiKey
                                     setProviderConfig((prev) => ({ ...prev, name: p }));
                                 }
                             }}
-                            className={`px-4 py-2 rounded-lg text-sm font-medium border transition-all cursor-pointer ${
+                            className={cn(
+                                "px-6 py-3 rounded-xl text-base font-bold border transition-all cursor-pointer",
                                 providerConfig.name === p
-                                    ? "bg-green/15 border-green/30 text-green"
-                                    : "bg-glass border-glass-border text-text-muted hover:bg-glass-hover"
-                            }`}
+                                    ? "bg-gradient-to-b from-green to-green-hover border-transparent text-white shadow-md shadow-green/20"
+                                    : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:border-slate-300",
+                            )}
                         >
                             {p === "openai" ? "OpenAI" : p === "anthropic" ? "Anthropic" : "Custom"}
                         </button>
@@ -133,7 +131,6 @@ function TabModel({ config, providerConfig, apiKeyInput, apiKeyDirty, showApiKey
                 </div>
             </div>
 
-            {/* API Key (shown when provider is selected) */}
             {providerConfig.name && (
                 <>
                     <div>
@@ -147,24 +144,24 @@ function TabModel({ config, providerConfig, apiKeyInput, apiKeyDirty, showApiKey
                                     setApiKeyDirty(true);
                                 }}
                                 onFocus={() => {
-                                    if (!apiKeyDirty && apiKeyInput.includes("•")) {
+                                    if (!apiKeyDirty && apiKeyInput.includes("\u2022")) {
                                         setApiKeyInput("");
                                         setApiKeyDirty(true);
                                     }
                                 }}
                                 placeholder="sk-..."
-                                className="pr-9"
+                                className="h-12 text-base px-4 pr-12 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
                             />
                             <button
                                 type="button"
-                                className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary transition-colors cursor-pointer"
+                                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer p-1"
                                 onClick={() => setShowApiKey((v) => !v)}
                             >
-                                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                {showApiKey ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                             </button>
                         </div>
                         {!apiKeyDirty && apiKeyInput && (
-                            <p className="text-xs text-text-muted mt-1.5">
+                            <p className="text-sm text-slate-400 mt-2">
                                 Key is masked. Click the field to enter a new one.
                             </p>
                         )}
@@ -177,19 +174,20 @@ function TabModel({ config, providerConfig, apiKeyInput, apiKeyDirty, showApiKey
                                 value={providerConfig.api_base || ""}
                                 onChange={(e) => setProviderConfig((prev) => ({ ...prev, api_base: e.target.value }))}
                                 placeholder="https://api.example.com/v1"
+                                className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
                             />
                         </div>
                     )}
                 </>
             )}
 
-            {/* Model */}
             <div>
                 <FieldLabel hint="Format: provider/model-name (e.g. openai/gpt-4o-mini)">Model</FieldLabel>
                 <Input
                     value={config.model || ""}
                     onChange={(e) => onChange("model", e.target.value)}
                     placeholder="anthropic/claude-sonnet-4-20250514"
+                    className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
                 />
             </div>
         </div>
@@ -201,33 +199,32 @@ function TabAdvanced({ config, onChange }: {
     onChange: (key: keyof AgentConfig, value: string | number) => void;
 }) {
     return (
-        <div className="space-y-6">
-            <div className="grid grid-cols-2 gap-4">
-                <div>
-                    <FieldLabel hint="0 = deterministic, 2 = creative">Temperature</FieldLabel>
-                    <Input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        max="2"
-                        value={config.temperature ?? ""}
-                        onChange={(e) => onChange("temperature", parseFloat(e.target.value))}
-                        placeholder="0.1"
-                    />
-                </div>
-                <div>
-                    <FieldLabel hint="Max response length">Max Tokens</FieldLabel>
-                    <Input
-                        type="number"
-                        step="1"
-                        min="256"
-                        value={config.max_tokens ?? ""}
-                        onChange={(e) => onChange("max_tokens", parseInt(e.target.value, 10))}
-                        placeholder="8192"
-                    />
-                </div>
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,350px),1fr))] gap-6 items-start animate-fade-in-up">
+            <div>
+                <FieldLabel hint="0 = deterministic, 2 = creative">Temperature</FieldLabel>
+                <Input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="2"
+                    value={config.temperature ?? ""}
+                    onChange={(e) => onChange("temperature", parseFloat(e.target.value))}
+                    placeholder="0.1"
+                    className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
+                />
             </div>
-
+            <div>
+                <FieldLabel hint="Max response length">Max Tokens</FieldLabel>
+                <Input
+                    type="number"
+                    step="1"
+                    min="256"
+                    value={config.max_tokens ?? ""}
+                    onChange={(e) => onChange("max_tokens", parseInt(e.target.value, 10))}
+                    placeholder="8192"
+                    className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
+                />
+            </div>
             <div>
                 <FieldLabel hint="How many tools the agent can call in one turn">Max Tool Iterations</FieldLabel>
                 <Input
@@ -238,9 +235,9 @@ function TabAdvanced({ config, onChange }: {
                     value={config.max_tool_iterations ?? ""}
                     onChange={(e) => onChange("max_tool_iterations", parseInt(e.target.value, 10))}
                     placeholder="40"
+                    className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
                 />
             </div>
-
             <div>
                 <FieldLabel hint="Messages before auto-consolidation into long-term memory. Lower = saves more often.">
                     Memory Window
@@ -253,14 +250,14 @@ function TabAdvanced({ config, onChange }: {
                     value={config.memory_window ?? ""}
                     onChange={(e) => onChange("memory_window", parseInt(e.target.value, 10))}
                     placeholder="20"
+                    className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
                 />
             </div>
         </div>
     );
 }
 
-export function SettingsPanel() {
-    const { settingsOpen, setPanelState } = useStore();
+export function SettingsPage() {
     const [tab, setTab] = useState<Tab>("general");
     const [config, setConfig] = useState<AgentConfig>({});
     const [providerConfig, setProviderConfig] = useState<ProviderConfig>({ name: "", api_key: "", api_base: "" });
@@ -288,11 +285,8 @@ export function SettingsPanel() {
     };
 
     useEffect(() => {
-        if (settingsOpen) {
-            loadConfig();
-            setSaved(false);
-        }
-    }, [settingsOpen]);
+        loadConfig();
+    }, []);
 
     const handleChange = (key: keyof AgentConfig, value: string | number) => {
         setConfig((prev) => ({ ...prev, [key]: value }));
@@ -318,44 +312,84 @@ export function SettingsPanel() {
         setSaving(false);
     };
 
+    if (loading) {
+        return (
+            <div className="flex-1 flex items-center justify-center h-full">
+                <div className="w-7 h-7 border-[3px] border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+            </div>
+        );
+    }
+
     return (
-        <PanelWrapper
-            open={settingsOpen}
-            onClose={() => setPanelState("settings", false)}
-            title="Settings"
-            icon={Settings}
-        >
-            <form onSubmit={handleSave} className="flex-1 overflow-y-auto flex flex-col">
-                {loading ? (
-                    <div className="flex items-center justify-center p-12 flex-1">
-                        <div className="w-6 h-6 border-2 border-green/30 border-t-green rounded-full animate-spin" />
+        <div className="flex-1 flex flex-col h-full overflow-hidden">
+            {/* Page Header */}
+            <div className="px-8 pt-8 pb-4 shrink-0 bg-white z-10 sticky top-0 border-b border-transparent data-[scrolled=true]:border-slate-100 data-[scrolled=true]:shadow-sm transition-all duration-200">
+                <div className="content-container">
+                    <div className="flex items-center justify-between gap-4">
+                        <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center">
+                                <Settings size={24} className="text-emerald-500" />
+                            </div>
+                            <div>
+                                <h1 className="font-display text-2xl font-bold text-slate-900">Settings</h1>
+                                <p className="text-slate-500 text-sm mt-1">Configure your agent's behavior, model, and advanced parameters.</p>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                            {saved && (
+                                <span className="flex items-center gap-1.5 text-sm text-emerald-600 font-bold animate-fade-in">
+                                    <Check className="w-4 h-4" />
+                                    Saved
+                                </span>
+                            )}
+                            <button
+                                type="button"
+                                onClick={handleSave}
+                                disabled={loading || saving}
+                                className="px-6 py-2.5 text-sm font-bold text-white bg-gradient-to-b from-green to-green-hover rounded-xl hover:shadow-lg hover:shadow-green/25 shadow-sm shadow-green/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center gap-2"
+                            >
+                                {saving ? (
+                                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                ) : (
+                                    <Save className="w-5 h-5" />
+                                )}
+                                Save Settings
+                            </button>
+                        </div>
                     </div>
-                ) : (
-                    <>
+                </div>
+            </div>
+
+            {/* Settings Card */}
+            <form onSubmit={handleSave} className="flex-1 flex flex-col overflow-hidden px-8 pb-6 animate-fade-in-up">
+                <div className="content-container flex-1 flex flex-col w-full">
+                    <div className="flex-1 flex flex-col bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden">
                         {/* Tab bar */}
-                        <div className="flex border-b border-white/[0.06] bg-white/[0.01] px-3 pt-1.5 gap-1 shrink-0">
+                        <div className="flex border-b border-slate-100 px-4 pt-4 gap-2 shrink-0 bg-gradient-to-r from-slate-50 to-white">
                             {TABS.map(({ id, label, icon: Icon }) => (
                                 <button
                                     key={id}
                                     type="button"
                                     onClick={() => setTab(id)}
-                                    className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors cursor-pointer relative ${
+                                    className={cn(
+                                        "flex items-center gap-2.5 px-6 py-4 font-display text-base font-bold transition-all cursor-pointer relative rounded-t-xl",
                                         tab === id
-                                            ? "text-green bg-white/[0.04]"
-                                            : "text-text-muted hover:text-text-secondary hover:bg-white/[0.02]"
-                                    }`}
+                                            ? "text-emerald-600 bg-emerald-50/50"
+                                            : "text-slate-400 hover:text-slate-600 hover:bg-slate-50",
+                                    )}
                                 >
-                                    <Icon className="w-4 h-4" />
+                                    <Icon className="w-5 h-5" />
                                     {label}
                                     {tab === id && (
-                                        <span className="absolute bottom-0 left-3 right-3 h-[2px] bg-green rounded-t-full" />
+                                        <span className="absolute bottom-0 left-3 right-3 h-[3px] bg-gradient-to-r from-green to-green-hover rounded-t-full" />
                                     )}
                                 </button>
                             ))}
                         </div>
 
                         {/* Tab content */}
-                        <div className="p-5 flex-1 overflow-y-auto">
+                        <div className="p-6 flex-1 overflow-y-auto">
                             {tab === "general" && (
                                 <TabGeneral config={config} onChange={handleChange} />
                             )}
@@ -377,27 +411,9 @@ export function SettingsPanel() {
                                 <TabAdvanced config={config} onChange={handleChange} />
                             )}
                         </div>
-                    </>
-                )}
-
-                {/* Footer */}
-                <div className="border-t border-white/[0.06] px-5 py-4 flex items-center justify-end gap-3 bg-white/[0.01] shrink-0">
-                    {saved && (
-                        <span className="flex items-center gap-1 text-xs text-green font-medium">
-                            <Check className="w-3.5 h-3.5" />
-                            Saved
-                        </span>
-                    )}
-                    <Button type="submit" disabled={loading || saving} className="px-5">
-                        {saving ? (
-                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin mr-2" />
-                        ) : (
-                            <Save className="w-4 h-4 mr-2" />
-                        )}
-                        Save Settings
-                    </Button>
+                    </div>
                 </div>
             </form>
-        </PanelWrapper>
+        </div>
     );
 }
