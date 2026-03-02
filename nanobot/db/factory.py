@@ -9,6 +9,9 @@ if TYPE_CHECKING:
     from nanobot.db.repositories import (
         AuditRepository,
         ChannelBindingRepository,
+        ClientIdentityRepository,
+        ClientMemoryRepository,
+        ClientRepository,
         CronRepository,
         MemoryRepository,
         MessageRepository,
@@ -36,6 +39,9 @@ class RepositoryFactory:
     channel_bindings: ChannelBindingRepository
     audit: AuditRepository
     retriever: RetrieverRepository
+    clients: ClientRepository
+    client_identities: ClientIdentityRepository
+    client_memories: ClientMemoryRepository
 
 
 def create_sqlite_factory(db) -> RepositoryFactory:
@@ -46,6 +52,9 @@ def create_sqlite_factory(db) -> RepositoryFactory:
     """
     from nanobot.db.sqlite.audit_repo import SQLiteAuditRepository
     from nanobot.db.sqlite.channel_binding_repo import SQLiteChannelBindingRepository
+    from nanobot.db.sqlite.client_identity_repo import SQLiteClientIdentityRepository
+    from nanobot.db.sqlite.client_memory_repo import SQLiteClientMemoryRepository
+    from nanobot.db.sqlite.client_repo import SQLiteClientRepository
     from nanobot.db.sqlite.cron_repo import SQLiteCronRepository
     from nanobot.db.sqlite.memory_repo import SQLiteMemoryRepository
     from nanobot.db.sqlite.rag_repo import SQLiteRetrieverRepository
@@ -63,4 +72,7 @@ def create_sqlite_factory(db) -> RepositoryFactory:
         channel_bindings=SQLiteChannelBindingRepository(db),
         audit=SQLiteAuditRepository(db),
         retriever=SQLiteRetrieverRepository(db),
+        clients=SQLiteClientRepository(db),
+        client_identities=SQLiteClientIdentityRepository(db),
+        client_memories=SQLiteClientMemoryRepository(db),
     )

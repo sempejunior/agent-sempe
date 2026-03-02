@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING, Any
 from nanobot.agent.tools.base import Tool
 
 if TYPE_CHECKING:
-    from nanobot.agent.memory import MemoryStore
+    from nanobot.agent.memory import ClientMemoryStore, MemoryStore
 
 
 class SaveMemoryTool(Tool):
     """Tool that saves important facts to the user's long-term memory via MemoryStore."""
 
-    def __init__(self, memory_store: MemoryStore):
+    def __init__(self, memory_store: MemoryStore | ClientMemoryStore):
         self._memory = memory_store
 
     @property
@@ -65,7 +65,7 @@ class SaveMemoryTool(Tool):
 class SearchMemoryTool(Tool):
     """Tool that searches the user's conversation history via MemoryStore."""
 
-    def __init__(self, memory_store: MemoryStore):
+    def __init__(self, memory_store: MemoryStore | ClientMemoryStore):
         self._memory = memory_store
 
     @property

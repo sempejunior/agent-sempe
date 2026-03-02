@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import uuid as _uuid
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
@@ -28,10 +29,22 @@ from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.agent.user_context import UserContext
+    from nanobot.agent.memory import ClientMemoryStore
+    from nanobot.agent.user_context import ClientState, UserContext
     from nanobot.config.schema import ChannelsConfig, ExecToolConfig, RAGConfig
     from nanobot.cron.service import CronService
     from nanobot.db.factory import RepositoryFactory
+
+
+def _extract_external_id(channel: str, sender_id: str) -> tuple[str, str]:
+    """Extract canonical external_id and display hint from sender_id."""
+    if channel == "telegram" and "|" in sender_id:
+        parts = sender_id.split("|", 1)
+        return parts[0], parts[1] if len(parts) > 1 else ""
+    if channel == "whatsapp" and "@" in sender_id:
+        parts = sender_id.split("@", 1)
+        return parts[0], ""
+    return sender_id, ""
 
 
 class AgentLoop:
@@ -242,12 +255,63 @@ class AgentLoop:
         )
 
         if self._mcp_connected:
-            for name, tool in self.tools._tools.items():
+            for name, tool in self.tools.items():
                 if name.startswith("mcp_") and not uctx.tools.has(name):
                     uctx.tools.register(tool)
 
         self._user_contexts[user_id] = uctx
         return uctx
+
+    async def _resolve_client(self, msg: InboundMessage, owner_id: str) -> str | None:
+        """Resolve or auto-create a client from an inbound message.
+
+        Returns client_id or None (FS mode or web chat).
+        """
+        if not self._repos:
+            return None
+        if msg.channel == "web":
+            return None
+
+        external_id, display_hint = _extract_external_id(msg.channel, msg.sender_id)
+
+        client_id = await self._repos.client_identities.lookup(
+            owner_id, msg.channel, external_id,
+        )
+
+        if client_id:
+            await self._repos.clients.touch(client_id)
+            return client_id
+
+        client_id = str(_uuid.uuid4())
+        display_name = display_hint or external_id
+
+        try:
+            await self._repos.clients.create({
+                "client_id": client_id,
+                "owner_id": owner_id,
+                "display_name": display_name,
+            })
+            await self._repos.client_identities.create({
+                "client_id": client_id,
+                "owner_id": owner_id,
+                "channel": msg.channel,
+                "external_id": external_id,
+                "display_name": display_name,
+            })
+        except Exception:
+            existing = await self._repos.client_identities.lookup(
+                owner_id, msg.channel, external_id,
+            )
+            if existing:
+                await self._repos.clients.touch(existing)
+                return existing
+            raise
+
+        logger.info(
+            "Auto-created client {} for {}:{}",
+            client_id[:8], msg.channel, external_id,
+        )
+        return client_id
 
     async def _run_agent_loop(
         self,
@@ -374,12 +438,12 @@ class AgentLoop:
         logger.info("Reloading MCP servers...")
         await self.close_mcp()
 
-        for name in list(self.tools._tools.keys()):
+        for name in list(self.tools.tool_names):
             if name.startswith("mcp_"):
                 self.tools.unregister(name)
 
         for uctx in self._user_contexts.values():
-            for name in list(uctx.tools._tools.keys()):
+            for name in list(uctx.tools.tool_names):
                 if name.startswith("mcp_"):
                     uctx.tools.unregister(name)
 
@@ -389,7 +453,7 @@ class AgentLoop:
         await self._connect_mcp()
 
         if self._mcp_connected:
-            for name, tool in self.tools._tools.items():
+            for name, tool in self.tools.items():
                 if name.startswith("mcp_"):
                     for uctx in self._user_contexts.values():
                         if not uctx.tools.has(name):
@@ -440,7 +504,18 @@ class AgentLoop:
             if self._rate_limiter:
                 self._rate_limiter.record_request(user_id)
 
-        sessions = uctx.sessions if uctx else self.sessions
+        client_state: ClientState | None = None
+        if self._repos and uctx:
+            client_id = await self._resolve_client(msg, uctx.user_id)
+            if client_id:
+                from nanobot.agent.user_context import build_client_state
+                client_state = build_client_state(client_id, uctx.user_id, self._repos)
+                msg.client_id = client_id
+
+        sessions = (
+            client_state.sessions if client_state
+            else (uctx.sessions if uctx else self.sessions)
+        )
         context = uctx.context if uctx else self.context
         tools = uctx.tools if uctx else self.tools
         _provider = uctx.provider if uctx and uctx.provider else self.provider
@@ -449,7 +524,17 @@ class AgentLoop:
         _temperature = uctx.temperature if uctx else self.temperature
         _max_iterations = uctx.max_iterations if uctx else self.max_iterations
         _memory_window = uctx.memory_window if uctx else self.memory_window
-        _memory: MemoryStore | None = uctx.memory if uctx else None
+        _memory: MemoryStore | ClientMemoryStore | None = (
+            client_state.memory if client_state
+            else (uctx.memory if uctx else None)
+        )
+
+        if client_state:
+            tools = ToolRegistry()
+            for name, tool in (uctx.tools if uctx else self.tools).items():
+                tools.register(tool)
+            tools.register(SaveMemoryTool(client_state.memory))
+            tools.register(SearchMemoryTool(client_state.memory))
 
         if msg.channel == "system":
             channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id
@@ -542,12 +627,17 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
+        client_context: str | None = None
+        if client_state and self._repos:
+            client_context = await self._build_client_context(client_state, msg.channel)
+
         history = session.get_history(max_messages=_memory_window)
         initial_messages = await context.build_messages(
             history=history,
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel, chat_id=msg.chat_id,
+            client_context=client_context,
         )
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
@@ -606,9 +696,39 @@ class AgentLoop:
             session.messages.append(entry)
         session.updated_at = datetime.now()
 
+    async def _build_client_context(
+        self, client_state: ClientState, channel: str,
+    ) -> str:
+        parts = ["# Client Context\n"]
+
+        client_doc = await self._repos.clients.get(client_state.client_id)
+        if client_doc:
+            parts.append("## About This Client")
+            parts.append(f"Name: {client_doc.get('display_name', '')}")
+            parts.append(f"Channel: {channel}")
+            parts.append(f"First seen: {client_doc.get('first_seen', '?')}")
+            parts.append(
+                f"Total interactions: {client_doc.get('total_interactions', 0)}"
+            )
+
+        client_memory_ctx = await client_state.memory.get_memory_context()
+        if client_memory_ctx:
+            parts.append(f"\n{client_memory_ctx}")
+
+        history_entries = await self._repos.client_memories.get_history(
+            client_state.client_id, limit=5,
+        )
+        if history_entries:
+            recent = "\n\n".join(
+                e["content"] for e in reversed(history_entries)
+            )
+            parts.append(f"\n## Recent History\n{recent}")
+
+        return "\n".join(parts)
+
     async def _consolidate_memory(
         self, session: Session, *, archive_all: bool = False,
-        memory: MemoryStore | None = None,
+        memory: MemoryStore | ClientMemoryStore | None = None,
     ) -> bool:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""
         _memory = memory or MemoryStore(self.workspace)

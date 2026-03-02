@@ -37,17 +37,19 @@ class SQLiteSessionRepository:
         """Upsert session. Returns the row id."""
         user_id = session["user_id"]
         session_key = session["session_key"]
+        client_id = session.get("client_id")
         now = datetime.now().isoformat()
         metadata = session.get("metadata", {})
         if not isinstance(metadata, str):
             metadata = json.dumps(metadata)
 
-        cursor = await self._db.execute(
-            """INSERT INTO sessions (user_id, session_key, last_consolidated,
+        await self._db.execute(
+            """INSERT INTO sessions (user_id, session_key, client_id, last_consolidated,
                                      message_count, status, metadata, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(user_id, session_key)
                DO UPDATE SET
+                   client_id = COALESCE(excluded.client_id, client_id),
                    last_consolidated = excluded.last_consolidated,
                    message_count = excluded.message_count,
                    status = excluded.status,
@@ -56,6 +58,7 @@ class SQLiteSessionRepository:
             (
                 user_id,
                 session_key,
+                client_id,
                 session.get("last_consolidated", 0),
                 session.get("message_count", 0),
                 session.get("status", "active"),
@@ -73,14 +76,27 @@ class SQLiteSessionRepository:
         row = await cur2.fetchone()
         return row[0] if row else 0
 
-    async def list_sessions(self, user_id: str, status: str = "active") -> list[dict[str, Any]]:
-        cursor = await self._db.execute(
-            """SELECT id, user_id, session_key, message_count, status, created_at, updated_at
-               FROM sessions
-               WHERE user_id = ? AND status = ?
-               ORDER BY updated_at DESC""",
-            (user_id, status),
-        )
+    async def list_sessions(
+        self, user_id: str, status: str = "active", client_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if client_id:
+            cursor = await self._db.execute(
+                """SELECT id, user_id, session_key, client_id, message_count,
+                          status, created_at, updated_at
+                   FROM sessions
+                   WHERE user_id = ? AND client_id = ? AND status = ?
+                   ORDER BY updated_at DESC""",
+                (user_id, client_id, status),
+            )
+        else:
+            cursor = await self._db.execute(
+                """SELECT id, user_id, session_key, message_count,
+                          status, created_at, updated_at
+                   FROM sessions
+                   WHERE user_id = ? AND status = ?
+                   ORDER BY updated_at DESC""",
+                (user_id, status),
+            )
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
 

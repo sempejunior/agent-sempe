@@ -18,7 +18,7 @@ rebuild:
 
 # Start the application in development mode with hot-reload
 dev:
-	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --force-recreate
 	@echo ""
 	@echo "  ┌─────────────────────────────────────────────────┐"
 	@echo "  │  Dev mode ready!                                │"

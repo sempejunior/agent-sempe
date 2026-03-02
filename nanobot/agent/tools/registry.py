@@ -30,7 +30,10 @@ class ToolRegistry:
     def has(self, name: str) -> bool:
         """Check if a tool is registered."""
         return name in self._tools
-    
+
+    def items(self) -> list[tuple[str, Tool]]:
+        return list(self._tools.items())
+
     def get_definitions(self) -> list[dict[str, Any]]:
         """Get all tool definitions in OpenAI format."""
         return [tool.to_schema() for tool in self._tools.values()]

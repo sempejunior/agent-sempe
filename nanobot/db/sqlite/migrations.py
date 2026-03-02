@@ -251,7 +251,98 @@ BEGIN
     INSERT INTO rag_chunks_fts(rowid, content) VALUES (NEW.id, NEW.content);
 END;
 """),
+
+    (5, """
+-- ===================== v5: client layer — identity, memory, sessions =====================
+
+-- Clients table
+CREATE TABLE IF NOT EXISTS clients (
+    client_id     TEXT PRIMARY KEY,
+    owner_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    display_name  TEXT NOT NULL DEFAULT '',
+    metadata      TEXT NOT NULL DEFAULT '{}',
+    first_seen    TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen     TEXT NOT NULL DEFAULT (datetime('now')),
+    total_interactions INTEGER NOT NULL DEFAULT 0,
+    status        TEXT NOT NULL DEFAULT 'active',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_clients_owner_status ON clients(owner_id, status);
+CREATE INDEX IF NOT EXISTS idx_clients_owner_last_seen ON clients(owner_id, last_seen DESC);
+
+-- Client identities table
+CREATE TABLE IF NOT EXISTS client_identities (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+    owner_id  TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    channel     TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    verified    INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(owner_id, channel, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_identities_client ON client_identities(client_id);
+
+-- Client memories table
+CREATE TABLE IF NOT EXISTS client_memories (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id   TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+    owner_id  TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    type        TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_memories_client_type ON client_memories(client_id, type);
+CREATE INDEX IF NOT EXISTS idx_client_memories_client_type_updated ON client_memories(client_id, type, updated_at DESC);
+
+-- FTS5 for client_memories
+CREATE VIRTUAL TABLE IF NOT EXISTS client_memories_fts USING fts5(
+    content,
+    content='client_memories',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS client_memories_ai AFTER INSERT ON client_memories
+WHEN NEW.type = 'history'
+BEGIN
+    INSERT INTO client_memories_fts(rowid, content) VALUES (NEW.id, NEW.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS client_memories_ad AFTER DELETE ON client_memories
+WHEN OLD.type = 'history'
+BEGIN
+    INSERT INTO client_memories_fts(client_memories_fts, rowid, content) VALUES('delete', OLD.id, OLD.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS client_memories_au AFTER UPDATE OF content ON client_memories
+WHEN NEW.type = 'history'
+BEGIN
+    INSERT INTO client_memories_fts(client_memories_fts, rowid, content) VALUES('delete', OLD.id, OLD.content);
+    INSERT INTO client_memories_fts(rowid, content) VALUES (NEW.id, NEW.content);
+END;
+
+-- Add nullable client_id to sessions
+ALTER TABLE sessions ADD COLUMN client_id TEXT REFERENCES clients(client_id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_client_id ON sessions(client_id);
+"""),
 ]
+
+async def _fixup_v5_column_names(db: "aiosqlite.Connection") -> None:
+    """Rename creator_id -> owner_id if v5 was applied from an early draft."""
+    for table in ("clients", "client_identities", "client_memories"):
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        columns = [row[1] for row in await cursor.fetchall()]
+        if "creator_id" in columns and "owner_id" not in columns:
+            await db.execute(
+                f"ALTER TABLE {table} RENAME COLUMN creator_id TO owner_id",
+            )
+    await db.commit()
 
 
 async def apply_migrations(db: "aiosqlite.Connection") -> None:
@@ -274,3 +365,6 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
                 await db.execute("INSERT INTO _schema_version (version) VALUES (?)", (version,))
             current_version = version
             await db.commit()
+
+    if current_version >= 5:
+        await _fixup_v5_column_names(db)

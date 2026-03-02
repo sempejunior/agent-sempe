@@ -12,6 +12,7 @@ import { PromptsPanel } from "@/components/PromptsPanel";
 import { ChannelsPanel } from "@/components/ChannelsPanel";
 import { CronPanel } from "@/components/CronPanel";
 import { RagPanel } from "@/components/RagPanel";
+import { ClientsPage } from "@/components/ClientsPage";
 import { Cpu } from "lucide-react";
 
 function MainContent() {
@@ -31,6 +32,8 @@ function MainContent() {
       return <CronPanel />;
     case "rag":
       return <RagPanel />;
+    case "clients":
+      return <ClientsPage />;
     default:
       return <ChatArea />;
   }

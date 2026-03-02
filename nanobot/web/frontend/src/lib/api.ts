@@ -356,6 +356,164 @@ export async function updateRagConfig(data: RAGConfig): Promise<{ ok: boolean }>
   return request("/config/rag", { method: "PUT", body: JSON.stringify(data) });
 }
 
+// Clients
+export interface Client {
+  client_id: string;
+  display_name: string;
+  status: string;
+  channels: string[];
+  first_seen: string;
+  last_seen: string;
+  total_interactions: number;
+  metadata?: string;
+  owner_id?: string;
+}
+
+export interface ClientIdentity {
+  id: number;
+  client_id: string;
+  channel: string;
+  external_id: string;
+  display_name: string;
+  verified: number;
+  created_at: string;
+}
+
+export interface ClientDetail extends Client {
+  identities: ClientIdentity[];
+}
+
+export interface ClientMemoryData {
+  long_term: string;
+  history: { id: number; content: string; created_at: string }[];
+}
+
+export interface ClientSession {
+  session_key: string;
+  message_count: number;
+  updated_at: string;
+}
+
+export async function listClients(params?: {
+  q?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+  sort?: string;
+}): Promise<{ clients: Client[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params?.q) qs.set("q", params.q);
+  if (params?.status) qs.set("status", params.status);
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset) qs.set("offset", String(params.offset));
+  if (params?.sort) qs.set("sort", params.sort);
+  const query = qs.toString();
+  return request(`/clients${query ? `?${query}` : ""}`);
+}
+
+export async function getClient(clientId: string): Promise<ClientDetail> {
+  return request(`/clients/${clientId}`);
+}
+
+export async function updateClient(
+  clientId: string,
+  data: { display_name?: string; metadata?: string; status?: string },
+): Promise<{ ok: boolean }> {
+  return request(`/clients/${clientId}`, { method: "PUT", body: JSON.stringify(data) });
+}
+
+export async function deleteClient(clientId: string): Promise<{ ok: boolean }> {
+  return request(`/clients/${clientId}`, { method: "DELETE" });
+}
+
+export async function listClientIdentities(clientId: string): Promise<ClientIdentity[]> {
+  return request(`/clients/${clientId}/identities`);
+}
+
+export async function addClientIdentity(
+  clientId: string,
+  data: { channel: string; external_id: string; display_name?: string },
+): Promise<{ ok: boolean; id: number }> {
+  return request(`/clients/${clientId}/identities`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteClientIdentity(
+  clientId: string,
+  identityId: number,
+): Promise<{ ok: boolean }> {
+  return request(`/clients/${clientId}/identities/${identityId}`, { method: "DELETE" });
+}
+
+export async function getClientMemory(clientId: string): Promise<ClientMemoryData> {
+  return request(`/clients/${clientId}/memory`);
+}
+
+export async function updateClientLongTermMemory(
+  clientId: string,
+  content: string,
+): Promise<{ ok: boolean }> {
+  return request(`/clients/${clientId}/memory/long_term`, {
+    method: "PUT",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export async function clearClientMemory(clientId: string): Promise<{ ok: boolean; deleted: number }> {
+  return request(`/clients/${clientId}/memory`, { method: "DELETE" });
+}
+
+export async function deleteClientMemoryEntry(
+  clientId: string,
+  entryId: number,
+): Promise<{ ok: boolean }> {
+  return request(`/clients/${clientId}/memory/${entryId}`, { method: "DELETE" });
+}
+
+export async function searchClientMemory(
+  clientId: string,
+  query: string,
+): Promise<{ results: { id: number; content: string; created_at: string }[] }> {
+  return request(`/clients/${clientId}/memory/search?q=${encodeURIComponent(query)}`);
+}
+
+export async function listClientSessions(clientId: string): Promise<ClientSession[]> {
+  return request(`/clients/${clientId}/sessions`);
+}
+
+export async function getClientSessionMessages(
+  clientId: string,
+  sessionKey: string,
+): Promise<Message[]> {
+  return request(`/clients/${clientId}/sessions/${encodeURIComponent(sessionKey)}/messages`);
+}
+
+export async function deleteClientSession(
+  clientId: string,
+  sessionKey: string,
+): Promise<{ ok: boolean }> {
+  return request(`/clients/${clientId}/sessions/${encodeURIComponent(sessionKey)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function mergeClients(
+  primaryId: string,
+  secondaryId: string,
+): Promise<{ ok: boolean; client_id: string }> {
+  return request("/clients/merge", {
+    method: "POST",
+    body: JSON.stringify({ primary: primaryId, secondary: secondaryId }),
+  });
+}
+
+export async function countActiveClients(): Promise<number> {
+  const res = await listClients({ status: "active", limit: 0 });
+  return res.total;
+}
+
 // WebSocket
 export type WsMessageType = "response" | "progress" | "tool_hint" | "error" | "pong";
 

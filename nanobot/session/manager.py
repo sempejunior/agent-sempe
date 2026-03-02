@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
-from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -89,12 +89,14 @@ class SessionManager:
         session_repo: SessionRepository | None = None,
         message_repo: MessageRepository | None = None,
         user_id: str | None = None,
+        client_id: str | None = None,
     ):
         if session_repo is not None:
             self._mode = "db"
             self._session_repo = session_repo
             self._message_repo = message_repo
             self._user_id = user_id
+            self._client_id = client_id
         elif workspace is not None:
             self._mode = "fs"
             self.workspace = workspace
@@ -136,7 +138,9 @@ class SessionManager:
     async def list_sessions(self) -> list[dict[str, Any]]:
         """List all sessions."""
         if self._mode == "db":
-            return await self._session_repo.list_sessions(self._user_id)
+            return await self._session_repo.list_sessions(
+                self._user_id, client_id=self._client_id,
+            )
         return self._list_sessions_fs()
 
     async def delete(self, key: str) -> bool:
@@ -182,12 +186,15 @@ class SessionManager:
         )
 
     async def _save_to_db(self, session: Session) -> None:
-        session_id = await self._session_repo.save({
+        session_data: dict[str, Any] = {
             "user_id": self._user_id,
             "session_key": session.key,
             "last_consolidated": session.last_consolidated,
             "message_count": len(session.messages),
-        })
+        }
+        if self._client_id:
+            session_data["client_id"] = self._client_id
+        session_id = await self._session_repo.save(session_data)
         self._session_ids[session.key] = session_id
 
         loaded = self._loaded_counts.get(session.key, 0)

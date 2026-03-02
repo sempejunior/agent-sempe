@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { useStore, type View } from "@/lib/store";
-import { getSkills } from "@/lib/api";
+import { getSkills, countActiveClients } from "@/lib/api";
 import {
   Cpu,
   MessageSquare,
@@ -8,6 +8,7 @@ import {
   Zap,
   Database,
   BrainCircuit,
+  Users,
   Radio,
   Calendar,
   Settings,
@@ -32,6 +33,7 @@ const WORKPLACE_NAV: NavItem[] = [
   { key: "capabilities", label: "Capabilities", icon: Zap },
   { key: "rag", label: "Knowledge (RAG)", icon: Database },
   { key: "memory", label: "Memory", icon: BrainCircuit },
+  { key: "clients", label: "Clients", icon: Users },
 ];
 
 const SYSTEM_NAV: NavItem[] = [
@@ -58,10 +60,12 @@ export function Sidebar() {
 
   const [searchTerm, setSearchTerm] = useState("");
   const [toolCount, setToolCount] = useState(0);
+  const [clientCount, setClientCount] = useState(0);
 
   useEffect(() => {
     loadSessions();
     getSkills().then((s) => setToolCount(s.tools_enabled.length)).catch(() => { });
+    countActiveClients().then(setClientCount).catch(() => {});
   }, [loadSessions]);
 
   const filteredSessions = useMemo(() => {
@@ -94,12 +98,12 @@ export function Sidebar() {
   }, [user]);
 
   const navItems = useMemo(() => {
-    return WORKPLACE_NAV.map((item) =>
-      item.key === "capabilities" && toolCount > 0
-        ? { ...item, badge: toolCount }
-        : item,
-    );
-  }, [toolCount]);
+    return WORKPLACE_NAV.map((item) => {
+      if (item.key === "capabilities" && toolCount > 0) return { ...item, badge: toolCount };
+      if (item.key === "clients" && clientCount > 0) return { ...item, badge: clientCount };
+      return item;
+    });
+  }, [toolCount, clientCount]);
 
   function renderNavItem(item: NavItem) {
     const Icon = item.icon;

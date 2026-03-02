@@ -11,7 +11,7 @@ import {
 } from "./api";
 import { toast } from "./toast";
 
-export type View = "chat" | "capabilities" | "memory" | "prompts" | "channels" | "rag" | "cron" | "settings";
+export type View = "chat" | "capabilities" | "memory" | "prompts" | "channels" | "rag" | "cron" | "settings" | "clients";
 
 interface ChatMessage {
   id: string;
@@ -42,6 +42,7 @@ interface AppState {
   // Navigation
   sidebarOpen: boolean;
   activeView: View;
+  selectedClientId: string | null;
 
   // Actions
   initAuth: () => Promise<void>;
@@ -60,6 +61,7 @@ interface AppState {
 
   toggleSidebar: () => void;
   setActiveView: (view: View) => void;
+  setSelectedClientId: (id: string | null) => void;
 }
 
 let msgCounter = 0;
@@ -86,6 +88,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   sidebarOpen: true,
   activeView: "chat",
+  selectedClientId: null,
 
   // ---- Auth ----
 
@@ -344,5 +347,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   setActiveView(view: View) {
     set({ activeView: view });
+  },
+
+  setSelectedClientId(id: string | null) {
+    set({ selectedClientId: id, activeView: "clients" });
   },
 }));
