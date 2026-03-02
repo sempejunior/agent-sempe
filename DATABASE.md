@@ -9,13 +9,17 @@
 
 ```
 users              perfil, agent config, limits, bootstrap (prompt extensions), channel configs
-sessions           conversas por user_id + session_key
+sessions           conversas por user_id + session_key (+ client_id opcional)
 messages           mensagens separadas por sessao (role, content, tool_calls)
 memories           long_term (1 por user) + history (N registros, pesquisavel via FTS5)
 skills             skills customizadas por usuario (builtins ficam no filesystem)
 cron_jobs          jobs agendados por usuario
 channel_bindings   mapeamento sender_id (Telegram, Discord, etc.) -> user_id
 audit_log          trilha de auditoria append-only
+rag_chunks         chunks de RAG por usuario com FTS5
+clients            perfis de end-users (clients) por creator
+client_identities  mapeamento multi-canal de clients (Telegram ID, WhatsApp, etc.)
+client_memories    memoria per-client: long_term + history com FTS5
 ```
 
 ## Migrations
@@ -25,6 +29,8 @@ audit_log          trilha de auditoria append-only
 | v1 | Schema inicial: 8 tabelas + indices + _schema_version |
 | v2 | FTS5 full-text search em memories (type='history') + triggers de sync |
 | v3 | `users.channel_configs` — configuracoes de canais per-user (JSON) |
+| v4 | RAG chunk storage com FTS5 (`rag_chunks` + `rag_chunks_fts`) |
+| v5 | Client layer: `clients`, `client_identities`, `client_memories` + FTS5 + coluna `client_id` em `sessions` |
 
 Migrations sao aplicadas automaticamente em `nanobot/db/sqlite/migrations.py`.
 
@@ -252,33 +258,131 @@ CREATE TABLE audit_log (
 );
 ```
 
+### rag_chunks
+
+Chunks de RAG por usuario com busca full-text via FTS5.
+
+```sql
+CREATE TABLE rag_chunks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    content    TEXT NOT NULL,
+    metadata   TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- FTS5 para busca full-text em chunks (v4)
+CREATE VIRTUAL TABLE rag_chunks_fts USING fts5(
+    content, content='rag_chunks', content_rowid='id'
+);
+-- Triggers automaticos mantém o indice FTS sincronizado
+```
+
+### clients
+
+Perfis de end-users (clients) por creator. Auto-criados na primeira mensagem de um canal.
+
+```sql
+CREATE TABLE clients (
+    client_id          TEXT PRIMARY KEY,           -- UUID
+    owner_id           TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    display_name       TEXT NOT NULL DEFAULT '',
+    metadata           TEXT NOT NULL DEFAULT '{}',  -- JSON: tags, notas, campos customizados
+    first_seen         TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen          TEXT NOT NULL DEFAULT (datetime('now')),
+    total_interactions INTEGER NOT NULL DEFAULT 0,
+    status             TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'blocked' | 'archived'
+    created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_clients_owner_status ON clients(owner_id, status);
+CREATE INDEX idx_clients_owner_last_seen ON clients(owner_id, last_seen DESC);
+```
+
+### client_identities
+
+Mapeamento multi-canal de clients. Um client pode ter identidades em Telegram, WhatsApp, Discord, etc.
+
+```sql
+CREATE TABLE client_identities (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id    TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+    owner_id     TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    channel      TEXT NOT NULL,                     -- 'telegram', 'whatsapp', 'discord', etc.
+    external_id  TEXT NOT NULL,                     -- ID do user no canal
+    display_name TEXT NOT NULL DEFAULT '',
+    verified     INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+
+    UNIQUE(owner_id, channel, external_id)
+);
+
+CREATE INDEX idx_client_identities_client ON client_identities(client_id);
+```
+
+### client_memories
+
+Memoria per-client: `long_term` (1 por client, UPSERT) e `history` (N registros, pesquisavel via FTS5).
+
+```sql
+CREATE TABLE client_memories (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id  TEXT NOT NULL REFERENCES clients(client_id) ON DELETE CASCADE,
+    owner_id   TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    type       TEXT NOT NULL,                       -- 'long_term' | 'history'
+    content    TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_client_memories_client_type ON client_memories(client_id, type);
+
+-- FTS5 para busca full-text em history (v5)
+CREATE VIRTUAL TABLE client_memories_fts USING fts5(
+    content, content='client_memories', content_rowid='id'
+);
+-- Triggers automaticos mantém o indice FTS sincronizado
+```
+
 ---
 
 ## Repositorios
 
-Todas as interfaces em `nanobot/db/repositories.py`:
+Interfaces core em `nanobot/db/repositories.py`, interfaces de client em `nanobot/db/client_repositories.py`:
 
-| Repository | Implementacao | Funcao |
-|------------|--------------|--------|
-| `UserRepository` | `sqlite/user_repo.py` | CRUD users, usage tracking, rate limits |
-| `SessionRepository` | `sqlite/session_repo.py` | CRUD sessoes, metadados, consolidacao |
-| `MessageRepository` | `sqlite/message_repo.py` | Mensagens por sessao, append/query por seq |
-| `MemoryRepository` | `sqlite/memory_repo.py` | Long-term (UPSERT) + history (append + FTS5 search) |
-| `SkillRepository` | `sqlite/skill_repo.py` | CRUD skills por usuario |
-| `CronRepository` | `sqlite/cron_repo.py` | CRUD cron jobs, scheduling, status |
-| `ChannelBindingRepository` | `sqlite/channel_binding_repo.py` | Bind/unbind sender_id <-> user_id |
-| `AuditRepository` | `sqlite/audit_repo.py` | Append log + TTL cleanup |
+| Repository | Interfaces | Funcao |
+|------------|-----------|--------|
+| `UserRepository` | `repositories.py` | CRUD users, usage tracking, rate limits |
+| `SessionRepository` | `repositories.py` | CRUD sessoes, metadados, consolidacao |
+| `MessageRepository` | `repositories.py` | Mensagens por sessao, append/query por seq |
+| `MemoryRepository` | `repositories.py` | Long-term (UPSERT) + history (append + FTS5 search) |
+| `SkillRepository` | `repositories.py` | CRUD skills por usuario |
+| `CronRepository` | `repositories.py` | CRUD cron jobs, scheduling, status |
+| `ChannelBindingRepository` | `repositories.py` | Bind/unbind sender_id <-> user_id |
+| `AuditRepository` | `repositories.py` | Append log + TTL cleanup |
+| `ClientRepository` | `client_repositories.py` | CRUD clients, touch (update last_seen), list/count by owner |
+| `ClientIdentityRepository` | `client_repositories.py` | Lookup/create/reassign identidades multi-canal |
+| `ClientMemoryRepository` | `client_repositories.py` | Long-term + history per-client com FTS5, merge support |
 
 ## Diagrama de Relacionamentos
 
 ```
 users (1) ──── (*) sessions ──── (*) messages
+  │                   │
+  │                   └──── (?) clients (via client_id, nullable)
   │
   ├──── (*) memories
   ├──── (*) skills
   ├──── (*) cron_jobs
   ├──── (*) channel_bindings
-  └──── (*) audit_log
+  ├──── (*) audit_log
+  ├──── (*) rag_chunks
+  │
+  └──── (*) clients (via owner_id)
+              │
+              ├──── (*) client_identities
+              └──── (*) client_memories
 ```
 
-Todos os relacionamentos usam `ON DELETE CASCADE`. Foreign keys estao ativas (`PRAGMA foreign_keys=ON`).
+Todos os relacionamentos usam `ON DELETE CASCADE`. Foreign keys estao ativas (`PRAGMA foreign_keys=ON`). A coluna `sessions.client_id` usa `ON DELETE SET NULL` para preservar sessoes quando um client e deletado.

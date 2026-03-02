@@ -3,11 +3,42 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 from pathlib import Path
 
 import aiosqlite
+from loguru import logger
 
 from nanobot.db.sqlite.migrations import apply_migrations
+
+
+def _ensure_writable(path: Path) -> None:
+    """Ensure the database file is writable by the current process.
+
+    On FUSE mounts (SSHFS, NFS) the database may have been created by a
+    previous container running as a different uid.  The current process can
+    read but not write to it.  Fix by replacing the file with a copy — the
+    copy inherits the current process's effective uid and is therefore
+    writable.  All data is preserved.
+    """
+    if not path.exists():
+        return
+    if os.access(str(path), os.W_OK):
+        return
+
+    logger.warning("Database {} is read-only, recreating with correct ownership", path.name)
+    tmp = path.with_suffix(".tmp")
+    shutil.copy2(str(path), str(tmp))
+    os.replace(str(tmp), str(path))
+
+    for suffix in ("-wal", "-shm"):
+        stale = path.with_name(path.name + suffix)
+        if stale.exists():
+            try:
+                stale.unlink()
+            except OSError:
+                pass
 
 
 async def create_database(db_path: str | Path) -> aiosqlite.Connection:
@@ -20,6 +51,8 @@ async def create_database(db_path: str | Path) -> aiosqlite.Connection:
     """
     path = Path(db_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    _ensure_writable(path)
 
     db = await aiosqlite.connect(str(path))
     db.row_factory = aiosqlite.Row

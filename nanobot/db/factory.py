@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from nanobot.db.repositories import (
-        AuditRepository,
-        ChannelBindingRepository,
+    from nanobot.db.client_repositories import (
         ClientIdentityRepository,
         ClientMemoryRepository,
         ClientRepository,
+    )
+    from nanobot.db.repositories import (
+        AuditRepository,
+        ChannelBindingRepository,
         CronRepository,
         MemoryRepository,
         MessageRepository,

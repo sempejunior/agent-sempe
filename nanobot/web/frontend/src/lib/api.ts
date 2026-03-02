@@ -405,36 +405,35 @@ export async function listClients(params?: {
   if (params?.q) qs.set("q", params.q);
   if (params?.status) qs.set("status", params.status);
   if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset) qs.set("offset", String(params.offset));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
   if (params?.sort) qs.set("sort", params.sort);
   const query = qs.toString();
   return request(`/clients${query ? `?${query}` : ""}`);
 }
 
 export async function getClient(clientId: string): Promise<ClientDetail> {
-  return request(`/clients/${clientId}`);
+  return request(`/clients/${encodeURIComponent(clientId)}`);
 }
 
 export async function updateClient(
   clientId: string,
   data: { display_name?: string; metadata?: string; status?: string },
 ): Promise<{ ok: boolean }> {
-  return request(`/clients/${clientId}`, { method: "PUT", body: JSON.stringify(data) });
+  return request(`/clients/${encodeURIComponent(clientId)}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
 }
 
 export async function deleteClient(clientId: string): Promise<{ ok: boolean }> {
-  return request(`/clients/${clientId}`, { method: "DELETE" });
-}
-
-export async function listClientIdentities(clientId: string): Promise<ClientIdentity[]> {
-  return request(`/clients/${clientId}/identities`);
+  return request(`/clients/${encodeURIComponent(clientId)}`, { method: "DELETE" });
 }
 
 export async function addClientIdentity(
   clientId: string,
   data: { channel: string; external_id: string; display_name?: string },
 ): Promise<{ ok: boolean; id: number }> {
-  return request(`/clients/${clientId}/identities`, {
+  return request(`/clients/${encodeURIComponent(clientId)}/identities`, {
     method: "POST",
     body: JSON.stringify(data),
   });
@@ -444,59 +443,80 @@ export async function deleteClientIdentity(
   clientId: string,
   identityId: number,
 ): Promise<{ ok: boolean }> {
-  return request(`/clients/${clientId}/identities/${identityId}`, { method: "DELETE" });
+  return request(`/clients/${encodeURIComponent(clientId)}/identities/${identityId}`, {
+    method: "DELETE",
+  });
 }
 
 export async function getClientMemory(clientId: string): Promise<ClientMemoryData> {
-  return request(`/clients/${clientId}/memory`);
+  return request(`/clients/${encodeURIComponent(clientId)}/memory`);
 }
 
 export async function updateClientLongTermMemory(
   clientId: string,
   content: string,
 ): Promise<{ ok: boolean }> {
-  return request(`/clients/${clientId}/memory/long_term`, {
+  return request(`/clients/${encodeURIComponent(clientId)}/memory/long_term`, {
     method: "PUT",
     body: JSON.stringify({ content }),
   });
 }
 
-export async function clearClientMemory(clientId: string): Promise<{ ok: boolean; deleted: number }> {
-  return request(`/clients/${clientId}/memory`, { method: "DELETE" });
+export async function clearClientMemory(
+  clientId: string,
+): Promise<{ ok: boolean; deleted: number }> {
+  return request(`/clients/${encodeURIComponent(clientId)}/memory`, { method: "DELETE" });
 }
 
 export async function deleteClientMemoryEntry(
   clientId: string,
   entryId: number,
 ): Promise<{ ok: boolean }> {
-  return request(`/clients/${clientId}/memory/${entryId}`, { method: "DELETE" });
+  return request(`/clients/${encodeURIComponent(clientId)}/memory/${entryId}`, {
+    method: "DELETE",
+  });
 }
 
 export async function searchClientMemory(
   clientId: string,
   query: string,
 ): Promise<{ results: { id: number; content: string; created_at: string }[] }> {
-  return request(`/clients/${clientId}/memory/search?q=${encodeURIComponent(query)}`);
+  const cid = encodeURIComponent(clientId);
+  return request(`/clients/${cid}/memory/search?q=${encodeURIComponent(query)}`);
+}
+
+export interface RecentMessage {
+  role: string;
+  content: string;
+  timestamp: string;
+  session_key: string;
+}
+
+export async function getClientRecentMessages(clientId: string, limit = 50): Promise<RecentMessage[]> {
+  const cid = encodeURIComponent(clientId);
+  return request(`/clients/${cid}/recent-messages?limit=${limit}`);
 }
 
 export async function listClientSessions(clientId: string): Promise<ClientSession[]> {
-  return request(`/clients/${clientId}/sessions`);
-}
-
-export async function getClientSessionMessages(
-  clientId: string,
-  sessionKey: string,
-): Promise<Message[]> {
-  return request(`/clients/${clientId}/sessions/${encodeURIComponent(sessionKey)}/messages`);
+  return request(`/clients/${encodeURIComponent(clientId)}/sessions`);
 }
 
 export async function deleteClientSession(
   clientId: string,
   sessionKey: string,
 ): Promise<{ ok: boolean }> {
-  return request(`/clients/${clientId}/sessions/${encodeURIComponent(sessionKey)}`, {
+  const cid = encodeURIComponent(clientId);
+  return request(`/clients/${cid}/sessions/${encodeURIComponent(sessionKey)}`, {
     method: "DELETE",
   });
+}
+
+export async function getClientSessionMessages(
+  clientId: string,
+  sessionKey: string,
+): Promise<Message[]> {
+  const cid = encodeURIComponent(clientId);
+  return request(`/clients/${cid}/sessions/${encodeURIComponent(sessionKey)}/messages`);
 }
 
 export async function mergeClients(

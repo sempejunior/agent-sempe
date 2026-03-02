@@ -8,7 +8,7 @@ from typing import Any
 @dataclass
 class InboundMessage:
     """Message received from a chat channel."""
-
+    
     channel: str
     sender_id: str
     chat_id: str
@@ -18,7 +18,6 @@ class InboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
     session_key_override: str | None = None
     user_id: str | None = None
-    client_id: str | None = None
 
     @property
     def session_key(self) -> str:
@@ -29,7 +28,7 @@ class InboundMessage:
 @dataclass
 class OutboundMessage:
     """Message to send to a chat channel."""
-
+    
     channel: str
     chat_id: str
     content: str

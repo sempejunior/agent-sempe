@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 
+
 @runtime_checkable
 class UserRepository(Protocol):
     """CRUD + usage tracking for user accounts."""
@@ -46,7 +47,7 @@ class SessionRepository(Protocol):
         """Upsert session. Returns the session row id."""
         ...
 
-    async def list_sessions(self, user_id: str, status: str = "active", client_id: str | None = None) -> list[dict[str, Any]]: ...
+    async def list_sessions(self, user_id: str, status: str = "active") -> list[dict[str, Any]]: ...
 
     async def delete(self, user_id: str, session_key: str) -> bool: ...
 
@@ -176,71 +177,4 @@ class AuditRepository(Protocol):
 
     async def cleanup(self, days: int = 90) -> int:
         """Delete entries older than *days*. Returns count deleted."""
-        ...
-
-
-
-@runtime_checkable
-class ClientRepository(Protocol):
-
-    async def get(self, client_id: str) -> dict[str, Any] | None: ...
-
-    async def create(self, client: dict[str, Any]) -> str: ...
-
-    async def update(self, client_id: str, fields: dict[str, Any]) -> bool: ...
-
-    async def delete(self, client_id: str) -> bool: ...
-
-    async def list_by_owner(
-        self, owner_id: str, *, status: str | None = None,
-        query: str | None = None, limit: int = 50, offset: int = 0,
-        sort: str = "last_seen",
-    ) -> list[dict[str, Any]]: ...
-
-    async def count_by_owner(self, owner_id: str, *, status: str | None = None, query: str | None = None) -> int: ...
-
-    async def touch(self, client_id: str) -> None:
-        """Update last_seen and increment total_interactions."""
-        ...
-
-
-
-@runtime_checkable
-class ClientIdentityRepository(Protocol):
-
-    async def lookup(self, owner_id: str, channel: str, external_id: str) -> str | None:
-        """Return client_id if identity exists, else None."""
-        ...
-
-    async def create(self, identity: dict[str, Any]) -> int: ...
-
-    async def delete(self, identity_id: int, client_id: str) -> bool: ...
-
-    async def list_by_client(self, client_id: str) -> list[dict[str, Any]]: ...
-
-    async def reassign(self, from_client_id: str, to_client_id: str) -> int:
-        """Move all identities from one client to another. Returns count moved."""
-        ...
-
-
-
-@runtime_checkable
-class ClientMemoryRepository(Protocol):
-
-    async def get_long_term(self, client_id: str) -> str: ...
-
-    async def save_long_term(self, client_id: str, owner_id: str, content: str) -> None: ...
-
-    async def append_history(self, client_id: str, owner_id: str, entry: str) -> None: ...
-
-    async def get_history(self, client_id: str, limit: int = 100) -> list[dict[str, Any]]: ...
-
-    async def search_history(self, client_id: str, query: str, limit: int = 50) -> list[dict[str, Any]]: ...
-
-    async def delete_entry(self, entry_id: int, client_id: str) -> bool: ...
-
-    async def clear(self, client_id: str) -> int: ...
-
-    async def reassign(self, from_client_id: str, to_client_id: str) -> int:
-        """Move all memories from one client to another. Returns count moved."""
         ...

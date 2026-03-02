@@ -14,14 +14,14 @@ services:
       start_period: 45s
     command: >
       /bin/sh -c "
-        Xvfb :99 -screen 0 1280x720x24 -ac &
+        Xvfb :99 -screen 0 1280x720x24 -ac >/dev/null 2>&1 &
         sleep 1 &&
-        fluxbox -display :99 &
+        fluxbox -display :99 >/dev/null 2>&1 &
         x11vnc -display :99 -forever -nopw -shared -rfbport 5900 -bg -o /tmp/x11vnc.log &&
         sleep 1 &&
-        websockify --web=/usr/share/novnc/ 6080 localhost:5900 &
+        websockify --web=/usr/share/novnc/ 6080 localhost:5900 >/dev/null 2>&1 &
         sleep 1 &&
-        xterm -display :99 -geometry 100x30+50+50 -fa Monospace -fs 11 -bg '#0d1117' -fg '#c9d1d9' -T 'nanobot terminal' &
+        xterm -display :99 -geometry 100x30+50+50 -fa Monospace -fs 11 -bg '#0d1117' -fg '#c9d1d9' -T 'nanobot terminal' >/dev/null 2>&1 &
         chromium --display=:99 --no-sandbox --no-first-run --no-default-browser-check --disable-gpu --disable-software-rasterizer --disable-dev-shm-usage --remote-debugging-port=9222 --window-size=1200,650 --window-position=80,30 --disable-blink-features=AutomationControlled --user-agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' --lang=pt-BR --disable-infobars --disable-features=ChromeWhatsNewUI about:blank >/dev/null 2>&1 &
         echo 'Waiting for Chromium CDP on port 9222...' &&
         i=0; while [ $$i -lt 30 ]; do curl -sf http://localhost:9222/json >/dev/null 2>&1 && echo 'Chromium CDP ready' && break; i=$$((i+1)); sleep 1; done &&

@@ -190,6 +190,47 @@ function FieldInput({
   );
 }
 
+function StartChannelDialog({
+  channelLabel,
+  onStart,
+  onDismiss,
+}: {
+  channelLabel: string;
+  onStart: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm animate-fade-in">
+      <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md mx-4 p-8 animate-fade-in-up">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200/50 flex items-center justify-center">
+            <Play className="w-5 h-5 text-emerald-600 fill-current" />
+          </div>
+          <h3 className="text-lg font-bold text-slate-900">Start {channelLabel}?</h3>
+        </div>
+        <p className="text-sm text-slate-500 font-medium mb-6">
+          Configuration saved successfully. Would you like to start the channel now?
+        </p>
+        <div className="flex items-center gap-3 justify-end">
+          <Button
+            onClick={onDismiss}
+            className="px-5 h-10 text-slate-600 bg-slate-100 hover:bg-slate-200 border-none rounded-xl font-bold transition-all"
+          >
+            Later
+          </Button>
+          <Button
+            onClick={onStart}
+            className="px-5 h-10 text-white bg-emerald-600 hover:bg-emerald-700 border-none rounded-xl font-bold shadow-md transition-all"
+          >
+            <Play className="w-4 h-4 mr-1.5 fill-current" />
+            Start Now
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ChannelDetail({
   channel,
   onRefresh,
@@ -202,8 +243,10 @@ function ChannelDetail({
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [showStartDialog, setShowStartDialog] = useState(false);
 
-  // Reload form data when channel changes
+  const isEnabled = (formData["enabled"] as boolean) ?? channel.enabled;
+
   useEffect(() => {
     const initial: Record<string, unknown> = {};
     for (const field of channel.fields) {
@@ -212,6 +255,7 @@ function ChannelDetail({
     initial["enabled"] = channel.enabled;
     setFormData(initial);
     setDirty(false);
+    setShowStartDialog(false);
   }, [channel]);
 
   const updateField = (key: string, value: unknown) => {
@@ -223,8 +267,12 @@ function ChannelDetail({
     setSaving(true);
     try {
       await updateChannel(channel.name, formData);
-      toast("success", `${channel.label} config saved`);
       setDirty(false);
+      if (isEnabled && !channel.running) {
+        setShowStartDialog(true);
+      } else {
+        toast("success", `${channel.label} config saved`);
+      }
       onRefresh();
     } catch (e) {
       toast("error", `Failed to save: ${(e as Error).message}`);
@@ -233,10 +281,7 @@ function ChannelDetail({
   };
 
   const handleStart = async () => {
-    if (dirty) {
-      toast("error", "Save your changes first");
-      return;
-    }
+    setShowStartDialog(false);
     setStarting(true);
     try {
       await startChannel(channel.name);
@@ -262,45 +307,59 @@ function ChannelDetail({
 
   return (
     <div className="flex flex-col h-full bg-slate-50/50 border border-slate-200 rounded-3xl overflow-hidden shadow-sm animate-fade-in">
+      {showStartDialog && (
+        <StartChannelDialog
+          channelLabel={channel.label}
+          onStart={handleStart}
+          onDismiss={() => setShowStartDialog(false)}
+        />
+      )}
+
       {/* Detail Header */}
       <div className="flex items-center gap-5 px-8 pt-8 pb-6 bg-white border-b border-slate-200">
         <ChannelIcon name={channel.name} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3">
             <h2 className="text-xl font-bold text-slate-900 leading-tight">{channel.label}</h2>
-            {channel.running && (
+            {channel.running ? (
               <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200/50">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 Connected
               </span>
-            )}
+            ) : isEnabled ? (
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full bg-amber-50 text-amber-600 border border-amber-200/50">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                Enabled
+              </span>
+            ) : null}
           </div>
           <p className="text-sm font-medium text-slate-500 mt-1">
             {channel.description}
           </p>
         </div>
+
+        <button
+          type="button"
+          onClick={() => updateField("enabled", !isEnabled)}
+          className={cn(
+            "relative w-14 h-7 rounded-full transition-all duration-300 cursor-pointer shrink-0 shadow-inner",
+            isEnabled
+              ? "bg-gradient-to-r from-emerald-400 to-emerald-500 shadow-emerald-200"
+              : "bg-slate-200",
+          )}
+          title={isEnabled ? "Disable channel" : "Enable channel"}
+        >
+          <span
+            className={cn(
+              "absolute top-[3px] w-[22px] h-[22px] rounded-full bg-white shadow-md transition-all duration-300",
+              isEnabled ? "translate-x-[31px]" : "translate-x-[3px]",
+            )}
+          />
+        </button>
       </div>
 
       {/* Detail Scrollable Body */}
       <div className="flex-1 overflow-y-auto p-8 space-y-6">
-        <div className="flex items-center justify-between bg-white p-6 rounded-2xl border border-slate-200 shadow-[0_2px_8px_rgb(0,0,0,0.02)]">
-          <div>
-            <span className="text-base font-bold text-slate-900 block">Enable Channel</span>
-            <span className="text-sm text-slate-500 font-medium">Allow this channel to start with the agent</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => updateField("enabled", !formData["enabled"])}
-            className={`relative w-14 h-7 rounded-full transition-colors cursor-pointer ${formData["enabled"] ? "bg-emerald-500" : "bg-slate-200"
-              }`}
-          >
-            <span
-              className={`absolute top-[3px] w-[22px] h-[22px] rounded-full bg-white shadow transition-transform ${formData["enabled"] ? "translate-x-[31px]" : "translate-x-[3px]"
-                }`}
-            />
-          </button>
-        </div>
-
         <div className="space-y-6 bg-white p-8 rounded-2xl border border-slate-200 shadow-[0_2px_8px_rgb(0,0,0,0.02)]">
           {channel.fields.length === 0 ? (
             <div className="text-sm text-slate-500 text-center py-4">No configuration needed for this channel.</div>
@@ -342,7 +401,7 @@ function ChannelDetail({
         ) : <div className="hidden xl:block" />}
 
         <div className="flex items-center gap-3 w-full xl:w-auto">
-          {channel.running ? (
+          {channel.running && (
             <Button
               onClick={handleStop}
               disabled={stopping}
@@ -355,19 +414,6 @@ function ChannelDetail({
               )}
               Stop Channel
             </Button>
-          ) : (
-            <Button
-              onClick={handleStart}
-              disabled={starting || dirty || !formData["enabled"]}
-              className="flex-1 xl:flex-none bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl px-6 h-12 shadow-sm transition-all font-bold disabled:opacity-50"
-            >
-              {starting ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Play className="w-4 h-4 mr-2 fill-current" />
-              )}
-              Start Channel
-            </Button>
           )}
 
           <Button
@@ -375,7 +421,7 @@ function ChannelDetail({
             disabled={!dirty || saving}
             className="flex-1 xl:flex-none px-8 h-12 text-white bg-slate-900 hover:bg-slate-800 border-none rounded-xl shadow-md font-bold transition-all disabled:opacity-50"
           >
-            {saving ? (
+            {saving || starting ? (
               <Loader2 className="w-5 h-5 animate-spin" />
             ) : (
               dirty ? "Save Config" : "Saved"

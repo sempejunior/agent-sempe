@@ -260,20 +260,28 @@ def gateway(
     multiuser: bool = typer.Option(False, "--multiuser", help="Enable multi-user mode (SQLite)"),
 ):
     """Start the nanobot gateway."""
-    from nanobot.config.loader import load_config, get_data_dir
-    from nanobot.bus.queue import MessageBus
+    import logging
+
+    import uvicorn
+
     from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.session.manager import SessionManager
+    from nanobot.config.loader import get_data_dir, load_config
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
+    from nanobot.session.manager import SessionManager
     from nanobot.web.server import create_app
-    import uvicorn
 
     if verbose:
-        import logging
         logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(asctime)s | %(levelname)-8s | %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
 
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
 
@@ -305,7 +313,12 @@ def gateway(
             cron_store_path = data_dir / "cron" / "jobs.json"
             cron = CronService(cron_store_path)
 
-        agent = AgentLoop(
+        loop_cls: type[AgentLoop] = AgentLoop
+        if repos:
+            from nanobot.client.loop import ClientAwareAgentLoop
+            loop_cls = ClientAwareAgentLoop
+
+        agent = loop_cls(
             bus=bus,
             provider=provider,
             workspace=config.workspace_path,
@@ -416,7 +429,7 @@ def gateway(
             await heartbeat.start()
             await asyncio.gather(
                 agent.run(),
-                channels.start_all(),
+                channels.start_all(repos=repos),
                 server.serve()
             )
         except KeyboardInterrupt:

@@ -8,11 +8,10 @@ import {
   addClientIdentity,
   getClientMemory,
   updateClientLongTermMemory,
-  clearClientMemory,
-  deleteClientMemoryEntry,
-  searchClientMemory,
+  getClientRecentMessages,
   listClientSessions,
   deleteClientSession,
+  getClientSessionMessages,
   mergeClients,
   listClients,
 } from "@/lib/api";
@@ -22,6 +21,8 @@ import type {
   ClientMemoryData,
   ClientSession,
   Client,
+  Message,
+  RecentMessage,
 } from "@/lib/api";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -51,6 +52,8 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Bot,
+  Maximize2,
 } from "lucide-react";
 
 interface ClientDetailProps {
@@ -284,58 +287,154 @@ function IdentitiesSection({
   );
 }
 
+function ChatBubble({ msg }: { msg: RecentMessage }) {
+  const isUser = msg.role === "user";
+  return (
+    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+      <div className={cn("max-w-[80%]", isUser ? "items-end" : "items-start")}>
+        <div
+          className={cn(
+            "rounded-2xl px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm",
+            isUser
+              ? "bg-emerald-500 text-white rounded-br-md"
+              : "bg-white text-slate-800 border border-slate-200 rounded-bl-md",
+          )}
+        >
+          {msg.content}
+        </div>
+        {msg.timestamp && (
+          <span className={cn(
+            "text-[10px] font-medium text-slate-400 mt-0.5 block px-1",
+            isUser ? "text-right" : "text-left",
+          )}>
+            {new Date(msg.timestamp).toLocaleString("pt-BR", {
+              hour: "2-digit", minute: "2-digit",
+              day: "2-digit", month: "2-digit",
+            })}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ChatModal({
+  messages,
+  onClose,
+}: {
+  messages: RecentMessage[];
+  onClose: () => void;
+}) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const chronological = messages;
+  const filtered = searchQuery.trim()
+    ? chronological.filter((m) =>
+        m.content.toLowerCase().includes(searchQuery.toLowerCase()),
+      )
+    : chronological;
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-slate-100 rounded-2xl shadow-2xl w-full max-w-lg mx-4 h-[80vh] flex flex-col overflow-hidden animate-fade-in-up">
+        <div className="bg-emerald-600 px-5 py-4 flex items-center gap-3 shrink-0">
+          <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center">
+            <MessageSquare className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-bold text-white">Historico de Conversas</h3>
+            <p className="text-xs text-emerald-100">{messages.length} mensagens</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-8 h-8 rounded-full hover:bg-white/20 flex items-center justify-center transition-colors cursor-pointer"
+          >
+            <X className="w-4 h-4 text-white" />
+          </button>
+        </div>
+
+        <div className="px-3 py-2 bg-white border-b border-slate-200 shrink-0">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar mensagens..."
+              className="w-full h-9 pl-9 pr-9 text-sm bg-slate-50 border border-slate-200 rounded-full text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500/10 transition-colors"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto px-4 py-3 space-y-2 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGRlZnM+PHBhdHRlcm4gaWQ9ImEiIHBhdHRlcm5Vbml0cz0idXNlclNwYWNlT25Vc2UiIHdpZHRoPSI2MCIgaGVpZ2h0PSI2MCI+PHBhdGggZD0iTTAgMGg2MHY2MEgweiIgZmlsbD0ibm9uZSIvPjxjaXJjbGUgY3g9IjMwIiBjeT0iMzAiIHI9IjEiIGZpbGw9IiNlMmU4ZjAiIG9wYWNpdHk9Ii4zIi8+PC9wYXR0ZXJuPjwvZGVmcz48cmVjdCBmaWxsPSJ1cmwoI2EpIiB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIi8+PC9zdmc+')] scrollbar-thin"
+        >
+          {filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+              <MessageSquare className="w-8 h-8 text-slate-300 mb-2" />
+              <p className="text-sm font-semibold">
+                {searchQuery ? "Nenhum resultado" : "Sem mensagens"}
+              </p>
+            </div>
+          ) : (
+            filtered.map((msg, i) => <ChatBubble key={i} msg={msg} />)
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MemorySection({ clientId }: { clientId: string }) {
-  const [data, setData] = useState<ClientMemoryData | null>(null);
+  const [memData, setMemData] = useState<ClientMemoryData | null>(null);
+  const [recentMessages, setRecentMessages] = useState<RecentMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [longTerm, setLongTerm] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<ClientMemoryData["history"] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
-  const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [showChatModal, setShowChatModal] = useState(false);
 
-  const loadMemory = useCallback(async () => {
+  const PREVIEW_COUNT = 4;
+
+  const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const mem = await getClientMemory(clientId);
-      setData(mem);
+      const [mem, msgs] = await Promise.all([
+        getClientMemory(clientId),
+        getClientRecentMessages(clientId),
+      ]);
+      setMemData(mem);
       setLongTerm(mem.long_term || "");
+      setRecentMessages(msgs);
       setDirty(false);
     } catch (e) {
-      toast("error", `Falha ao carregar memoria: ${(e as Error).message}`);
+      toast("error", `Falha ao carregar dados: ${(e as Error).message}`);
     }
     setLoading(false);
   }, [clientId]);
 
   useEffect(() => {
-    loadMemory();
-  }, [loadMemory]);
-
-  const doSearch = useCallback(async (query: string) => {
-    if (!query.trim()) {
-      setSearchResults(null);
-      setSearching(false);
-      return;
-    }
-    setSearching(true);
-    try {
-      const res = await searchClientMemory(clientId, query.trim());
-      setSearchResults(res.results);
-    } catch {
-      setSearchResults(null);
-    }
-    setSearching(false);
-  }, [clientId]);
-
-  const handleSearchChange = (value: string) => {
-    setSearchQuery(value);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => doSearch(value), 300);
-  };
+    loadData();
+  }, [loadData]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -345,39 +444,16 @@ function MemorySection({ clientId }: { clientId: string }) {
       setSaved(true);
       toast("success", "Memoria salva");
       setTimeout(() => setSaved(false), 2000);
-      loadMemory();
     } catch (e) {
       toast("error", `Falha ao salvar: ${(e as Error).message}`);
     }
     setSaving(false);
   };
 
-  const handleClearHistory = async () => {
-    setConfirmClearAll(false);
-    try {
-      await clearClientMemory(clientId);
-      toast("success", "Historico limpo");
-      loadMemory();
-    } catch (e) {
-      toast("error", `Falha ao limpar: ${(e as Error).message}`);
-    }
-  };
+  const previewMessages = recentMessages.slice(-PREVIEW_COUNT);
+  const hasMore = recentMessages.length > PREVIEW_COUNT;
 
-  const handleDeleteEntry = async (id: number) => {
-    setConfirmDeleteId(null);
-    try {
-      await deleteClientMemoryEntry(clientId, id);
-      toast("success", "Entrada removida");
-      loadMemory();
-      if (searchQuery.trim()) doSearch(searchQuery);
-    } catch (e) {
-      toast("error", `Falha ao remover: ${(e as Error).message}`);
-    }
-  };
-
-  const historyEntries = searchResults !== null ? searchResults : (data?.history ?? []);
-
-  if (loading && !data) {
+  if (loading && !memData) {
     return (
       <div className="flex items-center justify-center py-12">
         <div className="w-6 h-6 border-[3px] border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
@@ -386,173 +462,106 @@ function MemorySection({ clientId }: { clientId: string }) {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div className="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden card-glow">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center">
-              <BookOpen className="w-4 h-4 text-emerald-500" />
-            </div>
-            <div>
-              <span className="font-display text-sm font-bold text-slate-900">Fatos de Longa Duracao</span>
-              <p className="text-xs font-medium text-slate-400 mt-0.5">Informacoes permanentes</p>
-            </div>
-          </div>
-        </div>
-        <div className="p-6">
-          <textarea
-            value={longTerm}
-            onChange={(e) => {
-              setLongTerm(e.target.value);
-              setDirty(true);
-              setSaved(false);
-            }}
-            placeholder={"Insira informacoes permanentes sobre este cliente...\n\nExemplo:\n- Nome completo: Carlos Silva\n- Prefere portugues\n- Cliente VIP"}
-            className="w-full min-h-[200px] resize-none text-sm leading-relaxed bg-white border border-slate-200 rounded-xl p-4 text-slate-900 placeholder:text-slate-300 focus:outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500/10 transition-colors font-mono"
-          />
-          <div className="flex items-center justify-end gap-3 mt-4">
-            {saved && (
-              <span className="flex items-center gap-1.5 text-sm text-emerald-600 font-bold">
-                <Check className="w-4 h-4" />
-                Salvo
-              </span>
-            )}
-            <button
-              onClick={handleSave}
-              disabled={!dirty || saving}
-              className="px-5 py-2 text-sm font-bold text-white bg-gradient-to-b from-green to-green-hover rounded-xl hover:shadow-lg hover:shadow-green/25 shadow-sm shadow-green/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center gap-2"
-            >
-              {saving ? (
-                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              ) : (
-                <Save className="w-4 h-4" />
-              )}
-              Salvar
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden card-glow">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center">
-              <Clock className="w-4 h-4 text-emerald-500" />
-            </div>
-            <span className="font-display text-sm font-bold text-slate-900">
-              Historico Recente
-            </span>
-            {historyEntries.length > 0 && (
-              <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-0.5 rounded-lg">
-                {historyEntries.length}
-              </span>
-            )}
-          </div>
-          {confirmClearAll ? (
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleClearHistory}
-                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-red-50 text-red-600 hover:bg-red-100 transition-colors cursor-pointer"
-              >
-                Confirmar
-              </button>
-              <button
-                onClick={() => setConfirmClearAll(false)}
-                className="px-3 py-1.5 text-xs font-bold rounded-xl bg-slate-100 text-slate-600 hover:text-slate-800 transition-colors cursor-pointer"
-              >
-                Cancelar
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setConfirmClearAll(true)}
-              className="px-3 py-1.5 rounded-xl text-xs font-bold text-slate-500 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
-            >
-              Limpar Tudo
-            </button>
-          )}
-        </div>
-
-        <div className="px-6 pt-4">
-          <div className="relative">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <input
-              value={searchQuery}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              placeholder="Buscar no historico..."
-              style={{ paddingLeft: "2.5rem", paddingRight: "2.5rem" }}
-              className="w-full h-10 text-sm bg-white border border-slate-200 rounded-xl text-slate-900 placeholder:text-slate-300 focus:outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500/10 transition-colors"
-            />
-            {searchQuery && (
-              <button
-                onClick={() => {
-                  setSearchQuery("");
-                  setSearchResults(null);
-                }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="p-6 pt-3 space-y-2 max-h-[400px] overflow-y-auto">
-          {searching && (
-            <div className="flex items-center justify-center py-8">
-              <div className="w-5 h-5 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
-            </div>
-          )}
-          {!searching && historyEntries.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-10 text-slate-400">
-              <Clock className="w-8 h-8 text-slate-300 mb-2" />
-              <p className="font-display text-sm font-semibold">
-                {searchQuery ? "Nenhum resultado" : "Sem historico ainda"}
-              </p>
-            </div>
-          )}
-          {!searching && historyEntries.map((entry) => (
-            <div
-              key={entry.id}
-              className="group rounded-xl border border-slate-100 bg-white hover:bg-slate-50/70 hover:border-slate-200 transition-all p-4"
-            >
-              <p className="text-sm text-slate-700 leading-relaxed break-words whitespace-pre-wrap">
-                {entry.content}
-              </p>
-              <div className="flex items-center justify-between mt-3">
-                <span className="text-xs font-medium text-slate-400 font-mono">
-                  {new Date(entry.created_at).toLocaleString("pt-BR")}
-                </span>
-                {confirmDeleteId === entry.id ? (
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleDeleteEntry(entry.id)}
-                      className="px-3 py-1 text-xs font-bold rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors cursor-pointer"
-                    >
-                      Confirmar
-                    </button>
-                    <button
-                      onClick={() => setConfirmDeleteId(null)}
-                      className="px-3 py-1 text-xs font-bold rounded-lg bg-slate-100 text-slate-600 transition-colors cursor-pointer"
-                    >
-                      Cancelar
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setConfirmDeleteId(entry.id)}
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-bold text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all cursor-pointer opacity-0 group-hover:opacity-100 focus:opacity-100"
-                    title="Remover entrada"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                )}
+    <>
+      {showChatModal && (
+        <ChatModal messages={recentMessages} onClose={() => setShowChatModal(false)} />
+      )}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden card-glow">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center">
+                <BookOpen className="w-4 h-4 text-emerald-500" />
+              </div>
+              <div>
+                <span className="font-display text-sm font-bold text-slate-900">Fatos de Longa Duracao</span>
+                <p className="text-xs font-medium text-slate-400 mt-0.5">Informacoes permanentes</p>
               </div>
             </div>
-          ))}
+          </div>
+          <div className="p-6">
+            <textarea
+              value={longTerm}
+              onChange={(e) => {
+                setLongTerm(e.target.value);
+                setDirty(true);
+                setSaved(false);
+              }}
+              placeholder={"Insira informacoes permanentes sobre este cliente...\n\nExemplo:\n- Nome completo: Carlos Silva\n- Prefere portugues\n- Cliente VIP"}
+              className="w-full min-h-[200px] resize-none text-sm leading-relaxed bg-white border border-slate-200 rounded-xl p-4 text-slate-900 placeholder:text-slate-300 focus:outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500/10 transition-colors font-mono"
+            />
+            <div className="flex items-center justify-end gap-3 mt-4">
+              {saved && (
+                <span className="flex items-center gap-1.5 text-sm text-emerald-600 font-bold">
+                  <Check className="w-4 h-4" />
+                  Salvo
+                </span>
+              )}
+              <button
+                onClick={handleSave}
+                disabled={!dirty || saving}
+                className="px-5 py-2 text-sm font-bold text-white bg-gradient-to-b from-green to-green-hover rounded-xl hover:shadow-lg hover:shadow-green/25 shadow-sm shadow-green/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer flex items-center gap-2"
+              >
+                {saving ? (
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <Save className="w-4 h-4" />
+                )}
+                Salvar
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden card-glow flex flex-col">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center">
+                <Clock className="w-4 h-4 text-emerald-500" />
+              </div>
+              <span className="font-display text-sm font-bold text-slate-900">
+                Historico Recente
+              </span>
+              {recentMessages.length > 0 && (
+                <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2.5 py-0.5 rounded-lg">
+                  {recentMessages.length}
+                </span>
+              )}
+            </div>
+            {recentMessages.length > 0 && (
+              <button
+                onClick={() => setShowChatModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-500 hover:text-emerald-600 hover:bg-emerald-50 transition-colors cursor-pointer"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                Ver tudo
+              </button>
+            )}
+          </div>
+
+          <div className="flex-1 p-4 space-y-2 bg-slate-50/50">
+            {previewMessages.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-10 text-slate-400">
+                <Clock className="w-8 h-8 text-slate-300 mb-2" />
+                <p className="font-display text-sm font-semibold">Sem historico ainda</p>
+              </div>
+            ) : (
+              <>
+                {previewMessages.map((msg, i) => <ChatBubble key={i} msg={msg} />)}
+                {hasMore && (
+                  <button
+                    onClick={() => setShowChatModal(true)}
+                    className="w-full py-2.5 text-xs font-bold text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-xl transition-colors cursor-pointer"
+                  >
+                    Ver conversa completa ({recentMessages.length} mensagens)
+                  </button>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -561,6 +570,9 @@ function SessionsSection({ clientId }: { clientId: string }) {
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(true);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
+  const [expandedSessionKey, setExpandedSessionKey] = useState<string | null>(null);
+  const [messagesCache, setMessagesCache] = useState<Record<string, Message[]>>({});
+  const [loadingMessages, setLoadingMessages] = useState<string | null>(null);
 
   const loadSessions = useCallback(async () => {
     setLoading(true);
@@ -582,10 +594,29 @@ function SessionsSection({ clientId }: { clientId: string }) {
     try {
       await deleteClientSession(clientId, sessionKey);
       toast("success", "Sessao removida");
+      if (expandedSessionKey === sessionKey) setExpandedSessionKey(null);
       loadSessions();
     } catch (e) {
       toast("error", `Falha ao remover: ${(e as Error).message}`);
     }
+  };
+
+  const toggleSession = async (sessionKey: string) => {
+    if (expandedSessionKey === sessionKey) {
+      setExpandedSessionKey(null);
+      return;
+    }
+    setExpandedSessionKey(sessionKey);
+    if (messagesCache[sessionKey]) return;
+    setLoadingMessages(sessionKey);
+    try {
+      const msgs = await getClientSessionMessages(clientId, sessionKey);
+      setMessagesCache((prev) => ({ ...prev, [sessionKey]: msgs }));
+    } catch (e) {
+      toast("error", `Falha ao carregar mensagens: ${(e as Error).message}`);
+      setExpandedSessionKey(null);
+    }
+    setLoadingMessages(null);
   };
 
   return (
@@ -624,54 +655,124 @@ function SessionsSection({ clientId }: { clientId: string }) {
               <p className="text-sm font-semibold">Nenhuma sessao</p>
             </div>
           ) : (
-            sessions.map((session) => (
-              <div
-                key={session.session_key}
-                className="group flex items-center gap-4 p-4 rounded-xl border border-slate-100 hover:border-slate-200 hover:bg-slate-50/50 transition-all"
-              >
-                <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
-                  <MessageSquare className="w-4 h-4 text-slate-400" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm font-bold text-slate-900 truncate block font-mono">
-                    {session.session_key}
-                  </span>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-xs text-slate-400">
-                      {session.message_count} {session.message_count === 1 ? "mensagem" : "mensagens"}
-                    </span>
-                    <span className="w-1 h-1 rounded-full bg-slate-300" />
-                    <span className="text-xs text-slate-400">
-                      {relativeTime(session.updated_at)}
-                    </span>
-                  </div>
-                </div>
-                {confirmDeleteKey === session.session_key ? (
-                  <div className="flex items-center gap-2 shrink-0">
+            sessions.map((session) => {
+              const isOpen = expandedSessionKey === session.session_key;
+              const msgs = messagesCache[session.session_key];
+              const isLoadingMsgs = loadingMessages === session.session_key;
+
+              return (
+                <div
+                  key={session.session_key}
+                  className={cn(
+                    "rounded-xl border transition-all",
+                    isOpen
+                      ? "border-emerald-200 bg-emerald-50/20"
+                      : "border-slate-100 hover:border-slate-200 hover:bg-slate-50/50",
+                  )}
+                >
+                  <div className="group flex items-center gap-4 p-4">
                     <button
-                      onClick={() => handleDelete(session.session_key)}
-                      className="px-3 py-1.5 text-xs font-bold rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors cursor-pointer"
+                      onClick={() => toggleSession(session.session_key)}
+                      className="flex items-center gap-4 flex-1 min-w-0 cursor-pointer text-left"
                     >
-                      Confirmar
+                      <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center shrink-0">
+                        {isOpen ? (
+                          <ChevronDown className="w-4 h-4 text-emerald-500" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4 text-slate-400" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm font-bold text-slate-900 truncate block font-mono">
+                          {session.session_key}
+                        </span>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-xs text-slate-400">
+                            {session.message_count} {session.message_count === 1 ? "mensagem" : "mensagens"}
+                          </span>
+                          <span className="w-1 h-1 rounded-full bg-slate-300" />
+                          <span className="text-xs text-slate-400">
+                            {relativeTime(session.updated_at)}
+                          </span>
+                        </div>
+                      </div>
                     </button>
-                    <button
-                      onClick={() => setConfirmDeleteKey(null)}
-                      className="px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-100 text-slate-600 transition-colors cursor-pointer"
-                    >
-                      Cancelar
-                    </button>
+                    {confirmDeleteKey === session.session_key ? (
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => handleDelete(session.session_key)}
+                          className="px-3 py-1.5 text-xs font-bold rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors cursor-pointer"
+                        >
+                          Confirmar
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteKey(null)}
+                          className="px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-100 text-slate-600 transition-colors cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDeleteKey(session.session_key)}
+                        className="p-2 rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all cursor-pointer opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0"
+                        title="Remover sessao"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  <button
-                    onClick={() => setConfirmDeleteKey(session.session_key)}
-                    className="p-2 rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-500 transition-all cursor-pointer opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0"
-                    title="Remover sessao"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            ))
+
+                  {isOpen && (
+                    <div className="px-4 pb-4">
+                      <div className="border-t border-slate-100 pt-3 space-y-2 max-h-96 overflow-y-auto">
+                        {isLoadingMsgs ? (
+                          <div className="flex items-center justify-center py-6">
+                            <Loader2 className="w-4 h-4 text-emerald-500 animate-spin" />
+                          </div>
+                        ) : msgs && msgs.length > 0 ? (
+                          msgs.map((msg, i) => {
+                            const isUser = msg.role === "user";
+                            return (
+                              <div key={i} className="flex items-start gap-2.5">
+                                <div
+                                  className={cn(
+                                    "w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5",
+                                    isUser
+                                      ? "bg-slate-100 border border-slate-200"
+                                      : "bg-emerald-50 border border-emerald-200/60",
+                                  )}
+                                >
+                                  {isUser ? (
+                                    <User className="w-3 h-3 text-slate-400" />
+                                  ) : (
+                                    <Bot className="w-3 h-3 text-emerald-500" />
+                                  )}
+                                </div>
+                                <div
+                                  className={cn(
+                                    "rounded-xl px-3 py-2 text-sm leading-relaxed max-w-[85%] whitespace-pre-wrap",
+                                    isUser
+                                      ? "bg-slate-100 text-slate-800"
+                                      : "bg-emerald-50 text-slate-800",
+                                  )}
+                                >
+                                  {msg.content}
+                                </div>
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <p className="text-xs text-slate-400 text-center py-4">
+                            Nenhuma mensagem nesta sessao
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       )}

@@ -8,8 +8,8 @@ O nanobot original e um assistente pessoal AI ultra-leve (~4.000 linhas). Este f
 
 | Area | nanobot original | Este fork |
 |------|-----------------|-----------|
-| **Usuarios** | Single-user (filesystem) | Multi-user com isolamento completo por usuario |
-| **Storage** | Arquivos JSON no disco | SQLite com Repository Pattern (8 repositorios) |
+| **Usuarios** | Single-user (filesystem) | Multi-user com isolamento completo por usuario + camada de clientes (end-users) |
+| **Storage** | Arquivos JSON no disco | SQLite com Repository Pattern (11 repositorios) |
 | **Frontend** | Sem UI web | React 19 + Tailwind CSS 4 + Zustand (auth, chat, paineis) |
 | **Auth** | Sem autenticacao | Registro/login com bearer token JWT |
 | **Navegacao Web** | Sem suporte | Browser tool via Chrome DevTools Protocol com stealth patches |
@@ -31,21 +31,28 @@ O nanobot original e um assistente pessoal AI ultra-leve (~4.000 linhas). Este f
 │  /api/sessions       /api/cron        /api/memory                │
 │  /api/skills         /api/config      /api/config/provider       │
 │  /api/config/mcp     /api/config/prompts   /api/channels         │
+│  /api/clients (CRUD, merge, memory, sessions, identities)        │
 │  /ws/chat (streaming com tool hints)  /api/health                │
 └───────────┬────────────────────────────────┬─────────────────────┘
             │                                │
     ┌───────▼────────┐              ┌────────▼───────────┐
-    │   AgentLoop    │              │ RepositoryFactory   │
-    │  (multiuser)   │              │  (SQLite WAL mode)  │
+    │ ClientAware    │              │ RepositoryFactory   │
+    │ AgentLoop      │              │  (SQLite WAL mode)  │
     │                │              │                     │
     │  UserContext    │              │  UserRepository     │
-    │  por usuario:  │              │  SessionRepository  │
+    │  por creator:  │              │  SessionRepository  │
     │  - sessions    │              │  MessageRepository  │
     │  - memory      │              │  MemoryRepository   │
     │  - skills      │              │  SkillRepository    │
     │  - tools       │              │  CronRepository     │
     │  - provider    │              │  ChannelBinding     │
     │  - rate limits │              │  AuditRepository    │
+    │                │              │  ClientRepository   │
+    │  ClientResolver│              │  ClientIdentity     │
+    │  por end-user: │              │  ClientMemory       │
+    │  - identity    │              │                     │
+    │  - memory      │              │                     │
+    │  - sessions    │              │                     │
     └───────┬────────┘              └────────────────────┘
             │
     ┌───────▼────────────────────────────────────────────┐
@@ -212,7 +219,11 @@ O desktop inclui: Debian Bookworm, XFCE4/Fluxbox, Chromium, xterm, Python 3.12, 
 
 ## Multi-user
 
-Cada usuario tem **isolamento completo**:
+O sistema separa dois conceitos: **Creators** (quem configura agentes) e **Clients** (end-users que conversam com os agentes).
+
+### Creator (configurador do agente)
+
+Cada creator tem **isolamento completo**:
 
 - **Sessoes de conversa** independentes (criar, listar, deletar)
 - **Memoria de longo prazo** propria — fatos persistentes + historico pesquisavel
@@ -225,6 +236,21 @@ Cada usuario tem **isolamento completo**:
 - **Ferramentas habilitaveis** — cada usuario escolhe quais tools estao ativas
 - **Prompts do agente** — cada usuario customiza a personalidade (Soul), comportamento (Behavior) e contexto pessoal (User) do agente. Base prompts sao read-only (codigo), extensoes sao editaveis (banco)
 - **Canais de chat per-user** — cada usuario configura e conecta seus proprios bots (Telegram, Discord, Slack, WhatsApp, Email, DingTalk, Feishu, QQ) pelo frontend, com isolamento completo de mensagens
+
+### Client (end-user do agente)
+
+Quando um end-user manda mensagem via canal (Telegram, WhatsApp, etc.), o sistema automaticamente resolve ou cria um **client** com isolamento completo:
+
+- **Identidade multi-canal** — um client pode usar Telegram, WhatsApp e Discord; todas as identidades sao vinculadas ao mesmo perfil
+- **Memoria por client** — fatos persistentes + historico pesquisavel, independente de outros clients do mesmo creator
+- **Sessoes isoladas** — cada client tem seu proprio historico de conversas
+- **Consolidacao automatica** — memoria de longo prazo atualizada automaticamente pelo LLM
+- **Merge de clients** — o creator pode unificar dois registros de client (ex: mesmo usuario em Telegram + WhatsApp)
+- **Gerenciamento pelo creator** — listar, buscar, editar, bloquear/arquivar clients via web UI e API
+
+O system prompt combina **configuracao do creator** (prompts, tools, skills) + **estado do client** (memoria, historico), garantindo respostas personalizadas por end-user.
+
+Para detalhes da arquitetura, veja [docs/architecture/client-layer.md](docs/architecture/client-layer.md).
 
 ### Frontend Web
 
@@ -242,7 +268,7 @@ O frontend React oferece:
 
 ## Database Layer
 
-SQLite com WAL mode e Repository Pattern (8 repositorios):
+SQLite com WAL mode e Repository Pattern (11 repositorios):
 
 | Repositorio | Funcao |
 |-------------|--------|
@@ -254,8 +280,11 @@ SQLite com WAL mode e Repository Pattern (8 repositorios):
 | `CronRepository` | Jobs agendados por usuario (schedule, payload, state) |
 | `ChannelBindingRepository` | Mapeamento de IDs externos (Telegram, Discord, etc.) para user_id |
 | `AuditRepository` | Audit trail append-only com TTL cleanup |
+| `ClientRepository` | Perfis de end-users (clients), status, metadata, interacoes |
+| `ClientIdentityRepository` | Mapeamento multi-canal de clients (Telegram ID, WhatsApp, etc.) |
+| `ClientMemoryRepository` | Memoria per-client: long_term + history com FTS5 |
 
-Todas as interfaces estao definidas como **Protocols** em `db/repositories.py`. A implementacao atual e SQLite (`db/sqlite/`), mas migrar para MongoDB ou Postgres requer apenas implementar as interfaces — sem alterar nenhum codigo de negocio.
+As interfaces core estao em `db/repositories.py` e as de client em `db/client_repositories.py`, ambas como **Protocols**. A implementacao atual e SQLite (`db/sqlite/`), mas migrar para MongoDB ou Postgres requer apenas novas implementacoes — sem alterar nenhum codigo de negocio.
 
 Para a estrutura completa das tabelas, campos, indices, migrations e exemplos de JSON, veja **[DATABASE.md](DATABASE.md)**.
 
@@ -361,10 +390,15 @@ nanobot/
 │   ├── registry.py        Metadados de canais para o frontend (fields, labels, masking)
 │   └── manager.py         Gerencia canais globais + per-user, roteamento outbound
 ├── cli/                   Comandos CLI (Typer)
+├── client/                Camada de clientes (end-users)
+│   ├── resolver.py        Resolucao de identidade (canal + sender_id → client_id)
+│   ├── loop.py            ClientAwareAgentLoop — isola memoria/sessao por client
+│   └── memory.py          ClientScopedMemory — proxy que roteia para storage per-client
 ├── config/                Schema Pydantic + loader
 ├── cron/                  Servico de tarefas agendadas (fs/db)
 ├── db/                    Repository Pattern + SQLite
-│   ├── repositories.py    Interfaces (Protocols) — 8 repositorios
+│   ├── repositories.py    Interfaces core (Protocols) — 8 repositorios
+│   ├── client_repositories.py  Interfaces de client (Protocols) — 3 repositorios
 │   ├── factory.py         Factory para instanciar repos
 │   └── sqlite/            Implementacoes SQLite (connection, migrations, repos)
 ├── heartbeat/             Wake-up periodico proativo
@@ -376,9 +410,11 @@ nanobot/
 │   └── desktop-navigation/ Skill de navegacao web e desktop
 ├── web/                   FastAPI server + React frontend
 │   ├── server.py          API REST + WebSocket + auth
+│   ├── routes/            Rotas modulares
+│   │   └── clients.py     API de gerenciamento de clients (CRUD, merge, memoria, sessoes)
 │   └── frontend/          Vite + React + TypeScript
 │       └── src/
-│           ├── components/ AuthPage, ChatArea, Sidebar, ChannelsPanel, PromptsPanel, ...
+│           ├── components/ AuthPage, ChatArea, Sidebar, ChannelsPanel, ClientDetail, ...
 │           └── lib/        API client, Zustand store, types
 ├── utils/                 Helpers (paths, filenames)
 └── docker/
@@ -398,7 +434,13 @@ Usa pytest com pytest-asyncio (auto mode). Dependencias externas (LLM, rede) sao
 
 ### Unreleased
 
-- Plataforma multi-user com isolamento completo por usuario (8 repositorios SQLite)
+- Plataforma multi-user com isolamento completo por usuario (11 repositorios SQLite)
+- **Client layer** — camada de end-users com identidade multi-canal, memoria e sessoes isoladas por client
+  - Auto-resolucao de clients: primeira mensagem de um canal cria o perfil automaticamente
+  - Memoria per-client: long_term + history com FTS5, independente de outros clients
+  - Merge de clients: unificar identidades de canais diferentes no mesmo perfil
+  - API completa: CRUD, merge, memoria, sessoes, identidades (`/api/clients/*`)
+  - Frontend: pagina de detalhes de client com editor de memoria, sessoes e identidades
 - Frontend web React com autenticacao, chat streaming, e paineis de cron/memory/skills/settings/prompts/channels
 - Per-user prompts — base prompts read-only (SOUL.md, AGENTS.md, USER.md) + extensoes editaveis por usuario no banco
 - Per-user channels — cada usuario configura e conecta seus proprios bots (Telegram, Discord, Slack, etc.) pelo frontend
@@ -411,8 +453,12 @@ Usa pytest com pytest-asyncio (auto mode). Dependencias externas (LLM, rede) sao
 - Rate limiting por usuario (tokens/dia, requests/minuto)
 - Provider LLM configuravel por usuario (override do default do servidor)
 - MCP servers configuraveis por usuario via painel de settings
+- RAG system com suporte a SQLite FTS5 e backends HTTP externos (Pinecone, Qdrant, Weaviate)
 - Audit trail com TTL cleanup
 - Channel binding para mapeamento multi-user de canais externos
+- Fix: Telegram ConflictFilter — filtro nos handlers do root logger para suprimir tracebacks de Conflict
+- Fix: SQLite readonly em SSHFS — `_ensure_writable()` corrige permissoes em FUSE mounts
+- Fix: logging melhorado no gateway — `logger.exception` para tracebacks completos, `logging.basicConfig` para libs terceiras
 
 ---
 

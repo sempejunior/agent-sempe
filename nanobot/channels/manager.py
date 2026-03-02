@@ -132,19 +132,52 @@ class ChannelManager:
         except Exception as e:
             logger.error("Failed to start channel {}: {}", label, e)
 
-    async def start_all(self) -> None:
-        """Start all server-global channels and the outbound dispatcher."""
+    async def start_all(self, *, repos: Any = None) -> None:
+        """Start all server-global channels, restore per-user channels, and dispatch."""
         self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
 
-        if not self.channels:
+        if self.channels:
+            tasks = []
+            for name, channel in self.channels.items():
+                logger.info("Starting {} channel...", name)
+                tasks.append(asyncio.create_task(self._start_channel(name, channel)))
+            await asyncio.gather(*tasks, return_exceptions=True)
+        else:
             logger.warning("No channels enabled")
+
+        if repos:
+            await self._restore_user_channels(repos)
+
+    async def _restore_user_channels(self, repos: Any) -> None:
+        """Restore enabled per-user channels from DB on startup."""
+        from nanobot.config.schema import ChannelsConfig
+
+        try:
+            users = await repos.users.list_all()
+        except Exception as e:
+            logger.error("Failed to list users for channel restore: {}", e)
             return
 
-        tasks = []
-        for name, channel in self.channels.items():
-            logger.info("Starting {} channel...", name)
-            tasks.append(asyncio.create_task(self._start_channel(name, channel)))
-        await asyncio.gather(*tasks, return_exceptions=True)
+        restored = 0
+        for user in users:
+            uid = user["user_id"]
+            channel_configs = user.get("channel_configs") or {}
+            for channel_name, cfg_dict in channel_configs.items():
+                if not cfg_dict.get("enabled") or channel_name not in CHANNEL_MAP:
+                    continue
+                try:
+                    cfg_cls = getattr(ChannelsConfig(), channel_name).__class__
+                    cfg = cfg_cls.model_validate(cfg_dict)
+                    self.create_user_channel(uid, channel_name, cfg)
+                    await self.start_user_channel(uid, channel_name)
+                    restored += 1
+                except Exception as e:
+                    logger.warning(
+                        "Failed to restore {}:{}: {}", uid, channel_name, e,
+                    )
+
+        if restored:
+            logger.info("Restored {} user channel(s)", restored)
 
     async def stop_all(self) -> None:
         """Stop all channels (global + per-user) and the dispatcher."""

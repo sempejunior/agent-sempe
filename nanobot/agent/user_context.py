@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from nanobot.agent.context import ContextBuilder
-from nanobot.agent.memory import ClientMemoryStore, MemoryStore
+from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR, SkillsLoader
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.session.manager import SessionManager
@@ -44,16 +44,6 @@ class UserContext:
 
     provider: LLMProvider | None = None
     limits: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class ClientState:
-    """Per-client runtime state (memory + sessions scoped to a client)."""
-
-    client_id: str
-    owner_id: str
-    memory: ClientMemoryStore
-    sessions: SessionManager
 
 
 def _make_user_provider(agent_config: dict[str, Any]) -> LLMProvider | None:
@@ -174,30 +164,6 @@ async def build_user_context(
         memory_window=agent_config.get("memory_window", 100),
         provider=_make_user_provider(agent_config),
         limits=limits,
-    )
-
-
-def build_client_state(
-    client_id: str,
-    owner_id: str,
-    repos: RepositoryFactory,
-) -> ClientState:
-    memory = ClientMemoryStore(
-        client_memory_repo=repos.client_memories,
-        client_id=client_id,
-        owner_id=owner_id,
-    )
-    sessions = SessionManager(
-        session_repo=repos.sessions,
-        message_repo=repos.messages,
-        user_id=owner_id,
-        client_id=client_id,
-    )
-    return ClientState(
-        client_id=client_id,
-        owner_id=owner_id,
-        memory=memory,
-        sessions=sessions,
     )
 
 

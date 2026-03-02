@@ -53,17 +53,15 @@ class ContextBuilder:
         self._rag_enabled = rag_enabled
         self._mode: str = "db" if user_repo is not None and user_id is not None else "fs"
 
-    async def build_system_prompt(
-        self,
-        skill_names: list[str] | None = None,
-        *,
-        client_context: str | None = None,
-    ) -> str:
+    async def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
 
-        When client_context is provided, it replaces the creator's Memory section
-        with client-specific context (memory, profile, history).
+        Args:
+            skill_names: Optional list of skills to include.
+
+        Returns:
+            Complete system prompt.
         """
         parts = []
 
@@ -73,12 +71,9 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
 
-        if client_context:
-            parts.append(client_context)
-        else:
-            memory = await self.memory.get_memory_context()
-            if memory:
-                parts.append(f"# Memory\n\n{memory}")
+        memory = await self.memory.get_memory_context()
+        if memory:
+            parts.append(f"# Memory\n\n{memory}")
 
         always_skills = await self.skills.get_always_skills()
         if always_skills:
@@ -274,14 +269,24 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
-        client_context: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build the complete message list for an LLM call."""
+        """
+        Build the complete message list for an LLM call.
+
+        Args:
+            history: Previous conversation messages.
+            current_message: The new user message.
+            skill_names: Optional skills to include.
+            media: Optional list of local file paths for images/media.
+            channel: Current channel (telegram, feishu, etc.).
+            chat_id: Current chat/user ID.
+
+        Returns:
+            List of messages including system prompt.
+        """
         messages = []
 
-        system_prompt = await self.build_system_prompt(
-            skill_names, client_context=client_context,
-        )
+        system_prompt = await self.build_system_prompt(skill_names)
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})

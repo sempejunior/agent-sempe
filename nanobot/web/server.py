@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json as _json
 import traceback
 import uuid
 from pathlib import Path
@@ -59,8 +58,8 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             logger.info("Using injected dependencies for web server")
             return
 
-        from nanobot.agent.loop import AgentLoop
         from nanobot.bus.queue import MessageBus
+        from nanobot.client.loop import ClientAwareAgentLoop
         from nanobot.cron.service import CronService
         from nanobot.db.factory import create_sqlite_factory
         from nanobot.db.sqlite.connection import create_database
@@ -71,7 +70,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         bus = MessageBus()
         cron = CronService(cron_repo=repos.cron)
 
-        agent = AgentLoop(
+        agent = ClientAwareAgentLoop(
             bus=bus,
             provider=provider,
             workspace=config.workspace_path,
@@ -671,271 +670,8 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         await channels_mgr.stop_user_channel(uid, channel_name)
         return {"ok": True, "message": f"{channel_name} stopped"}
 
-    # -- Client management endpoints ------------------------------------------
-
-    @app.get("/api/clients")
-    async def list_clients(request: Request):
-        user = await _require_user(request)
-        uid = user["user_id"]
-        params = request.query_params
-        q = params.get("q", "").strip() or None
-        status = params.get("status") or None
-        limit = min(int(params.get("limit", "50")), 200)
-        offset = int(params.get("offset", "0"))
-        sort = params.get("sort", "last_seen")
-
-        clients = await app.state.repos.clients.list_by_owner(
-            uid, status=status, query=q, limit=limit, offset=offset, sort=sort,
-        )
-        total = await app.state.repos.clients.count_by_owner(uid, status=status, query=q)
-
-        result = []
-        for c in clients:
-            identities = await app.state.repos.client_identities.list_by_client(
-                c["client_id"],
-            )
-            channels = list({i["channel"] for i in identities})
-            result.append({
-                "client_id": c["client_id"],
-                "display_name": c.get("display_name", ""),
-                "status": c.get("status", "active"),
-                "channels": channels,
-                "first_seen": c.get("first_seen", ""),
-                "last_seen": c.get("last_seen", ""),
-                "total_interactions": c.get("total_interactions", 0),
-            })
-        return {"clients": result, "total": total}
-
-    @app.post("/api/clients/merge")
-    async def merge_clients(request: Request):
-        user = await _require_user(request)
-        uid = user["user_id"]
-        body = await request.json()
-        primary_id = body.get("primary", "").strip()
-        secondary_id = body.get("secondary", "").strip()
-        if not primary_id or not secondary_id:
-            raise HTTPException(400, "primary and secondary client IDs are required")
-        if primary_id == secondary_id:
-            raise HTTPException(400, "Cannot merge a client with itself")
-
-        repos = app.state.repos
-        primary = await repos.clients.get(primary_id)
-        secondary = await repos.clients.get(secondary_id)
-        if not primary or primary.get("owner_id") != uid:
-            raise HTTPException(404, "Primary client not found")
-        if not secondary or secondary.get("owner_id") != uid:
-            raise HTTPException(404, "Secondary client not found")
-
-        await repos.client_identities.reassign(secondary_id, primary_id)
-        await repos.client_memories.reassign(secondary_id, primary_id)
-
-        p_long = await repos.client_memories.get_long_term(primary_id)
-        s_long = await repos.client_memories.get_long_term(secondary_id)
-        if s_long and s_long != p_long:
-            merged = f"{p_long}\n{s_long}" if p_long else s_long
-            await repos.client_memories.save_long_term(primary_id, uid, merged)
-
-        new_interactions = primary.get("total_interactions", 0) + secondary.get("total_interactions", 0)
-        first_seen = min(
-            primary.get("first_seen", "9999"),
-            secondary.get("first_seen", "9999"),
-        )
-        last_seen = max(
-            primary.get("last_seen", ""),
-            secondary.get("last_seen", ""),
-        )
-        await repos.clients.update(primary_id, {
-            "total_interactions": new_interactions,
-            "first_seen": first_seen,
-            "last_seen": last_seen,
-        })
-
-        await repos.clients.delete(secondary_id)
-
-        return {"ok": True, "client_id": primary_id}
-
-    @app.get("/api/clients/{client_id}")
-    async def get_client(request: Request, client_id: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        identities = await app.state.repos.client_identities.list_by_client(client_id)
-        return {
-            **client,
-            "identities": identities,
-        }
-
-    @app.put("/api/clients/{client_id}")
-    async def update_client(request: Request, client_id: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        body = await request.json()
-        allowed = {}
-        for key in ("display_name", "metadata", "status"):
-            if key in body:
-                val = body[key]
-                if key == "metadata" and isinstance(val, dict):
-                    val = _json.dumps(val)
-                allowed[key] = val
-        if not allowed:
-            raise HTTPException(400, "No valid fields to update")
-        ok = await app.state.repos.clients.update(client_id, allowed)
-        return {"ok": ok}
-
-    @app.delete("/api/clients/{client_id}")
-    async def delete_client(request: Request, client_id: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        ok = await app.state.repos.clients.delete(client_id)
-        return {"ok": ok}
-
-    # -- Client identity endpoints ---------------------------------------------
-
-    @app.get("/api/clients/{client_id}/identities")
-    async def list_client_identities(request: Request, client_id: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        return await app.state.repos.client_identities.list_by_client(client_id)
-
-    @app.post("/api/clients/{client_id}/identities")
-    async def add_client_identity(request: Request, client_id: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        body = await request.json()
-        channel = body.get("channel", "").strip()
-        external_id = body.get("external_id", "").strip()
-        if not channel or not external_id:
-            raise HTTPException(400, "channel and external_id are required")
-        identity_id = await app.state.repos.client_identities.create({
-            "client_id": client_id,
-            "owner_id": user["user_id"],
-            "channel": channel,
-            "external_id": external_id,
-            "display_name": body.get("display_name", ""),
-        })
-        return {"ok": True, "id": identity_id}
-
-    @app.delete("/api/clients/{client_id}/identities/{identity_id}")
-    async def delete_client_identity(request: Request, client_id: str, identity_id: int):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        ok = await app.state.repos.client_identities.delete(identity_id, client_id)
-        return {"ok": ok}
-
-    # -- Client memory endpoints -----------------------------------------------
-
-    @app.get("/api/clients/{client_id}/memory")
-    async def get_client_memory(request: Request, client_id: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        repos = app.state.repos
-        long_term = await repos.client_memories.get_long_term(client_id)
-        history = await repos.client_memories.get_history(client_id)
-        return {"long_term": long_term, "history": history}
-
-    @app.put("/api/clients/{client_id}/memory/long_term")
-    async def update_client_long_term(request: Request, client_id: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        body = await request.json()
-        content = body.get("content", "")
-        await app.state.repos.client_memories.save_long_term(client_id, user["user_id"], content)
-        return {"ok": True}
-
-    @app.delete("/api/clients/{client_id}/memory")
-    async def clear_client_memory(request: Request, client_id: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        count = await app.state.repos.client_memories.clear(client_id)
-        return {"ok": True, "deleted": count}
-
-    @app.delete("/api/clients/{client_id}/memory/{entry_id}")
-    async def delete_client_memory_entry(request: Request, client_id: str, entry_id: int):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        ok = await app.state.repos.client_memories.delete_entry(entry_id, client_id)
-        return {"ok": ok}
-
-    @app.get("/api/clients/{client_id}/memory/search")
-    async def search_client_memory(request: Request, client_id: str, q: str = ""):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        if not q.strip():
-            return {"results": []}
-        results = await app.state.repos.client_memories.search_history(client_id, q.strip())
-        return {"results": results}
-
-    # -- Client session endpoints ----------------------------------------------
-
-    @app.get("/api/clients/{client_id}/sessions")
-    async def list_client_sessions(request: Request, client_id: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        sessions = await app.state.repos.sessions.list_sessions(
-            user["user_id"], client_id=client_id,
-        )
-        result = []
-        for s in sessions:
-            msg_count = s.get("message_count", 0)
-            result.append({
-                "session_key": s["session_key"],
-                "message_count": msg_count,
-                "updated_at": s.get("updated_at", ""),
-            })
-        return result
-
-    @app.get("/api/clients/{client_id}/sessions/{session_key:path}/messages")
-    async def get_client_session_messages(request: Request, client_id: str, session_key: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        session = await app.state.repos.sessions.get(user["user_id"], session_key)
-        if not session:
-            return []
-        if session.get("client_id") != client_id:
-            raise HTTPException(404, "Session not found for this client")
-        msgs = await app.state.repos.messages.get_messages(session["id"], limit=200)
-        result = []
-        for m in msgs:
-            role = m.get("role", "")
-            if role in ("user", "assistant") and not m.get("tool_calls"):
-                content = (m.get("content") or "").strip()
-                if content:
-                    result.append({"role": role, "content": content})
-        return result
-
-    @app.delete("/api/clients/{client_id}/sessions/{session_key:path}")
-    async def delete_client_session(request: Request, client_id: str, session_key: str):
-        user = await _require_user(request)
-        client = await app.state.repos.clients.get(client_id)
-        if not client or client.get("owner_id") != user["user_id"]:
-            raise HTTPException(404, "Client not found")
-        ok = await app.state.repos.sessions.delete(user["user_id"], session_key)
-        return {"ok": ok}
+    from nanobot.web.routes.clients import router as clients_router
+    app.include_router(clients_router)
 
     @app.websocket("/ws/chat")
     async def ws_chat(ws: WebSocket):
