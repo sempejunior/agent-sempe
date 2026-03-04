@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
-from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -106,7 +106,6 @@ class SessionManager:
         self._cache: dict[str, Session] = {}
         self._session_ids: dict[str, int] = {}
         self._loaded_counts: dict[str, int] = {}
-
 
     async def get_or_create(self, key: str) -> Session:
         """Get an existing session or create a new one."""

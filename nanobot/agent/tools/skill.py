@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +11,7 @@ from nanobot.agent.tools.base import Tool
 class SaveSkillTool(Tool):
     """
     Tool to save a learned skill as markdown documentation.
-    
+
     This writes a Markdown file with YAML frontmatter containing 'name'
     and 'description', followed by the instructional content.
     """
@@ -91,5 +90,5 @@ class SaveSkillTool(Tool):
             skill_file = skill_dir / "SKILL.md"
             skill_file.write_text(full_markdown, encoding="utf-8")
             return f"Skill '{name}' successfully saved to filesystem at {skill_file}."
-        
+
         return "Error: No storage configured for skills."

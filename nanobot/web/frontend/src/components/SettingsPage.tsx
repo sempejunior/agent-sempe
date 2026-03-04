@@ -100,32 +100,52 @@ function TabModel({ config, providerConfig, apiKeyInput, apiKeyDirty, showApiKey
     setApiKeyDirty: (v: boolean) => void;
     setShowApiKey: (v: boolean | ((prev: boolean) => boolean)) => void;
 }) {
+    const PROVIDERS: { id: string; label: string; needsBase?: boolean }[] = [
+        { id: "openai", label: "OpenAI" },
+        { id: "anthropic", label: "Anthropic" },
+        { id: "deepseek", label: "DeepSeek" },
+        { id: "gemini", label: "Gemini" },
+        { id: "groq", label: "Groq" },
+        { id: "openrouter", label: "OpenRouter" },
+        { id: "moonshot", label: "Moonshot" },
+        { id: "minimax", label: "MiniMax" },
+        { id: "dashscope", label: "DashScope" },
+        { id: "zhipu", label: "Zhipu AI" },
+        { id: "siliconflow", label: "SiliconFlow" },
+        { id: "volcengine", label: "VolcEngine" },
+        { id: "vllm", label: "vLLM / Local", needsBase: true },
+        { id: "custom", label: "Custom", needsBase: true },
+    ];
+
+    const selectedProvider = PROVIDERS.find((p) => p.id === providerConfig.name);
+    const showBaseUrl = selectedProvider?.needsBase || false;
+
     return (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,450px),1fr))] gap-6 items-start animate-fade-in-up">
             <div className="col-span-full">
                 <FieldLabel hint="Leave empty to use the server default.">Provider</FieldLabel>
-                <div className="flex flex-wrap gap-3">
-                    {(["openai", "anthropic", "custom"] as const).map((p) => (
+                <div className="flex flex-wrap gap-2.5">
+                    {PROVIDERS.map((p) => (
                         <button
-                            key={p}
+                            key={p.id}
                             type="button"
                             onClick={() => {
-                                if (providerConfig.name === p) {
+                                if (providerConfig.name === p.id) {
                                     setProviderConfig({ name: "", api_key: "", api_base: "" });
                                     setApiKeyInput("");
                                     setApiKeyDirty(true);
                                 } else {
-                                    setProviderConfig((prev) => ({ ...prev, name: p }));
+                                    setProviderConfig((prev) => ({ ...prev, name: p.id }));
                                 }
                             }}
                             className={cn(
-                                "px-6 py-3 rounded-xl text-base font-bold border transition-all cursor-pointer",
-                                providerConfig.name === p
+                                "px-5 py-2.5 rounded-xl text-sm font-bold border transition-all cursor-pointer",
+                                providerConfig.name === p.id
                                     ? "bg-gradient-to-b from-green to-green-hover border-transparent text-white shadow-md shadow-green/20"
                                     : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:border-slate-300",
                             )}
                         >
-                            {p === "openai" ? "OpenAI" : p === "anthropic" ? "Anthropic" : "Custom"}
+                            {p.label}
                         </button>
                     ))}
                 </div>
@@ -167,7 +187,7 @@ function TabModel({ config, providerConfig, apiKeyInput, apiKeyDirty, showApiKey
                         )}
                     </div>
 
-                    {providerConfig.name === "custom" && (
+                    {showBaseUrl && (
                         <div>
                             <FieldLabel hint="OpenAI-compatible endpoint">API Base URL</FieldLabel>
                             <Input
@@ -194,64 +214,121 @@ function TabModel({ config, providerConfig, apiKeyInput, apiKeyDirty, showApiKey
     );
 }
 
+const REASONING_OPTIONS = [
+    { value: "", label: "Off (default)" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+];
+
 function TabAdvanced({ config, onChange }: {
     config: AgentConfig;
     onChange: (key: keyof AgentConfig, value: string | number) => void;
 }) {
     return (
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,350px),1fr))] gap-6 items-start animate-fade-in-up">
-            <div>
-                <FieldLabel hint="0 = deterministic, 2 = creative">Temperature</FieldLabel>
-                <Input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max="2"
-                    value={config.temperature ?? ""}
-                    onChange={(e) => onChange("temperature", parseFloat(e.target.value))}
-                    placeholder="0.1"
-                    className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
-                />
+        <div className="space-y-8 animate-fade-in-up">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,350px),1fr))] gap-6 items-start">
+                <div>
+                    <FieldLabel hint="0 = deterministic, 2 = creative">Temperature</FieldLabel>
+                    <Input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="2"
+                        value={config.temperature ?? ""}
+                        onChange={(e) => onChange("temperature", parseFloat(e.target.value))}
+                        placeholder="0.1"
+                        className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
+                    />
+                </div>
+                <div>
+                    <FieldLabel hint="Max response length">Max Tokens</FieldLabel>
+                    <Input
+                        type="number"
+                        step="1"
+                        min="256"
+                        value={config.max_tokens ?? ""}
+                        onChange={(e) => onChange("max_tokens", parseInt(e.target.value, 10))}
+                        placeholder="8192"
+                        className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
+                    />
+                </div>
+                <div>
+                    <FieldLabel hint="How many tools the agent can call in one turn">Max Tool Iterations</FieldLabel>
+                    <Input
+                        type="number"
+                        step="1"
+                        min="1"
+                        max="100"
+                        value={config.max_tool_iterations ?? ""}
+                        onChange={(e) => onChange("max_tool_iterations", parseInt(e.target.value, 10))}
+                        placeholder="40"
+                        className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
+                    />
+                </div>
+                <div>
+                    <FieldLabel hint="Messages before auto-consolidation into long-term memory. Lower = saves more often.">
+                        Memory Window
+                    </FieldLabel>
+                    <Input
+                        type="number"
+                        step="1"
+                        min="5"
+                        max="200"
+                        value={config.memory_window ?? ""}
+                        onChange={(e) => onChange("memory_window", parseInt(e.target.value, 10))}
+                        placeholder="20"
+                        className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
+                    />
+                </div>
+                <div>
+                    <FieldLabel hint="Enable extended thinking for supported models (Claude, DeepSeek R1, etc).">
+                        Reasoning Effort
+                    </FieldLabel>
+                    <div className="relative">
+                        <select
+                            value={config.reasoning_effort || ""}
+                            onChange={(e) => onChange("reasoning_effort", e.target.value)}
+                            className="w-full h-12 px-4 pr-10 text-base bg-white border border-slate-200 rounded-xl text-slate-900 appearance-none focus:outline-none focus:border-emerald-300 focus:ring-2 focus:ring-emerald-500/10 transition-colors cursor-pointer"
+                        >
+                            {REASONING_OPTIONS.map((opt) => (
+                                <option key={opt.value} value={opt.value} className="bg-white text-slate-900">
+                                    {opt.label}
+                                </option>
+                            ))}
+                        </select>
+                        <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 pointer-events-none" />
+                    </div>
+                </div>
             </div>
-            <div>
-                <FieldLabel hint="Max response length">Max Tokens</FieldLabel>
-                <Input
-                    type="number"
-                    step="1"
-                    min="256"
-                    value={config.max_tokens ?? ""}
-                    onChange={(e) => onChange("max_tokens", parseInt(e.target.value, 10))}
-                    placeholder="8192"
-                    className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
-                />
-            </div>
-            <div>
-                <FieldLabel hint="How many tools the agent can call in one turn">Max Tool Iterations</FieldLabel>
-                <Input
-                    type="number"
-                    step="1"
-                    min="1"
-                    max="100"
-                    value={config.max_tool_iterations ?? ""}
-                    onChange={(e) => onChange("max_tool_iterations", parseInt(e.target.value, 10))}
-                    placeholder="40"
-                    className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
-                />
-            </div>
-            <div>
-                <FieldLabel hint="Messages before auto-consolidation into long-term memory. Lower = saves more often.">
-                    Memory Window
-                </FieldLabel>
-                <Input
-                    type="number"
-                    step="1"
-                    min="5"
-                    max="200"
-                    value={config.memory_window ?? ""}
-                    onChange={(e) => onChange("memory_window", parseInt(e.target.value, 10))}
-                    placeholder="20"
-                    className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
-                />
+
+            <div className="border-t border-slate-100 pt-6">
+                <h3 className="font-display text-lg font-bold text-slate-700 mb-1">Network & Environment</h3>
+                <p className="text-sm text-slate-400 mb-5">Configure proxy and PATH for agent tools.</p>
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,350px),1fr))] gap-6 items-start">
+                    <div>
+                        <FieldLabel hint="Route web search and fetch through a proxy server.">
+                            Web Proxy
+                        </FieldLabel>
+                        <Input
+                            value={config.web_proxy || ""}
+                            onChange={(e) => onChange("web_proxy", e.target.value)}
+                            placeholder="http://proxy:8080 or socks5://host:port"
+                            className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
+                        />
+                    </div>
+                    <div>
+                        <FieldLabel hint="Extra directories to add to PATH when executing shell commands.">
+                            Shell PATH Append
+                        </FieldLabel>
+                        <Input
+                            value={config.path_append || ""}
+                            onChange={(e) => onChange("path_append", e.target.value)}
+                            placeholder="/usr/local/go/bin:/opt/tools/bin"
+                            className="h-12 text-base px-4 bg-white border-slate-200 rounded-xl focus:border-emerald-300 focus:ring-emerald-500/10"
+                        />
+                    </div>
+                </div>
             </div>
         </div>
     );

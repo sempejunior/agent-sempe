@@ -6,6 +6,8 @@ import base64
 import mimetypes
 import os
 import platform
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +32,7 @@ class ContextBuilder:
     """
 
     BOOTSTRAP_FILES = ["SOUL.md", "AGENTS.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+    _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
     def __init__(
         self,
@@ -122,10 +125,6 @@ IMPORTANT: Always use `--no-sandbox` with Chromium (required in container)."""
 
     def _get_identity(self) -> str:
         """Get the core identity section."""
-        import time as _time
-        from datetime import datetime
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
-        tz = _time.strftime("%Z") or "UTC"
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
@@ -135,9 +134,6 @@ IMPORTANT: Always use `--no-sandbox` with Chromium (required in container)."""
             return f"""# nanobot
 
 You are nanobot, a helpful AI assistant.
-
-## Current Time
-{now} ({tz})
 
 ## Runtime
 {runtime}
@@ -161,30 +157,27 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 - Old conversations are automatically consolidated when the session grows large.
 - Do NOT use edit_file or write_file on memory files. Always use the memory tools.{desktop}{self._get_user_settings_section()}"""
 
-        return f"""# nanobot 🐈
+        return f"""# nanobot
 
 You are nanobot, a helpful AI assistant.
-
-## Current Time
-{now} ({tz})
 
 ## Runtime
 {runtime}
 
 ## Workspace
 Your workspace is at: {workspace_path}
-- Long-term memory: {workspace_path}/memory/MEMORY.md
-- History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
+- Long-term memory: {workspace_path}/memory/MEMORY.md (write important facts here)
+- History log: {workspace_path}/memory/HISTORY.md (grep-searchable). Each entry starts with [YYYY-MM-DD HH:MM].
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
-Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel.
-
-## Tool Call Guidelines
-- Before calling tools, you may briefly state your intent (e.g. "Let me check that"), but NEVER predict or describe the expected result before receiving it.
-- Before modifying a file, read it first to confirm its current content.
-- Do not assume a file or directory exists — use list_dir or read_file to verify.
+## nanobot Guidelines
+- State intent before tool calls, but NEVER predict or claim results before receiving them.
+- Before modifying a file, read it first. Do not assume files or directories exist.
 - After writing or editing a file, re-read it if accuracy matters.
 - If a tool call fails, analyze the error before retrying with a different approach.
+- Ask for clarification when the request is ambiguous.
+
+Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel.
 
 ## Memory
 - Remember important facts: write to {workspace_path}/memory/MEMORY.md
@@ -198,6 +191,16 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         if self._custom_instructions:
             parts.append(f"\n\n## User Instructions\n{self._custom_instructions}")
         return "".join(parts)
+
+    @staticmethod
+    def _build_runtime_context(channel: str | None, chat_id: str | None) -> str:
+        """Build untrusted runtime metadata block for injection before the user message."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
+        tz = time.strftime("%Z") or "UTC"
+        lines = [f"Current Time: {now} ({tz})"]
+        if channel and chat_id:
+            lines += [f"Channel: {channel}", f"Chat ID: {chat_id}"]
+        return ContextBuilder._RUNTIME_CONTEXT_TAG + "\n" + "\n".join(lines)
 
     def _get_bootstrap_files(self) -> list[str]:
         files = list(self.BOOTSTRAP_FILES)
@@ -273,30 +276,24 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         """
         Build the complete message list for an LLM call.
 
-        Args:
-            history: Previous conversation messages.
-            current_message: The new user message.
-            skill_names: Optional skills to include.
-            media: Optional list of local file paths for images/media.
-            channel: Current channel (telegram, feishu, etc.).
-            chat_id: Current chat/user ID.
-
-        Returns:
-            List of messages including system prompt.
+        Runtime context (time, channel) is injected as an untrusted metadata
+        block in the user message rather than the system prompt, improving
+        system prompt cache reuse across turns.
         """
-        messages = []
-
         system_prompt = await self.build_system_prompt(skill_names)
-        if channel and chat_id:
-            system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
-        messages.append({"role": "system", "content": system_prompt})
-
-        messages.extend(history)
-
+        runtime_ctx = self._build_runtime_context(channel, chat_id)
         user_content = self._build_user_content(current_message, media)
-        messages.append({"role": "user", "content": user_content})
 
-        return messages
+        if isinstance(user_content, str):
+            merged = f"{runtime_ctx}\n\n{user_content}"
+        else:
+            merged = [{"type": "text", "text": runtime_ctx}] + user_content
+
+        return [
+            {"role": "system", "content": system_prompt},
+            *history,
+            {"role": "user", "content": merged},
+        ]
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""
@@ -338,16 +335,15 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         content: str | None,
         tool_calls: list[dict[str, Any]] | None = None,
         reasoning_content: str | None = None,
+        thinking_blocks: list[dict] | None = None,
     ) -> list[dict[str, Any]]:
         """Add an assistant message to the message list."""
-        msg: dict[str, Any] = {"role": "assistant"}
-        msg["content"] = content
-
+        msg: dict[str, Any] = {"role": "assistant", "content": content}
         if tool_calls:
             msg["tool_calls"] = tool_calls
-
         if reasoning_content is not None:
             msg["reasoning_content"] = reasoning_content
-
+        if thinking_blocks:
+            msg["thinking_blocks"] = thinking_blocks
         messages.append(msg)
         return messages

@@ -2,24 +2,24 @@
 
 import asyncio
 import os
-import signal
-from pathlib import Path
 import select
+import signal
 import sys
+from pathlib import Path
 
 import typer
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
 from rich.text import Text
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.patch_stdout import patch_stdout
-
-from nanobot import __version__, __logo__
+from nanobot import __logo__, __version__
 from nanobot.config.schema import Config
+from nanobot.utils.helpers import sync_workspace_templates
 
 app = typer.Typer(
     name="nanobot",
@@ -88,7 +88,7 @@ def _init_prompt_session() -> None:
     _PROMPT_SESSION = PromptSession(
         history=FileHistory(str(history_file)),
         enable_open_in_editor=False,
-        multiline=False,   # Enter submits (single line mode)
+        multiline=False,
     )
 
 
@@ -108,13 +108,7 @@ def _is_exit_command(command: str) -> bool:
 
 
 async def _read_interactive_input_async() -> str:
-    """Read user input using prompt_toolkit (handles paste, history, display).
-
-    prompt_toolkit natively handles:
-    - Multiline paste (bracketed paste mode)
-    - History navigation (up/down arrows)
-    - Clean display (no ghost characters or artifacts)
-    """
+    """Read user input using prompt_toolkit (handles paste, history, display)."""
     if _PROMPT_SESSION is None:
         raise RuntimeError("Call _init_prompt_session() first")
     try:
@@ -149,9 +143,9 @@ def onboard():
     from nanobot.config.loader import get_config_path, load_config, save_config
     from nanobot.config.schema import Config
     from nanobot.utils.helpers import get_workspace_path
-    
+
     config_path = get_config_path()
-    
+
     if config_path.exists():
         console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
         console.print("  [bold]y[/bold] = overwrite with defaults (existing values will be lost)")
@@ -167,15 +161,15 @@ def onboard():
     else:
         save_config(Config())
         console.print(f"[green]✓[/green] Created config at {config_path}")
-    
+
     workspace = get_workspace_path()
-    
+
     if not workspace.exists():
         workspace.mkdir(parents=True, exist_ok=True)
         console.print(f"[green]✓[/green] Created workspace at {workspace}")
-    
-    _create_workspace_templates(workspace)
-    
+
+    sync_workspace_templates(workspace)
+
     console.print(f"\n{__logo__} nanobot is ready!")
     console.print("\nNext steps:")
     console.print("  1. Add your API key to [cyan]~/.nanobot/config.json[/cyan]")
@@ -186,42 +180,11 @@ def onboard():
 
 
 
-def _create_workspace_templates(workspace: Path):
-    """Create default workspace template files from bundled templates."""
-    from importlib.resources import files as pkg_files
-
-    templates_dir = pkg_files("nanobot") / "templates"
-
-    for item in templates_dir.iterdir():
-        if not item.name.endswith(".md"):
-            continue
-        dest = workspace / item.name
-        if not dest.exists():
-            dest.write_text(item.read_text(encoding="utf-8"), encoding="utf-8")
-            console.print(f"  [dim]Created {item.name}[/dim]")
-
-    memory_dir = workspace / "memory"
-    memory_dir.mkdir(exist_ok=True)
-
-    memory_template = templates_dir / "memory" / "MEMORY.md"
-    memory_file = memory_dir / "MEMORY.md"
-    if not memory_file.exists():
-        memory_file.write_text(memory_template.read_text(encoding="utf-8"), encoding="utf-8")
-        console.print("  [dim]Created memory/MEMORY.md[/dim]")
-
-    history_file = memory_dir / "HISTORY.md"
-    if not history_file.exists():
-        history_file.write_text("", encoding="utf-8")
-        console.print("  [dim]Created memory/HISTORY.md[/dim]")
-
-    (workspace / "skills").mkdir(exist_ok=True)
-
-
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
+    from nanobot.providers.custom_provider import CustomProvider
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-    from nanobot.providers.custom_provider import CustomProvider
 
     model = config.agents.defaults.model
     provider_name = config.get_provider_name(model)
@@ -286,6 +249,7 @@ def gateway(
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
 
     config = load_config()
+    sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
     provider = _make_provider(config)
     data_dir = get_data_dir()
@@ -294,8 +258,8 @@ def gateway(
         repos = None
         db_conn = None
         if multiuser:
-            from nanobot.db.sqlite.connection import create_database
             from nanobot.db.factory import create_sqlite_factory
+            from nanobot.db.sqlite.connection import create_database
 
             db_path = data_dir / "nanobot.db"
             db_conn = await create_database(db_path)
@@ -327,7 +291,9 @@ def gateway(
             max_tokens=config.agents.defaults.max_tokens,
             max_iterations=config.agents.defaults.max_tool_iterations,
             memory_window=config.agents.defaults.memory_window,
+            reasoning_effort=config.agents.defaults.reasoning_effort,
             brave_api_key=config.tools.web.search.api_key or None,
+            web_proxy=config.tools.web.proxy or None,
             exec_config=config.tools.exec,
             cron_service=cron,
             restrict_to_workspace=config.tools.restrict_to_workspace,
@@ -339,18 +305,40 @@ def gateway(
 
         async def on_cron_job(job: CronJob) -> str | None:
             """Execute a cron job through the agent."""
-            response = await agent.process_direct(
-                job.payload.message,
-                session_key=f"cron:{job.id}",
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to or "direct",
+            from nanobot.agent.tools.cron import CronTool
+            from nanobot.agent.tools.message import MessageTool
+
+            reminder_note = (
+                "[Scheduled Task] Timer finished.\n\n"
+                f"Task '{job.name}' has been triggered.\n"
+                f"Scheduled instruction: {job.payload.message}"
             )
-            if job.payload.deliver and job.payload.to:
+
+            cron_tool = agent.tools.get("cron")
+            cron_token = None
+            if isinstance(cron_tool, CronTool):
+                cron_token = cron_tool.set_cron_context(True)
+            try:
+                response = await agent.process_direct(
+                    reminder_note,
+                    session_key=f"cron:{job.id}",
+                    channel=job.payload.channel or "cli",
+                    chat_id=job.payload.to or "direct",
+                )
+            finally:
+                if isinstance(cron_tool, CronTool) and cron_token is not None:
+                    cron_tool.reset_cron_context(cron_token)
+
+            message_tool = agent.tools.get("message")
+            if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
+                return response
+
+            if job.payload.deliver and job.payload.to and response:
                 from nanobot.bus.events import OutboundMessage
                 await bus.publish_outbound(OutboundMessage(
                     channel=job.payload.channel or "cli",
                     chat_id=job.payload.to,
-                    content=response or ""
+                    content=response
                 ))
             return response
         cron.on_job = on_cron_job
@@ -418,7 +406,7 @@ def gateway(
         app.state.config = config
         if db_conn:
             app.state.db = db_conn
-        
+
         server = uvicorn.Server(uvicorn.Config(
             app=app, host="0.0.0.0", port=port,
             log_level="info" if verbose else "warning"
@@ -454,14 +442,16 @@ def agent(
     logs: bool = typer.Option(False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"),
 ):
     """Interact with the agent directly."""
-    from nanobot.config.loader import load_config, get_data_dir
-    from nanobot.bus.queue import MessageBus
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.cron.service import CronService
     from loguru import logger
-    
+
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.loader import get_data_dir, load_config
+    from nanobot.cron.service import CronService
+
     config = load_config()
-    
+    sync_workspace_templates(config.workspace_path)
+
     bus = MessageBus()
     provider = _make_provider(config)
 
@@ -472,7 +462,7 @@ def agent(
         logger.enable("nanobot")
     else:
         logger.disable("nanobot")
-    
+
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
@@ -482,14 +472,16 @@ def agent(
         max_tokens=config.agents.defaults.max_tokens,
         max_iterations=config.agents.defaults.max_tool_iterations,
         memory_window=config.agents.defaults.memory_window,
+        reasoning_effort=config.agents.defaults.reasoning_effort,
         brave_api_key=config.tools.web.search.api_key or None,
+        web_proxy=config.tools.web.proxy or None,
         exec_config=config.tools.exec,
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
     )
-    
+
     def _thinking_ctx():
         if logs:
             from contextlib import nullcontext
@@ -653,7 +645,7 @@ def channels_status():
         "✓" if mc.enabled else "✗",
         mc_base
     )
-    
+
     tg = config.channels.telegram
     tg_config = f"token: {tg.token[:10]}..." if tg.token else "[dim]not configured[/dim]"
     table.add_row(
@@ -701,51 +693,51 @@ def _get_bridge_dir() -> Path:
     """Get the bridge directory, setting it up if needed."""
     import shutil
     import subprocess
-    
+
     user_bridge = Path.home() / ".nanobot" / "bridge"
 
     if (user_bridge / "dist" / "index.js").exists():
         return user_bridge
-    
+
     if not shutil.which("npm"):
         console.print("[red]npm not found. Please install Node.js >= 18.[/red]")
         raise typer.Exit(1)
-    
+
     pkg_bridge = Path(__file__).parent.parent / "bridge"
     src_bridge = Path(__file__).parent.parent.parent / "bridge"
-    
+
     source = None
     if (pkg_bridge / "package.json").exists():
         source = pkg_bridge
     elif (src_bridge / "package.json").exists():
         source = src_bridge
-    
+
     if not source:
         console.print("[red]Bridge source not found.[/red]")
         console.print("Try reinstalling: pip install --force-reinstall nanobot")
         raise typer.Exit(1)
-    
+
     console.print(f"{__logo__} Setting up bridge...")
-    
+
     user_bridge.parent.mkdir(parents=True, exist_ok=True)
     if user_bridge.exists():
         shutil.rmtree(user_bridge)
     shutil.copytree(source, user_bridge, ignore=shutil.ignore_patterns("node_modules", "dist"))
-    
+
     try:
         console.print("  Installing dependencies...")
         subprocess.run(["npm", "install"], cwd=user_bridge, check=True, capture_output=True)
-        
+
         console.print("  Building...")
         subprocess.run(["npm", "run", "build"], cwd=user_bridge, check=True, capture_output=True)
-        
+
         console.print("[green]✓[/green] Bridge ready\n")
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Build failed: {e}[/red]")
         if e.stderr:
             console.print(f"[dim]{e.stderr.decode()[:500]}[/dim]")
         raise typer.Exit(1)
-    
+
     return user_bridge
 
 
@@ -753,18 +745,19 @@ def _get_bridge_dir() -> Path:
 def channels_login():
     """Link device via QR code."""
     import subprocess
+
     from nanobot.config.loader import load_config
-    
+
     config = load_config()
     bridge_dir = _get_bridge_dir()
-    
+
     console.print(f"{__logo__} Starting bridge...")
     console.print("Scan the QR code to connect.\n")
-    
+
     env = {**os.environ}
     if config.channels.whatsapp.bridge_token:
         env["BRIDGE_TOKEN"] = config.channels.whatsapp.bridge_token
-    
+
     try:
         subprocess.run(["npm", "start"], cwd=bridge_dir, check=True, env=env)
     except subprocess.CalledProcessError as e:
@@ -784,23 +777,23 @@ def cron_list(
     """List scheduled jobs."""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
-    
+
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
 
     jobs = asyncio.run(service.list_jobs(include_disabled=all))
-    
+
     if not jobs:
         console.print("No scheduled jobs.")
         return
-    
+
     table = Table(title="Scheduled Jobs")
     table.add_column("ID", style="cyan")
     table.add_column("Name")
     table.add_column("Schedule")
     table.add_column("Status")
     table.add_column("Next Run")
-    
+
     import time
     from datetime import datetime as _dt
     from zoneinfo import ZoneInfo
@@ -811,7 +804,7 @@ def cron_list(
             sched = f"{job.schedule.expr or ''} ({job.schedule.tz})" if job.schedule.tz else (job.schedule.expr or "")
         else:
             sched = "one-time"
-        
+
         next_run = ""
         if job.state.next_run_at_ms:
             ts = job.state.next_run_at_ms / 1000
@@ -820,11 +813,11 @@ def cron_list(
                 next_run = _dt.fromtimestamp(ts, tz).strftime("%Y-%m-%d %H:%M")
             except Exception:
                 next_run = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
-        
+
         status = "[green]enabled[/green]" if job.enabled else "[dim]disabled[/dim]"
-        
+
         table.add_row(job.id, job.name, sched, status, next_run)
-    
+
     console.print(table)
 
 
@@ -844,7 +837,7 @@ def cron_add(
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronSchedule
-    
+
     if tz and not cron_expr:
         console.print("[red]Error: --tz can only be used with --cron[/red]")
         raise typer.Exit(1)
@@ -860,10 +853,10 @@ def cron_add(
     else:
         console.print("[red]Error: Must specify --every, --cron, or --at[/red]")
         raise typer.Exit(1)
-    
+
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
-    
+
     try:
         job = asyncio.run(service.add_job(
             name=name,
@@ -887,10 +880,10 @@ def cron_remove(
     """Remove a scheduled job."""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
-    
+
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
-    
+
     if asyncio.run(service.remove_job(job_id)):
         console.print(f"[green]✓[/green] Removed job {job_id}")
     else:
@@ -905,10 +898,10 @@ def cron_enable(
     """Enable or disable a job."""
     from nanobot.config.loader import get_data_dir
     from nanobot.cron.service import CronService
-    
+
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
-    
+
     job = asyncio.run(service.enable_job(job_id, enabled=not disable))
     if job:
         status = "disabled" if disable else "enabled"
@@ -924,11 +917,12 @@ def cron_run(
 ):
     """Manually run a job."""
     from loguru import logger
-    from nanobot.config.loader import load_config, get_data_dir
+
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.loader import get_data_dir, load_config
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
-    from nanobot.bus.queue import MessageBus
-    from nanobot.agent.loop import AgentLoop
     logger.disable("nanobot")
 
     config = load_config()
@@ -981,7 +975,7 @@ def cron_run(
 @app.command()
 def status():
     """Show nanobot status."""
-    from nanobot.config.loader import load_config, get_config_path
+    from nanobot.config.loader import get_config_path, load_config
 
     config_path = get_config_path()
     config = load_config()
@@ -996,7 +990,7 @@ def status():
         from nanobot.providers.registry import PROVIDERS
 
         console.print(f"Model: {config.agents.defaults.model}")
-        
+
         for spec in PROVIDERS:
             p = getattr(config.providers, spec.name, None)
             if p is None:
@@ -1011,145 +1005,6 @@ def status():
             else:
                 has_key = bool(p.api_key)
                 console.print(f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
-
-
-user_app = typer.Typer(help="Manage users (multi-tenant)")
-app.add_typer(user_app, name="user")
-
-
-def _open_db_sync():
-    """Open the SQLite database synchronously (for CLI commands)."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.db.sqlite.connection import create_database
-    from nanobot.db.factory import create_sqlite_factory
-
-    db_path = get_data_dir() / "nanobot.db"
-    if not db_path.exists():
-        console.print(f"[red]Database not found at {db_path}[/red]")
-        console.print("Start the gateway with --multiuser first, or run: nanobot user create")
-        raise typer.Exit(1)
-
-    async def _open():
-        db = await create_database(db_path)
-        return db, create_sqlite_factory(db)
-
-    return asyncio.run(_open())
-
-
-@user_app.command("create")
-def user_create(
-    user_id: str = typer.Argument(..., help="Unique user ID (e.g. 'usr_alice')"),
-    name: str = typer.Option("", "--name", "-n", help="Display name"),
-    email: str = typer.Option(None, "--email", "-e", help="Email address"),
-):
-    """Create a new user."""
-    from nanobot.config.loader import get_data_dir
-    from nanobot.db.sqlite.connection import create_database
-    from nanobot.db.factory import create_sqlite_factory
-
-    db_path = get_data_dir() / "nanobot.db"
-
-    async def _create():
-        db = await create_database(db_path)
-        repos = create_sqlite_factory(db)
-        existing = await repos.users.get_by_id(user_id)
-        if existing:
-            console.print(f"[red]User '{user_id}' already exists[/red]")
-            await db.close()
-            raise typer.Exit(1)
-        await repos.users.create({
-            "user_id": user_id,
-            "display_name": name,
-            "email": email,
-        })
-        await db.close()
-
-    asyncio.run(_create())
-    console.print(f"[green]✓[/green] Created user '{user_id}'")
-
-
-@user_app.command("bind")
-def user_bind(
-    user_id: str = typer.Argument(..., help="User ID"),
-    channel: str = typer.Option(..., "--channel", "-c", help="Channel (e.g. telegram, whatsapp, discord)"),
-    sender_id: str = typer.Option(..., "--sender-id", "-s", help="Sender ID in that channel"),
-):
-    """Bind a channel sender to a user (so messages from that sender go to this user)."""
-    db, repos = _open_db_sync()
-
-    async def _bind():
-        user = await repos.users.get_by_id(user_id)
-        if not user:
-            console.print(f"[red]User '{user_id}' not found[/red]")
-            await db.close()
-            raise typer.Exit(1)
-        await repos.channel_bindings.bind(user_id, channel, sender_id)
-        await db.close()
-
-    asyncio.run(_bind())
-    console.print(f"[green]✓[/green] Bound {channel}:{sender_id} → {user_id}")
-
-
-@user_app.command("list")
-def user_list():
-    """List all users."""
-    db, repos = _open_db_sync()
-
-    async def _list():
-        users = await repos.users.list_all()
-        bindings = {}
-        for u in users:
-            uid = u["user_id"]
-            bindings[uid] = await repos.channel_bindings.list_bindings(uid)
-        await db.close()
-        return users, bindings
-
-    users, bindings = asyncio.run(_list())
-
-    if not users:
-        console.print("No users found. Create one with: nanobot user create <user_id>")
-        return
-
-    table = Table(title="Users")
-    table.add_column("User ID", style="cyan")
-    table.add_column("Name")
-    table.add_column("Email")
-    table.add_column("Status")
-    table.add_column("Bindings")
-
-    for u in users:
-        uid = u["user_id"]
-        b_list = bindings.get(uid, [])
-        b_str = ", ".join(f"{b['channel']}:{b['sender_id']}" for b in b_list) or "[dim]none[/dim]"
-        table.add_row(
-            uid,
-            u.get("display_name", ""),
-            u.get("email") or "[dim]-[/dim]",
-            u.get("status", "active"),
-            b_str,
-        )
-
-    console.print(table)
-
-
-@user_app.command("unbind")
-def user_unbind(
-    user_id: str = typer.Argument(..., help="User ID"),
-    channel: str = typer.Option(..., "--channel", "-c", help="Channel"),
-    sender_id: str = typer.Option(..., "--sender-id", "-s", help="Sender ID"),
-):
-    """Remove a channel binding from a user."""
-    db, repos = _open_db_sync()
-
-    async def _unbind():
-        ok = await repos.channel_bindings.unbind(user_id, channel, sender_id)
-        await db.close()
-        return ok
-
-    if asyncio.run(_unbind()):
-        console.print(f"[green]✓[/green] Unbound {channel}:{sender_id} from {user_id}")
-    else:
-        console.print(f"[red]Binding not found[/red]")
 
 
 provider_app = typer.Typer(help="Manage providers")

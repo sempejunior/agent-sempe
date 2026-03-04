@@ -34,8 +34,10 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
 
     if schedule.kind == "cron" and schedule.expr:
         try:
-            from croniter import croniter
             from zoneinfo import ZoneInfo
+
+            from croniter import croniter
+
             base_time = now_ms / 1000
             tz = ZoneInfo(schedule.tz) if schedule.tz else datetime.now().astimezone().tzinfo
             base_dt = datetime.fromtimestamp(base_time, tz=tz)
@@ -147,11 +149,17 @@ class CronService:
         self._cron_repo = cron_repo
         self._mode = "db" if cron_repo else "fs"
         self._store: CronStore | None = None
+        self._last_mtime: float = 0.0
         self._timer_task: asyncio.Task | None = None
         self._running = False
 
     def _load_store(self) -> CronStore:
-        """Load jobs from disk (FS mode only)."""
+        """Load jobs from disk (FS mode only). Reloads automatically if file was modified externally."""
+        if self._store and self.store_path and self.store_path.exists():
+            mtime = self.store_path.stat().st_mtime
+            if mtime != self._last_mtime:
+                logger.info("Cron: jobs.json modified externally, reloading")
+                self._store = None
         if self._store:
             return self._store
 
@@ -240,6 +248,7 @@ class CronService:
         }
 
         self.store_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._last_mtime = self.store_path.stat().st_mtime
 
     async def start(self) -> None:
         """Start the cron service."""
@@ -313,6 +322,7 @@ class CronService:
             due_dicts = await self._cron_repo.get_due_jobs(now)
             due_jobs = [_dict_to_job(d) for d in due_dicts]
         else:
+            self._load_store()
             if not self._store:
                 return
             due_jobs = [
@@ -508,7 +518,7 @@ class CronService:
             return {
                 "enabled": self._running,
                 "mode": "db",
-                "jobs": -1,  # Unknown without async query
+                "jobs": -1,
             }
         store = self._load_store()
         return {

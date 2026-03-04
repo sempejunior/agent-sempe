@@ -40,7 +40,7 @@ docs/
 
 ### Key design decisions
 
-- **Protocol-based repositories** (`db/repositories.py`): all storage is behind Protocols. SQLite is the current backend; switching to MongoDB requires only new implementations, no interface changes.
+- **Protocol-based repositories** (`db/repositories.py`): all storage is behind 11 Protocol interfaces. SQLite is the local backend; PostgreSQL is planned for cloud/multiuser mode. See `docs/architecture/database-strategy.md` for the dual-backend strategy and migration plan.
 - **Dual-mode everywhere**: MemoryStore, SessionManager, SkillsLoader, ContextBuilder all support both filesystem and database mode. Mode is detected at construction.
 - **Registry pattern**: providers (`providers/registry.py`) and tools (`agent/tools/registry.py`) use declarative registries instead of if-elif chains. Channels use `channels/registry.py` for UI metadata.
 - **Event bus**: channels publish inbound messages → agent loop processes → publishes outbound → channels deliver. No direct coupling between channels and agent.

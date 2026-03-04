@@ -41,6 +41,9 @@ class UserContext:
     temperature: float
     max_iterations: int
     memory_window: int
+    reasoning_effort: str | None = None
+    web_proxy: str | None = None
+    path_append: str = ""
 
     provider: LLMProvider | None = None
     limits: dict[str, Any] = field(default_factory=dict)
@@ -136,6 +139,9 @@ async def build_user_context(
         custom_instructions=agent_config.get("custom_instructions", ""),
         rag_enabled=retriever is not None,
     )
+    web_proxy = agent_config.get("web_proxy") or None
+    path_append = agent_config.get("path_append", "")
+
     tools = build_tool_registry(
         tools_enabled=tools_enabled,
         workspace=workspace,
@@ -148,6 +154,8 @@ async def build_user_context(
         skill_repo=repos.skills,
         memory_store=memory,
         retriever_store=retriever,
+        web_proxy=web_proxy,
+        path_append=path_append,
     )
 
     return UserContext(
@@ -162,6 +170,9 @@ async def build_user_context(
         temperature=agent_config.get("temperature", 0.1),
         max_iterations=agent_config.get("max_tool_iterations", 40),
         memory_window=agent_config.get("memory_window", 100),
+        reasoning_effort=agent_config.get("reasoning_effort") or None,
+        web_proxy=web_proxy,
+        path_append=path_append,
         provider=_make_user_provider(agent_config),
         limits=limits,
     )
@@ -180,6 +191,8 @@ def build_tool_registry(
     skill_repo: Any | None = None,
     memory_store: Any | None = None,
     retriever_store: Any | None = None,
+    web_proxy: str | None = None,
+    path_append: str = "",
 ) -> ToolRegistry:
     """Build a ToolRegistry with only the enabled tools."""
     from nanobot.agent.tools.cron import CronTool
@@ -206,9 +219,10 @@ def build_tool_registry(
             working_dir=str(workspace),
             timeout=exec_timeout,
             restrict_to_workspace=restrict_to_workspace,
+            path_append=path_append,
         ),
-        "web_search": lambda: WebSearchTool(api_key=brave_api_key),
-        "web_fetch": lambda: WebFetchTool(),
+        "web_search": lambda: WebSearchTool(api_key=brave_api_key, proxy=web_proxy),
+        "web_fetch": lambda: WebFetchTool(proxy=web_proxy),
         "message": lambda: MessageTool(send_callback=bus.publish_outbound),
         "save_skill": lambda: SaveSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace),
     }

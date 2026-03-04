@@ -22,6 +22,7 @@ CHANNEL_MAP: dict[str, tuple[str, str]] = {
     "email": ("nanobot.channels.email", "EmailChannel"),
     "slack": ("nanobot.channels.slack", "SlackChannel"),
     "qq": ("nanobot.channels.qq", "QQChannel"),
+    "matrix": ("nanobot.channels.matrix", "MatrixChannel"),
 }
 
 
@@ -70,6 +71,16 @@ class ChannelManager:
                     logger.info("{} channel enabled", name)
                 except ImportError as e:
                     logger.warning("{} channel not available: {}", name, e)
+
+        self._validate_allow_from()
+
+    def _validate_allow_from(self) -> None:
+        for name, ch in self.channels.items():
+            if getattr(ch.config, "allow_from", None) == []:
+                raise SystemExit(
+                    f'Error: "{name}" has empty allowFrom (denies all). '
+                    f'Set ["*"] to allow everyone, or add specific user IDs.'
+                )
 
     def _init_single_channel(self, name: str) -> None:
         """Initialize a single server-global channel from current config."""

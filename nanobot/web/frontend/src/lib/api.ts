@@ -134,6 +134,9 @@ export interface AgentConfig {
   memory_window?: number;
   language?: string;
   custom_instructions?: string;
+  reasoning_effort?: string;
+  web_proxy?: string;
+  path_append?: string;
 }
 
 export async function getConfig(): Promise<AgentConfig> {

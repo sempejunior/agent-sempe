@@ -99,7 +99,38 @@ CHANNEL_META: dict[str, dict] = {
             {"key": "encrypt_key", "label": "Encrypt Key", "type": "password", "required": False},
             {"key": "verification_token", "label": "Verification Token", "type": "password",
              "required": False},
+            {"key": "react_emoji", "label": "Reaction Emoji", "type": "text", "required": False,
+             "placeholder": "THUMBSUP",
+             "help": "Emoji key to react with when processing a message"},
             {"key": "allow_from", "label": "Allowed user IDs", "type": "list", "required": False},
+        ],
+    },
+    "matrix": {
+        "label": "Matrix / Element",
+        "description": "Connect to a Matrix homeserver for secure, decentralized messaging.",
+        "docs_url": "https://spec.matrix.org/latest/",
+        "fields": [
+            {"key": "homeserver", "label": "Homeserver URL", "type": "text", "required": True,
+             "placeholder": "https://matrix.org"},
+            {"key": "access_token", "label": "Access Token", "type": "password", "required": True,
+             "help": "Bot user access token"},
+            {"key": "user_id", "label": "Bot User ID", "type": "text", "required": True,
+             "placeholder": "@bot:matrix.org"},
+            {"key": "device_id", "label": "Device ID", "type": "text", "required": False,
+             "help": "Optional device ID for E2EE sessions"},
+            {"key": "e2ee_enabled", "label": "End-to-End Encryption", "type": "bool", "required": False},
+            {"key": "group_policy", "label": "Group Policy", "type": "text", "required": False,
+             "placeholder": "open",
+             "help": "open = respond to all, mention = only when mentioned, allowlist = restricted"},
+            {"key": "group_allow_from", "label": "Group Allowlist", "type": "list", "required": False,
+             "placeholder": "!roomid:matrix.org",
+             "help": "Room IDs allowed when group_policy=allowlist"},
+            {"key": "allow_room_mentions", "label": "Allow @room mentions", "type": "bool", "required": False},
+            {"key": "max_media_bytes", "label": "Max Media Size (bytes)", "type": "number", "required": False,
+             "placeholder": "20971520",
+             "help": "Max upload size in bytes. 0 to disable media."},
+            {"key": "allow_from", "label": "Allowed user IDs", "type": "list", "required": False,
+             "placeholder": "@user:matrix.org"},
         ],
     },
     "qq": {
@@ -113,7 +144,10 @@ CHANNEL_META: dict[str, dict] = {
     },
 }
 
-CHANNEL_ORDER = ["telegram", "discord", "slack", "whatsapp", "email", "dingtalk", "feishu", "qq"]
+CHANNEL_ORDER = [
+    "telegram", "discord", "slack", "whatsapp", "matrix",
+    "email", "dingtalk", "feishu", "qq",
+]
 
 
 def mask_secret(value: str) -> str:

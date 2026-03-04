@@ -1,5 +1,6 @@
 """Cron tool for scheduling reminders and tasks."""
 
+from contextvars import ContextVar
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
@@ -15,21 +16,30 @@ class CronTool(Tool):
         self._channel = ""
         self._chat_id = ""
         self._user_id = ""
+        self._in_cron_context: ContextVar[bool] = ContextVar("cron_in_context", default=False)
 
     def set_context(self, channel: str, chat_id: str, user_id: str = "") -> None:
         """Set the current session context for delivery."""
         self._channel = channel
         self._chat_id = chat_id
         self._user_id = user_id
-    
+
+    def set_cron_context(self, active: bool):
+        """Mark whether the tool is executing inside a cron job callback."""
+        return self._in_cron_context.set(active)
+
+    def reset_cron_context(self, token) -> None:
+        """Restore previous cron context."""
+        self._in_cron_context.reset(token)
+
     @property
     def name(self) -> str:
         return "cron"
-    
+
     @property
     def description(self) -> str:
         return "Schedule reminders and recurring tasks. Actions: add, list, remove."
-    
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -38,36 +48,30 @@ class CronTool(Tool):
                 "action": {
                     "type": "string",
                     "enum": ["add", "list", "remove"],
-                    "description": "Action to perform"
+                    "description": "Action to perform",
                 },
-                "message": {
-                    "type": "string",
-                    "description": "Reminder message (for add)"
-                },
+                "message": {"type": "string", "description": "Reminder message (for add)"},
                 "every_seconds": {
                     "type": "integer",
-                    "description": "Interval in seconds (for recurring tasks)"
+                    "description": "Interval in seconds (for recurring tasks)",
                 },
                 "cron_expr": {
                     "type": "string",
-                    "description": "Cron expression like '0 9 * * *' (for scheduled tasks)"
+                    "description": "Cron expression like '0 9 * * *' (for scheduled tasks)",
                 },
                 "tz": {
                     "type": "string",
-                    "description": "IANA timezone for cron expressions (e.g. 'America/Vancouver')"
+                    "description": "IANA timezone for cron expressions (e.g. 'America/Vancouver')",
                 },
                 "at": {
                     "type": "string",
-                    "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00')"
+                    "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00')",
                 },
-                "job_id": {
-                    "type": "string",
-                    "description": "Job ID (for remove)"
-                }
+                "job_id": {"type": "string", "description": "Job ID (for remove)"},
             },
-            "required": ["action"]
+            "required": ["action"],
         }
-    
+
     async def execute(
         self,
         action: str,
@@ -77,9 +81,11 @@ class CronTool(Tool):
         tz: str | None = None,
         at: str | None = None,
         job_id: str | None = None,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> str:
         if action == "add":
+            if self._in_cron_context.get():
+                return "Error: cannot schedule new jobs from within a cron job execution"
             return await self._add_job(message, every_seconds, cron_expr, tz, at)
         elif action == "list":
             return await self._list_jobs()
@@ -103,6 +109,7 @@ class CronTool(Tool):
             return "Error: tz can only be used with cron_expr"
         if tz:
             from zoneinfo import ZoneInfo
+
             try:
                 ZoneInfo(tz)
             except (KeyError, Exception):
@@ -115,6 +122,7 @@ class CronTool(Tool):
             schedule = CronSchedule(kind="cron", expr=cron_expr, tz=tz)
         elif at:
             from datetime import datetime
+
             dt = datetime.fromisoformat(at)
             at_ms = int(dt.timestamp() * 1000)
             schedule = CronSchedule(kind="at", at_ms=at_ms)
