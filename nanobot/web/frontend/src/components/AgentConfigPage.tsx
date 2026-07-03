@@ -5,11 +5,14 @@ import {
   Copy,
   Cpu,
   Loader2,
+  Plug,
+  Radio,
   Save,
   Settings,
   Sliders,
   Trash2,
   Wand2,
+  Wrench,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import { PageHeader } from "@/components/hub/PageHeader";
@@ -19,7 +22,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -29,11 +34,16 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import type { AgentConfig } from "@/lib/api";
-
-interface AdvancedConfig extends AgentConfig {
-  rag?: { enabled?: boolean };
-}
+import {
+  getCustomSkills,
+  getMcpConfig,
+  listChannels,
+  type AgentConfig,
+  type ChannelInfo,
+  type CustomSkill,
+  type MCPServer,
+} from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 function parseNumber(v: string): number | undefined {
   if (v.trim() === "") return undefined;
@@ -59,7 +69,7 @@ export function AgentConfigPage() {
     [agents, editingAgentId],
   );
 
-  const initialConfig = (agent?.agent_config as AdvancedConfig | undefined) ?? {};
+  const initialConfig: AgentConfig = agent?.agent_config ?? {};
 
   const [model, setModel] = useState(initialConfig.model ?? "");
   const [language, setLanguage] = useState(initialConfig.language ?? "");
@@ -82,8 +92,25 @@ export function AgentConfigPage() {
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  const [customSkills, setCustomSkills] = useState<CustomSkill[]>([]);
+  const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const [channels, setChannels] = useState<ChannelInfo[]>([]);
+  const [skillsAll, setSkillsAll] = useState(true);
+  const [skillsEnabled, setSkillsEnabled] = useState<string[]>([]);
+  const [mcpsAll, setMcpsAll] = useState(true);
+  const [mcpsEnabled, setMcpsEnabled] = useState<string[]>([]);
+  const [channelsEnabled, setChannelsEnabled] = useState<string[]>([]);
+
   useEffect(() => {
-    const cfg = (agent?.agent_config as AdvancedConfig | undefined) ?? {};
+    getCustomSkills().then(setCustomSkills).catch(() => setCustomSkills([]));
+    getMcpConfig()
+      .then((d) => setMcpServers(d.mcpServers ?? []))
+      .catch(() => setMcpServers([]));
+    listChannels().then(setChannels).catch(() => setChannels([]));
+  }, []);
+
+  useEffect(() => {
+    const cfg: AgentConfig = agent?.agent_config ?? {};
     setModel(cfg.model ?? "");
     setLanguage(cfg.language ?? "");
     setTemperature(cfg.temperature?.toString() ?? "");
@@ -92,7 +119,35 @@ export function AgentConfigPage() {
     setMaxToolIterations(cfg.max_tool_iterations?.toString() ?? "");
     setCustomInstructions(cfg.custom_instructions ?? "");
     setRagEnabled(Boolean(cfg.rag?.enabled));
-  }, [agent?.agent_id]);
+
+    const skillsSel = cfg.skills_enabled;
+    if (skillsSel === null || skillsSel === undefined) {
+      setSkillsAll(true);
+      setSkillsEnabled([]);
+    } else {
+      setSkillsAll(false);
+      setSkillsEnabled(skillsSel);
+    }
+
+    const mcpSel = cfg.mcp_servers_enabled;
+    if (mcpSel === null || mcpSel === undefined) {
+      setMcpsAll(true);
+      setMcpsEnabled([]);
+    } else {
+      setMcpsAll(false);
+      setMcpsEnabled(mcpSel);
+    }
+
+    const channelCfgs = (agent?.channel_configs ?? {}) as Record<
+      string,
+      { enabled?: boolean } | undefined
+    >;
+    setChannelsEnabled(
+      Object.entries(channelCfgs)
+        .filter(([, v]) => v?.enabled)
+        .map(([k]) => k),
+    );
+  }, [agent?.agent_id, agent?.agent_config, agent?.channel_configs]);
 
   if (!agent) {
     return (
@@ -110,8 +165,8 @@ export function AgentConfigPage() {
     if (!agent) return;
     setSaving(true);
     try {
-      const existing = (agent.agent_config as AdvancedConfig | undefined) ?? {};
-      const nextConfig: AdvancedConfig = {
+      const existing: AgentConfig = agent.agent_config ?? {};
+      const nextConfig: AgentConfig = {
         ...existing,
         model: model.trim() || undefined,
         language: language.trim() || undefined,
@@ -121,13 +176,52 @@ export function AgentConfigPage() {
         max_tool_iterations: parseNumber(maxToolIterations),
         custom_instructions: customInstructions.trim() || undefined,
         rag: { ...(existing.rag ?? {}), enabled: ragEnabled },
+        skills_enabled: skillsAll ? null : skillsEnabled,
+        mcp_servers_enabled: mcpsAll ? null : mcpsEnabled,
       };
+
+      const existingChannelCfgs = (agent.channel_configs ?? {}) as Record<
+        string,
+        { enabled?: boolean } | undefined
+      >;
+      const knownChannels = new Set<string>([
+        ...Object.keys(existingChannelCfgs),
+        ...channels.map((c) => c.name),
+      ]);
+      const nextChannelConfigs: Record<string, unknown> = {};
+      for (const name of knownChannels) {
+        const prev = existingChannelCfgs[name] ?? {};
+        nextChannelConfigs[name] = {
+          ...prev,
+          enabled: channelsEnabled.includes(name),
+        };
+      }
+
       await updateAgent(agent.agent_id, {
-        agent_config: nextConfig as unknown as AgentConfig,
+        agent_config: nextConfig,
+        channel_configs: nextChannelConfigs,
       });
     } finally {
       setSaving(false);
     }
+  }
+
+  function toggleSkill(name: string) {
+    setSkillsEnabled((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+    );
+  }
+
+  function toggleMcp(name: string) {
+    setMcpsEnabled((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+    );
+  }
+
+  function toggleChannel(name: string) {
+    setChannelsEnabled((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+    );
   }
 
   function goBack() {
@@ -301,6 +395,94 @@ export function AgentConfigPage() {
           </CardContent>
         </Card>
 
+        <CapabilityCard
+          icon={<Wrench className="w-5 h-5" />}
+          title="Skills"
+          description="Escolha quais skills do seu catálogo este agente pode usar."
+          count={customSkills.length}
+          useAll={skillsAll}
+          onToggleAll={setSkillsAll}
+          items={customSkills.map((s) => ({
+            key: s.name,
+            title: s.name,
+            subtitle: s.description || undefined,
+          }))}
+          selected={skillsEnabled}
+          onToggle={toggleSkill}
+          emptyLabel="Você ainda não tem skills. Crie em Minhas Skills."
+        />
+
+        <CapabilityCard
+          icon={<Plug className="w-5 h-5" />}
+          title="APIs conectadas (MCPs)"
+          description="Escolha quais servidores MCP este agente pode invocar."
+          count={mcpServers.length}
+          useAll={mcpsAll}
+          onToggleAll={setMcpsAll}
+          items={mcpServers.map((s) => ({
+            key: s.name,
+            title: s.name,
+            subtitle: s.url || s.command || undefined,
+          }))}
+          selected={mcpsEnabled}
+          onToggle={toggleMcp}
+          emptyLabel="Você ainda não conectou nenhum MCP. Configure em APIs conectadas."
+        />
+
+        <Card>
+          <CardContent className="p-6 pt-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-muted text-purple flex items-center justify-center shrink-0">
+                <Radio className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h2 className="font-display font-bold text-base text-text-primary">
+                  Canais
+                </h2>
+                <p className="text-xs text-text-muted mt-0.5">
+                  Marque em quais canais este agente atende. Credenciais são
+                  configuradas em <span className="font-semibold">Meus canais</span>.
+                </p>
+              </div>
+            </div>
+            {channels.length === 0 ? (
+              <p className="text-sm text-text-muted text-center py-4">
+                Nenhum canal disponível.
+              </p>
+            ) : (
+              <div className="grid gap-2 md:grid-cols-2">
+                {channels.map((ch) => {
+                  const checked = channelsEnabled.includes(ch.name);
+                  return (
+                    <label
+                      key={ch.name}
+                      className={cn(
+                        "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
+                        checked
+                          ? "border-purple bg-purple-muted"
+                          : "border-border bg-surface hover:border-purple/40",
+                      )}
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={() => toggleChannel(ch.name)}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-text-primary truncate">
+                          {ch.label}
+                        </p>
+                        <p className="text-[11px] text-text-muted truncate">
+                          {ch.running ? "Conectado" : ch.config_complete ? "Configurado" : "Sem credenciais"}
+                        </p>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         <Card>
           <CardContent className="p-6 pt-6">
             <div className="flex items-start justify-between gap-4">
@@ -399,5 +581,105 @@ export function AgentConfigPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+interface CapabilityItem {
+  key: string;
+  title: string;
+  subtitle?: string;
+}
+
+interface CapabilityCardProps {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  count: number;
+  useAll: boolean;
+  onToggleAll: (v: boolean) => void;
+  items: CapabilityItem[];
+  selected: string[];
+  onToggle: (key: string) => void;
+  emptyLabel: string;
+}
+
+function CapabilityCard({
+  icon,
+  title,
+  description,
+  count,
+  useAll,
+  onToggleAll,
+  items,
+  selected,
+  onToggle,
+  emptyLabel,
+}: CapabilityCardProps) {
+  return (
+    <Card>
+      <CardContent className="p-6 pt-6 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-purple-muted text-purple flex items-center justify-center shrink-0">
+            {icon}
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="font-display font-bold text-base text-text-primary">
+                {title}
+              </h2>
+              <Badge variant="muted">{count}</Badge>
+            </div>
+            <p className="text-xs text-text-muted mt-0.5">{description}</p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs font-semibold text-text-secondary">
+              Usar todas
+            </span>
+            <Switch checked={useAll} onCheckedChange={onToggleAll} />
+          </div>
+        </div>
+
+        {items.length === 0 ? (
+          <p className="text-sm text-text-muted text-center py-4">{emptyLabel}</p>
+        ) : useAll ? (
+          <p className="text-xs text-text-muted italic px-1">
+            Este agente tem acesso a todas as {count} entradas do seu catálogo.
+          </p>
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {items.map((item) => {
+              const checked = selected.includes(item.key);
+              return (
+                <label
+                  key={item.key}
+                  className={cn(
+                    "flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
+                    checked
+                      ? "border-purple bg-purple-muted"
+                      : "border-border bg-surface hover:border-purple/40",
+                  )}
+                >
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={() => onToggle(item.key)}
+                    className="mt-0.5"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-text-primary truncate">
+                      {item.title}
+                    </p>
+                    {item.subtitle && (
+                      <p className="text-[11px] text-text-muted line-clamp-2 mt-0.5">
+                        {item.subtitle}
+                      </p>
+                    )}
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

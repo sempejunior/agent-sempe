@@ -12,7 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { getMcpConfig, updateMcpConfig } from "@/lib/api";
-import type { MCPAuthType, MCPServerConfig } from "@/lib/api";
+import type { MCPAuthType, MCPServer, MCPServerConfig } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -36,7 +36,6 @@ import {
 } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/hub/PageHeader";
 import { toast } from "@/lib/toast";
-import { useStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 type ServerEntry = { name: string; server: MCPServerConfig };
@@ -360,8 +359,7 @@ function ServerCard({
 }
 
 export function McpPage() {
-  const activeAgentId = useStore((s) => s.activeAgentId);
-  const [servers, setServers] = useState<Record<string, MCPServerConfig>>({});
+  const [servers, setServers] = useState<MCPServer[]>([]);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -373,37 +371,35 @@ export function McpPage() {
     setLoading(true);
     setDirty(false);
     getMcpConfig()
-      .then((d) => setServers(d.mcpServers || {}))
+      .then((d) => setServers(d.mcpServers ?? []))
       .catch(() => toast("error", "Erro ao carregar configuração MCP"))
       .finally(() => setLoading(false));
-  }, [activeAgentId]);
+  }, []);
 
   function updateServer(name: string, config: MCPServerConfig) {
-    setServers((prev) => ({ ...prev, [name]: config }));
+    setServers((prev) =>
+      prev.map((s) => (s.name === name ? { ...s, ...config } : s)),
+    );
     setDirty(true);
   }
 
   function removeServer(name: string) {
-    setServers((prev) => {
-      const next = { ...prev };
-      delete next[name];
-      return next;
-    });
+    setServers((prev) => prev.filter((s) => s.name !== name));
     setDirty(true);
   }
 
   function addServer() {
     const n = newName.trim();
     if (!n) return;
-    if (servers[n]) {
+    if (servers.some((s) => s.name === n)) {
       toast("error", "Já existe um servidor com esse nome");
       return;
     }
-    const template: MCPServerConfig =
+    const template: MCPServer =
       newType === "sse"
-        ? { url: "", headers: {} }
-        : { command: "", args: [], env: {} };
-    setServers((prev) => ({ ...prev, [n]: template }));
+        ? { name: n, url: "", headers: {} }
+        : { name: n, command: "", args: [], env: {} };
+    setServers((prev) => [...prev, template]);
     setDirty(true);
     setAdding(false);
     setNewName("");
@@ -421,10 +417,10 @@ export function McpPage() {
     setSaving(false);
   }
 
-  const entries: ServerEntry[] = Object.entries(servers).map(([name, server]) => ({
-    name,
-    server,
-  }));
+  const entries: ServerEntry[] = servers.map((s) => {
+    const { name, ...rest } = s;
+    return { name, server: rest };
+  });
 
   const action = (
     <div className="flex items-center gap-2">
@@ -450,7 +446,7 @@ export function McpPage() {
       <PageHeader
         icon={Plug}
         title="APIs conectadas (MCP)"
-        subtitle="Integre serviços externos via Model Context Protocol"
+        subtitle="MCPs são compartilhados entre todos os seus agentes. Para escolher quais um agente usa, edite o agente."
         action={action}
       />
 

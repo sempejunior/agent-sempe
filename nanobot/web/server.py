@@ -408,7 +408,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.patch("/api/agents/{agent_id}")
     async def update_agent(request: Request, agent_id: str):
-        user, _agent = await _require_agent(request, agent_id)
+        user, current_agent = await _require_agent(request, agent_id)
         body = await request.json()
         allowed = {
             "name", "role", "description", "avatar", "is_default",
@@ -416,10 +416,37 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             "metadata", "status",
         }
         fields = {k: v for k, v in body.items() if k in allowed}
+        if "agent_config" in fields and isinstance(fields["agent_config"], dict):
+            merged_cfg = dict(current_agent.get("agent_config", {}) or {})
+            incoming = fields["agent_config"]
+            for key, value in incoming.items():
+                if key == "rag" and isinstance(value, dict):
+                    existing_rag = dict(merged_cfg.get("rag", {}) or {})
+                    existing_rag.update(value)
+                    merged_cfg["rag"] = existing_rag
+                else:
+                    merged_cfg[key] = value
+            fields["agent_config"] = merged_cfg
         ok = await app.state.repos.agents.update_agent(user["user_id"], agent_id, fields)
         _invalidate_agent_context(user["user_id"], agent_id)
         agent = await app.state.repos.agents.get_agent(user["user_id"], agent_id)
         return {"ok": ok, "agent": _public_agent(agent)}
+
+    @app.get("/api/agents/{agent_id}/selection")
+    async def get_agent_selection(request: Request, agent_id: str):
+        _user, agent = await _require_agent(request, agent_id)
+        agent_cfg = agent.get("agent_config", {}) or {}
+        channel_cfgs = agent.get("channel_configs", {}) or {}
+        return {
+            "tools_enabled": agent.get("tools_enabled", []),
+            "skills_enabled": agent_cfg.get("skills_enabled"),
+            "mcp_servers_enabled": agent_cfg.get("mcp_servers_enabled"),
+            "channels_enabled": [
+                name for name, cfg in channel_cfgs.items()
+                if isinstance(cfg, dict) and cfg.get("enabled")
+            ],
+            "rag_enabled": bool((agent_cfg.get("rag") or {}).get("enabled")),
+        }
 
     @app.delete("/api/agents/{agent_id}")
     async def delete_agent(request: Request, agent_id: str):
@@ -639,24 +666,33 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.get("/api/config/mcp")
     async def get_mcp_config(request: Request):
-        _user, agent = await _require_agent(request)
-        agent_cfg = agent.get("agent_config", {})
-        return {"mcpServers": agent_cfg.get("mcp_servers", {})}
+        user = await _require_user(request)
+        user_cfg = user.get("agent_config", {}) or {}
+        return {"mcpServers": user_cfg.get("mcp_servers", [])}
 
     @app.put("/api/config/mcp")
     async def update_mcp_config(request: Request):
-        user, agent = await _require_agent(request)
+        user = await _require_user(request)
         body = await request.json()
-        new_servers = body.get("mcpServers", {})
+        new_servers = body.get("mcpServers", [])
 
-        agent_cfg = agent.get("agent_config", {})
-        agent_cfg["mcp_servers"] = new_servers
-        await app.state.repos.agents.update_agent(user["user_id"], agent["agent_id"], {"agent_config": agent_cfg})
-        _invalidate_agent_context(user["user_id"], agent["agent_id"])
+        user_cfg = user.get("agent_config", {}) or {}
+        user_cfg["mcp_servers"] = new_servers
+        await app.state.repos.users.update(user["user_id"], {"agent_config": user_cfg})
+        _invalidate_agent_context(user["user_id"])
 
         try:
             from nanobot.config.schema import MCPServerConfig
-            parsed = {k: MCPServerConfig.model_validate(v) for k, v in new_servers.items()}
+            parsed = {}
+            for entry in new_servers:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if not name:
+                    continue
+                parsed[name] = MCPServerConfig.model_validate(
+                    {k: v for k, v in entry.items() if k != "name"}
+                )
             await app.state.agent.reload_mcp(parsed)
         except Exception as e:
             logger.warning("MCP reload failed (config saved anyway): {}", e)
@@ -700,32 +736,32 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.get("/api/skills/custom")
     async def get_custom_skills(request: Request):
-        user, agent = await _require_agent(request)
+        user = await _require_user(request)
         skills = await app.state.repos.skills.list_skills(
-            user["user_id"], enabled_only=False, agent_id=agent["agent_id"],
+            user["user_id"], enabled_only=False,
         )
         return skills
 
     @app.delete("/api/skills/custom/{name}")
     async def delete_custom_skill(request: Request, name: str):
-        user, agent = await _require_agent(request)
-        ok = await app.state.repos.skills.delete_skill(user["user_id"], name, agent["agent_id"])
-        _invalidate_agent_context(user["user_id"], agent["agent_id"])
+        user = await _require_user(request)
+        ok = await app.state.repos.skills.delete_skill(user["user_id"], name)
+        _invalidate_agent_context(user["user_id"])
         return {"ok": ok}
 
     @app.put("/api/skills/custom/{name}")
     async def update_custom_skill(request: Request, name: str):
-        user, agent = await _require_agent(request)
+        user = await _require_user(request)
         body = await request.json()
-        skill = await app.state.repos.skills.get_skill(user["user_id"], name, agent["agent_id"])
+        skill = await app.state.repos.skills.get_skill(user["user_id"], name)
         if not skill:
             skill = {"name": name, "content": "", "description": "", "enabled": 1, "always_active": 0}
         skill["content"] = body.get("content", skill["content"])
         skill["description"] = body.get("description", skill.get("description", ""))
         skill["always_active"] = body.get("always_active", skill.get("always_active", 0))
         skill["enabled"] = body.get("enabled", skill.get("enabled", 1))
-        await app.state.repos.skills.save_skill(user["user_id"], skill, agent["agent_id"])
-        _invalidate_agent_context(user["user_id"], agent["agent_id"])
+        await app.state.repos.skills.save_skill(user["user_id"], skill)
+        _invalidate_agent_context(user["user_id"])
         return {"ok": True}
 
     @app.get("/api/memory")
@@ -777,9 +813,9 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.get("/api/config/rag")
     async def get_rag_config(request: Request):
-        _user, agent = await _require_agent(request)
-        agent_cfg = agent.get("agent_config", {})
-        rag = dict(agent_cfg.get("rag", {"enabled": False, "default_backend": "local", "backends": {}}))
+        user = await _require_user(request)
+        user_cfg = user.get("agent_config", {}) or {}
+        rag = dict(user_cfg.get("rag", {"enabled": False, "default_backend": "local", "backends": {}}))
         backends = dict(rag.get("backends", {}))
         for name, b in backends.items():
             b = dict(b)
@@ -792,10 +828,10 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.put("/api/config/rag")
     async def update_rag_config(request: Request):
-        user, agent = await _require_agent(request)
+        user = await _require_user(request)
         body = await request.json()
-        agent_cfg = agent.get("agent_config", {})
-        current_rag = agent_cfg.get("rag", {})
+        user_cfg = user.get("agent_config", {}) or {}
+        current_rag = user_cfg.get("rag", {}) or {}
         current_backends = current_rag.get("backends", {})
         new_backends = body.get("backends", {})
         for name, b in new_backends.items():
@@ -803,17 +839,17 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 old = current_backends.get(name, {})
                 b["api_key"] = old.get("api_key", "")
         body["backends"] = new_backends
-        agent_cfg["rag"] = body
-        await app.state.repos.agents.update_agent(user["user_id"], agent["agent_id"], {"agent_config": agent_cfg})
-        _invalidate_agent_context(user["user_id"], agent["agent_id"])
+        user_cfg["rag"] = body
+        await app.state.repos.users.update(user["user_id"], {"agent_config": user_cfg})
+        _invalidate_agent_context(user["user_id"])
         return {"ok": True}
 
     @app.get("/api/config/prompts")
     async def get_prompts(request: Request):
-        _user, agent = await _require_agent(request)
+        user = await _require_user(request)
         from nanobot.prompts import PROMPT_FILES, PROMPT_ORDER, load_base_prompt
 
-        user_extensions = agent.get("bootstrap", {})
+        user_extensions = user.get("bootstrap", {}) or {}
         result = []
         for filename in PROMPT_ORDER:
             meta = PROMPT_FILES[filename]
@@ -829,11 +865,11 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.put("/api/config/prompts")
     async def update_prompts(request: Request):
-        user, agent = await _require_agent(request)
+        user = await _require_user(request)
         body = await request.json()
         from nanobot.prompts import PROMPT_FILES
 
-        extensions = agent.get("bootstrap", {})
+        extensions = dict(user.get("bootstrap", {}) or {})
         for item in body:
             filename = item.get("filename", "")
             if filename in PROMPT_FILES:
@@ -843,8 +879,8 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 elif filename in extensions:
                     del extensions[filename]
 
-        await app.state.repos.agents.update_agent(user["user_id"], agent["agent_id"], {"bootstrap": extensions})
-        _invalidate_agent_context(user["user_id"], agent["agent_id"])
+        await app.state.repos.users.update(user["user_id"], {"bootstrap": extensions})
+        _invalidate_agent_context(user["user_id"])
         return {"ok": True}
 
     def _get_user_channel_configs(user: dict) -> dict:

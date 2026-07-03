@@ -27,10 +27,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import {
   getCustomSkills,
-  updateCustomSkill,
+  getMcpConfig,
   type Agent,
+  type AgentConfig,
   type AgentTemplate,
   type CustomSkill,
+  type MCPServer,
 } from "@/lib/api";
 
 interface BuiltinTool {
@@ -94,6 +96,7 @@ export function AgentStudioPage() {
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const [customSkills, setCustomSkills] = useState<CustomSkill[]>([]);
+  const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
 
   useEffect(() => {
     if (templates.length === 0) loadTemplates();
@@ -103,6 +106,9 @@ export function AgentStudioPage() {
     getCustomSkills()
       .then(setCustomSkills)
       .catch(() => setCustomSkills([]));
+    getMcpConfig()
+      .then((d) => setMcpServers(d.mcpServers ?? []))
+      .catch(() => setMcpServers([]));
   }, [editingAgentId]);
 
   useEffect(() => {
@@ -110,6 +116,10 @@ export function AgentStudioPage() {
     const agent = agents.find((a) => a.agent_id === editingAgentId);
     if (!agent) return;
     const bootstrap = agent.bootstrap ?? {};
+    const cfg = agent.agent_config ?? {};
+    const enabledChannels = Object.entries(agent.channel_configs ?? {})
+      .filter(([, v]) => (v as { enabled?: boolean } | undefined)?.enabled)
+      .map(([k]) => k);
     updateWizardDraft({
       template_id: "existing",
       name: agent.name,
@@ -118,27 +128,28 @@ export function AgentStudioPage() {
       avatar: agent.avatar,
       persona: bootstrap["SOUL.md"] ?? "",
       guidelines: bootstrap["AGENTS.md"] ?? "",
-      rag_enabled: Boolean(
-        (agent.agent_config as { rag?: { enabled?: boolean } } | undefined)?.rag?.enabled,
-      ),
+      rag_enabled: Boolean(cfg.rag?.enabled),
       tools: agent.tools_enabled ?? [],
-      skills: [],
-      channels: Object.keys(agent.channel_configs ?? {}),
+      skills:
+        cfg.skills_enabled === null || cfg.skills_enabled === undefined
+          ? customSkills.map((s) => s.name)
+          : cfg.skills_enabled,
+      mcps:
+        cfg.mcp_servers_enabled === null || cfg.mcp_servers_enabled === undefined
+          ? mcpServers.map((s) => s.name)
+          : cfg.mcp_servers_enabled,
+      channels: enabledChannels,
     });
     setWizardStep(2);
-  }, [editingAgentId, agents, updateWizardDraft, setWizardStep]);
+  }, [editingAgentId, agents, customSkills, mcpServers, updateWizardDraft, setWizardStep]);
 
   useEffect(() => {
-    if (!editingAgentId) {
-      updateWizardDraft({
-        skills: customSkills.filter((s) => s.enabled === 1).map((s) => s.name),
-      });
-      return;
-    }
+    if (editingAgentId) return;
     updateWizardDraft({
-      skills: customSkills.filter((s) => s.enabled === 1).map((s) => s.name),
+      skills: customSkills.map((s) => s.name),
+      mcps: mcpServers.map((s) => s.name),
     });
-  }, [customSkills, editingAgentId, updateWizardDraft]);
+  }, [customSkills, mcpServers, editingAgentId, updateWizardDraft]);
 
   const editingAgent = useMemo(
     () => (editingAgentId ? agents.find((a) => a.agent_id === editingAgentId) : null),
@@ -202,6 +213,15 @@ export function AgentStudioPage() {
     });
   }
 
+  function toggleMcp(name: string) {
+    const has = wizardDraft.mcps.includes(name);
+    updateWizardDraft({
+      mcps: has
+        ? wizardDraft.mcps.filter((m) => m !== name)
+        : [...wizardDraft.mcps, name],
+    });
+  }
+
   function toggleChannel(id: string) {
     const has = wizardDraft.channels.includes(id);
     updateWizardDraft({
@@ -224,16 +244,6 @@ export function AgentStudioPage() {
     if (wizardStep > 1) setWizardStep((wizardStep - 1) as WizardStep);
   }
 
-  async function persistSkillFlags(): Promise<void> {
-    const wanted = new Set(wizardDraft.skills);
-    const updates = customSkills
-      .filter((s) => (s.enabled === 1) !== wanted.has(s.name))
-      .map((s) =>
-        updateCustomSkill(s.name, { enabled: wanted.has(s.name) ? 1 : 0 }),
-      );
-    await Promise.all(updates);
-  }
-
   async function handleSave() {
     if (!wizardDraft.name.trim()) {
       setWizardStep(2);
@@ -244,21 +254,37 @@ export function AgentStudioPage() {
     const bootstrap: Record<string, string> = {};
     if (wizardDraft.persona.trim()) bootstrap["SOUL.md"] = wizardDraft.persona.trim();
     if (wizardDraft.guidelines.trim()) bootstrap["AGENTS.md"] = wizardDraft.guidelines.trim();
-    const channelConfigs: Record<string, unknown> = {};
-    for (const id of wizardDraft.channels) channelConfigs[id] = { enabled: true };
 
-    const existingConfig =
-      (editingAgent?.agent_config as Record<string, unknown> | undefined) ?? {};
+    const existingChannelConfigs =
+      (editingAgent?.channel_configs as Record<string, { enabled?: boolean } | undefined>) ?? {};
+    const knownChannels = new Set<string>([
+      ...Object.keys(existingChannelConfigs),
+      ...CHANNELS.map((c) => c.id),
+    ]);
+    const channelConfigs: Record<string, unknown> = {};
+    for (const name of knownChannels) {
+      const prev = existingChannelConfigs[name] ?? {};
+      channelConfigs[name] = {
+        ...prev,
+        enabled: wizardDraft.channels.includes(name),
+      };
+    }
+
+    const existingConfig = editingAgent?.agent_config ?? {};
+    const nextConfig: AgentConfig = {
+      ...existingConfig,
+      rag: { ...(existingConfig.rag ?? {}), enabled: wizardDraft.rag_enabled },
+      skills_enabled: wizardDraft.skills,
+      mcp_servers_enabled: wizardDraft.mcps,
+    };
+
     const payload: Partial<Agent> = {
       name: wizardDraft.name.trim(),
       role: wizardDraft.role,
       description: wizardDraft.description,
       avatar: wizardDraft.avatar || wizardDraft.name.trim().slice(0, 1),
       tools_enabled: wizardDraft.tools,
-      agent_config: {
-        ...existingConfig,
-        rag: { enabled: wizardDraft.rag_enabled },
-      } as unknown as Agent["agent_config"],
+      agent_config: nextConfig,
       bootstrap,
       channel_configs: channelConfigs,
     };
@@ -268,7 +294,6 @@ export function AgentStudioPage() {
       } else {
         await createAgent({ ...payload, status: "active" });
       }
-      await persistSkillFlags();
       resetWizard();
       setEditingAgentId(null);
       setActiveView("agent-team");
@@ -321,10 +346,13 @@ export function AgentStudioPage() {
             <StepCapabilities
               tools={wizardDraft.tools}
               skills={wizardDraft.skills}
+              mcps={wizardDraft.mcps}
               customSkills={customSkills}
+              mcpServers={mcpServers}
               ragEnabled={wizardDraft.rag_enabled}
               onToggleTool={toggleTool}
               onToggleSkill={toggleSkill}
+              onToggleMcp={toggleMcp}
               onToggleRag={(v) => updateWizardDraft({ rag_enabled: v })}
               onOpenSkills={() => setActiveView("skills-catalog")}
               onOpenMcps={() => setActiveView("mcp")}
@@ -609,10 +637,13 @@ function StepPersonality({ persona, guidelines, onChange }: StepPersonalityProps
 interface StepCapabilitiesProps {
   tools: string[];
   skills: string[];
+  mcps: string[];
   customSkills: CustomSkill[];
+  mcpServers: MCPServer[];
   ragEnabled: boolean;
   onToggleTool: (id: string) => void;
   onToggleSkill: (name: string) => void;
+  onToggleMcp: (name: string) => void;
   onToggleRag: (v: boolean) => void;
   onOpenSkills: () => void;
   onOpenMcps: () => void;
@@ -621,10 +652,13 @@ interface StepCapabilitiesProps {
 function StepCapabilities({
   tools,
   skills,
+  mcps,
   customSkills,
+  mcpServers,
   ragEnabled,
   onToggleTool,
   onToggleSkill,
+  onToggleMcp,
   onToggleRag,
   onOpenSkills,
   onOpenMcps,
@@ -798,6 +832,80 @@ function StepCapabilities({
                         Sempre ativa
                       </Badge>
                     )}
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-xs font-bold text-text-muted uppercase tracking-wider">
+              APIs conectadas (MCPs)
+            </h3>
+            <p className="text-[11px] text-text-muted">
+              Servidores MCP que este agente pode invocar.
+            </p>
+          </div>
+          <Button variant="ghost" size="sm" onClick={onOpenMcps}>
+            <Plug className="w-4 h-4" />
+            Meus MCPs
+            <ExternalLink className="w-3 h-3" />
+          </Button>
+        </div>
+
+        {mcpServers.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-border bg-surface-alt p-6 text-center">
+            <p className="text-sm text-text-secondary">
+              Você ainda não conectou nenhum MCP.
+            </p>
+            <p className="text-xs text-text-muted mt-1">
+              Conecte APIs externas em{" "}
+              <span className="font-semibold">APIs conectadas (MCP)</span> para
+              disponibilizar ferramentas customizadas.
+            </p>
+            <div className="flex items-center justify-center gap-2 mt-4">
+              <Button size="sm" variant="subtle" onClick={onOpenMcps}>
+                <Plug className="w-4 h-4" /> Conectar MCP
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {mcpServers.map((server) => {
+              const checked = mcps.includes(server.name);
+              const isSSE = !!server.url;
+              const endpoint = isSSE
+                ? server.url
+                : [server.command, ...(server.args ?? [])].filter(Boolean).join(" ");
+              return (
+                <label
+                  key={server.name}
+                  className={cn(
+                    "flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
+                    checked
+                      ? "border-purple bg-purple-muted"
+                      : "border-border bg-surface hover:border-purple/40",
+                  )}
+                >
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={() => onToggleMcp(server.name)}
+                    className="mt-0.5"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-text-primary truncate">
+                      {server.name}
+                    </p>
+                    <p className="text-[11px] text-text-muted font-mono truncate mt-0.5">
+                      {endpoint || (isSSE ? "URL não configurada" : "sem comando")}
+                    </p>
+                    <Badge variant="muted" className="mt-1.5">
+                      {isSSE ? "HTTP / SSE" : "stdio"}
+                    </Badge>
                   </div>
                 </label>
               );

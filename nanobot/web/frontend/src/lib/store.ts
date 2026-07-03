@@ -60,6 +60,7 @@ interface WizardDraft {
   rag_enabled: boolean;
   tools: string[];
   skills: string[];
+  mcps: string[];
   channels: string[];
 }
 
@@ -139,6 +140,7 @@ const EMPTY_WIZARD: WizardDraft = {
   rag_enabled: false,
   tools: [],
   skills: [],
+  mcps: [],
   channels: [],
 };
 

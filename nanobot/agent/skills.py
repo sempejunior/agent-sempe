@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from nanobot.db.repositories import SkillRepository
@@ -33,14 +33,13 @@ class SkillsLoader:
         *,
         skill_repo: SkillRepository | None = None,
         user_id: str | None = None,
-        agent_id: str | None = None,
         builtin_skills_dir: Path | None = None,
+        enabled_names: list[str] | None = None,
     ):
         if skill_repo is not None:
             self._mode = "db"
             self._repo = skill_repo
             self._user_id = user_id
-            self._agent_id = agent_id
         elif workspace is not None:
             self._mode = "fs"
             self.workspace = workspace
@@ -49,6 +48,7 @@ class SkillsLoader:
             raise ValueError("Either workspace or skill_repo must be provided")
 
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
+        self._enabled_names = enabled_names
 
     async def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
         """List all available skills."""
@@ -59,7 +59,7 @@ class SkillsLoader:
     async def load_skill(self, name: str) -> str | None:
         """Load a skill by name."""
         if self._mode == "db":
-            skill = await self._repo.get_skill(self._user_id, name, self._agent_id)
+            skill = await self._repo.get_skill(self._user_id, name)
             if skill:
                 return skill["content"]
         else:
@@ -145,9 +145,10 @@ class SkillsLoader:
 
     async def _list_skills_db(self, filter_unavailable: bool) -> list[dict[str, str]]:
         """List skills: DB user skills + filesystem builtin skills."""
-        skills = []
+        skills: list[dict[str, Any]] = []
 
-        db_skills = await self._repo.list_skills(self._user_id, agent_id=self._agent_id)
+        db_skills = await self._repo.list_skills(self._user_id)
+        db_by_name = {s["name"]: s for s in db_skills}
         for s in db_skills:
             skills.append({
                 "name": s["name"],
@@ -166,6 +167,14 @@ class SkillsLoader:
                             "path": str(skill_file),
                             "source": "builtin",
                         })
+
+        if self._enabled_names is not None:
+            allowed = set(self._enabled_names)
+            skills = [
+                s for s in skills
+                if s["name"] in allowed
+                or bool(db_by_name.get(s["name"], {}).get("always_active"))
+            ]
 
         if filter_unavailable:
             filtered = []

@@ -84,10 +84,21 @@ def _effective_agent_config(user_config: dict[str, Any], agent_config: dict[str,
         "provider", "model", "max_tokens", "temperature",
         "max_tool_iterations", "memory_window", "language",
         "custom_instructions",
+        "mcp_servers",
     }
     for key in global_keys:
         if key in user_config:
             merged[key] = user_config[key]
+    user_rag = user_config.get("rag") or {}
+    agent_rag = agent_config.get("rag") or {}
+    if user_rag or agent_rag:
+        combined = {**user_rag, **agent_rag}
+        if "enabled" in agent_rag:
+            combined["enabled"] = agent_rag["enabled"]
+        for shared_key in ("default_backend", "backends"):
+            if shared_key in user_rag and shared_key not in agent_rag:
+                combined[shared_key] = user_rag[shared_key]
+        merged["rag"] = combined
     return merged
 
 
@@ -145,14 +156,15 @@ async def build_user_context(
                 delete_path=backend_cfg.get("delete_path", "/delete"),
                 timeout=backend_cfg.get("timeout", 30),
             )
-            retriever = RetrieverStore(retriever_repo=http_repo, user_id=user_id, agent_id=agent_id)
+            retriever = RetrieverStore(retriever_repo=http_repo, user_id=user_id)
         else:
-            retriever = RetrieverStore(retriever_repo=repos.retriever, user_id=user_id, agent_id=agent_id)
+            retriever = RetrieverStore(retriever_repo=repos.retriever, user_id=user_id)
+    skills_enabled = agent_doc.get("agent_config", {}).get("skills_enabled")
     skills = SkillsLoader(
         skill_repo=repos.skills,
         user_id=user_id,
-        agent_id=agent_id,
         builtin_skills_dir=builtin_skills_dir or BUILTIN_SKILLS_DIR,
+        enabled_names=list(skills_enabled) if isinstance(skills_enabled, list) else None,
     )
     sessions = SessionManager(
         session_repo=repos.sessions,
@@ -169,7 +181,6 @@ async def build_user_context(
         language=agent_config.get("language", ""),
         custom_instructions=agent_config.get("custom_instructions", ""),
         rag_enabled=retriever is not None,
-        bootstrap_overrides=agent_doc.get("bootstrap", {}),
     )
     tools = build_tool_registry(
         tools_enabled=tools_enabled,
@@ -181,8 +192,7 @@ async def build_user_context(
         cron_service=cron_service,
         user_id=user_id,
         skill_repo=repos.skills,
-        agent_repo=repos.agents,
-        agent_id=agent_id,
+        user_repo=repos.users,
         memory_store=memory,
         retriever_store=retriever,
     )
@@ -216,8 +226,7 @@ def build_tool_registry(
     cron_service: CronService | None = None,
     user_id: str | None = None,
     skill_repo: Any | None = None,
-    agent_repo: Any | None = None,
-    agent_id: str | None = None,
+    user_repo: Any | None = None,
     memory_store: Any | None = None,
     retriever_store: Any | None = None,
 ) -> ToolRegistry:
@@ -250,15 +259,14 @@ def build_tool_registry(
         "web_search": lambda: WebSearchTool(api_key=brave_api_key),
         "web_fetch": lambda: WebFetchTool(),
         "message": lambda: MessageTool(send_callback=bus.publish_outbound),
-        "save_skill": lambda: SaveSkillTool(user_id=user_id, agent_id=agent_id, skill_repo=skill_repo, workspace=workspace),
+        "save_skill": lambda: SaveSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace),
     }
 
-    if agent_repo:
+    if user_repo:
         from nanobot.agent.tools.mcp_config import SaveMCPServerTool
         factories["save_mcp_server"] = lambda: SaveMCPServerTool(
             user_id=user_id,
-            agent_id=agent_id,
-            agent_repo=agent_repo,
+            user_repo=user_repo,
         )
 
     if memory_store:

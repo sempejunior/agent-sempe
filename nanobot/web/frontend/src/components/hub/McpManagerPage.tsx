@@ -4,28 +4,16 @@ import { PageHeader } from "./PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { getMcpConfig, type MCPServerConfig } from "@/lib/api";
+import { getMcpConfig, type MCPServer } from "@/lib/api";
 import { toast } from "@/lib/toast";
 
-interface ServerEntry {
-  name: string;
-  config: MCPServerConfig;
-}
-
 export function McpManagerPage() {
-  const [servers, setServers] = useState<ServerEntry[]>([]);
+  const [servers, setServers] = useState<MCPServer[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     getMcpConfig()
-      .then((data) => {
-        const map = data.mcpServers ?? {};
-        const list: ServerEntry[] = Object.entries(map).map(([name, config]) => ({
-          name,
-          config,
-        }));
-        setServers(list);
-      })
+      .then((data) => setServers(data.mcpServers ?? []))
       .catch((e) => toast("error", (e as Error).message))
       .finally(() => setLoading(false));
   }, []);
@@ -35,7 +23,7 @@ export function McpManagerPage() {
       <PageHeader
         icon={Plug}
         title="APIs conectadas (MCP)"
-        subtitle="Servidores MCP que expõem ferramentas customizadas aos agentes"
+        subtitle="MCPs são compartilhados entre todos os seus agentes. Para escolher quais um agente usa, edite o agente."
       />
 
       {loading ? (
@@ -59,11 +47,12 @@ export function McpManagerPage() {
         </Card>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {servers.map(({ name, config }) => {
-            const isSSE = !!config.url;
+          {servers.map((server) => {
+            const name = server.name;
+            const isSSE = !!server.url;
             const endpoint = isSSE
-              ? config.url
-              : [config.command, ...(config.args ?? [])].filter(Boolean).join(" ");
+              ? server.url
+              : [server.command, ...(server.args ?? [])].filter(Boolean).join(" ");
             return (
               <Card key={name}>
                 <CardContent className="p-5 pt-5">

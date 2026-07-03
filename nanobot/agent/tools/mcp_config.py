@@ -9,18 +9,16 @@ from nanobot.config.schema import MCPServerConfig
 
 
 class SaveMCPServerTool(Tool):
-    """Save or update an MCP server for the current agent."""
+    """Save or update an MCP server for the current user."""
 
     def __init__(
         self,
         *,
         user_id: str | None,
-        agent_id: str | None,
-        agent_repo: Any | None,
+        user_repo: Any | None,
     ):
         self.user_id = user_id
-        self.agent_id = agent_id
-        self.agent_repo = agent_repo
+        self.user_repo = user_repo
 
     @property
     def name(self) -> str:
@@ -29,7 +27,7 @@ class SaveMCPServerTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Save or update an MCP server configuration for this agent. Use it after "
+            "Save or update an MCP server configuration for this user. Use it after "
             "the user provides the server name and either an HTTP URL or a stdio "
             "command/args. Do not invent credentials."
         )
@@ -98,7 +96,7 @@ class SaveMCPServerTool(Tool):
         }
 
     async def execute(self, **kwargs: Any) -> str:
-        if not self.user_id or not self.agent_id or not self.agent_repo:
+        if not self.user_id or not self.user_repo:
             return "Error: MCP configuration storage is not available."
 
         server_name = str(kwargs.get("server_name", "")).strip()
@@ -122,13 +120,21 @@ class SaveMCPServerTool(Tool):
             return "Error: provide either url or command for the MCP server."
 
         cfg = MCPServerConfig.model_validate(payload).model_dump(by_alias=False)
-        agent = await self.agent_repo.get_agent(self.user_id, self.agent_id)
-        if not agent:
-            return f"Error: agent '{self.agent_id}' not found."
+        user = await self.user_repo.get_by_id(self.user_id)
+        if not user:
+            return f"Error: user '{self.user_id}' not found."
 
-        agent_config = dict(agent.get("agent_config") or {})
-        mcp_servers = dict(agent_config.get("mcp_servers") or {})
-        mcp_servers[server_name] = cfg
-        agent_config["mcp_servers"] = mcp_servers
-        await self.agent_repo.update_agent(self.user_id, self.agent_id, {"agent_config": agent_config})
-        return f"MCP server '{server_name}' saved for this agent. It will be available after MCP reload or next context refresh."
+        agent_config = dict(user.get("agent_config") or {})
+        servers = list(agent_config.get("mcp_servers") or [])
+        replaced = False
+        for entry in servers:
+            if isinstance(entry, dict) and entry.get("name") == server_name:
+                entry.update(cfg)
+                entry["name"] = server_name
+                replaced = True
+                break
+        if not replaced:
+            servers.append({"name": server_name, **cfg})
+        agent_config["mcp_servers"] = servers
+        await self.user_repo.update(self.user_id, {"agent_config": agent_config})
+        return f"MCP server '{server_name}' saved. It will be available after MCP reload or next context refresh."

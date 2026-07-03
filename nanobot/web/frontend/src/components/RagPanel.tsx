@@ -7,7 +7,6 @@ import { PageHeader } from "@/components/hub/PageHeader";
 import { getRagConfig, updateRagConfig } from "@/lib/api";
 import type { RAGConfig, RAGBackendConfig } from "@/lib/api";
 import { toast } from "@/lib/toast";
-import { useStore } from "@/lib/store";
 import {
   Database,
   Plus,
@@ -470,7 +469,6 @@ export function RagPanel() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(false);
-  const activeAgentId = useStore((s) => s.activeAgentId);
 
   const load = async () => {
     setLoading(true);
@@ -486,7 +484,7 @@ export function RagPanel() {
 
   useEffect(() => {
     load();
-  }, [activeAgentId]);
+  }, []);
 
   const update = (partial: Partial<RAGConfig>) => {
     setConfig((prev) => ({ ...prev, ...partial }));

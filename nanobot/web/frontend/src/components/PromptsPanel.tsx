@@ -2,7 +2,6 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { getPrompts, updatePrompts } from "@/lib/api";
 import type { PromptSection } from "@/lib/api";
 import { toast } from "@/lib/toast";
-import { useStore } from "@/lib/store";
 import {
   Bold,
   Check,
@@ -35,7 +34,6 @@ export function PromptsPanel() {
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [showBase, setShowBase] = useState(false);
-  const activeAgentId = useStore((s) => s.activeAgentId);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const loadPrompts = async () => {
@@ -56,7 +54,7 @@ export function PromptsPanel() {
 
   useEffect(() => {
     loadPrompts();
-  }, [activeAgentId]);
+  }, []);
 
   const handleExtensionChange = (filename: string, value: string) => {
     setExtensions((prev) => ({ ...prev, [filename]: value }));

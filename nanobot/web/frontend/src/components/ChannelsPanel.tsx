@@ -23,7 +23,6 @@ import {
 } from "@/lib/api";
 import type { ChannelInfo, ChannelField } from "@/lib/api";
 import { toast } from "@/lib/toast";
-import { useStore } from "@/lib/store";
 import {
   Radio,
   ExternalLink,
@@ -522,7 +521,6 @@ function ChannelDetail({
 }
 
 export function ChannelsPanel() {
-  const activeAgentId = useStore((s) => s.activeAgentId);
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedChannelName, setSelectedChannelName] = useState<string | null>(
@@ -542,9 +540,8 @@ export function ChannelsPanel() {
   }, []);
 
   useEffect(() => {
-    setSelectedChannelName(null);
     loadChannels();
-  }, [activeAgentId, loadChannels]);
+  }, [loadChannels]);
 
   const connectedCount = channels.filter((c) => c.running).length;
   const failedCount = channels.filter((c) => c.last_error).length;
@@ -552,12 +549,12 @@ export function ChannelsPanel() {
 
   const subtitle =
     channels.length === 0
-      ? "Configure os conectores que este agente vai usar para falar com clientes"
-      : `${connectedCount} conectado(s)${failedCount > 0 ? ` · ${failedCount} com falha` : ""}`;
+      ? "Configure credenciais dos conectores. Para escolher quais canais um agente usa, edite o agente."
+      : `${connectedCount} conectado(s)${failedCount > 0 ? ` · ${failedCount} com falha` : ""} · credenciais compartilhadas entre agentes`;
 
   return (
     <div className="container-app">
-      <PageHeader icon={Radio} title="Canais deste agente" subtitle={subtitle} />
+      <PageHeader icon={Radio} title="Meus canais" subtitle={subtitle} />
 
       {loading ? (
         <div className="flex items-center justify-center py-20">

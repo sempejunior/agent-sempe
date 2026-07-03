@@ -261,9 +261,24 @@ class AgentLoop:
         )
 
         if self._mcp_connected:
+            agent_doc = await self._repos.agents.get_agent(user_id, uctx.agent_id)
+            mcp_enabled_raw = (agent_doc or {}).get("agent_config", {}).get("mcp_servers_enabled")
+            mcp_filter: set[str] | None = (
+                set(mcp_enabled_raw) if isinstance(mcp_enabled_raw, list) else None
+            )
+            server_names = sorted(self._mcp_servers.keys(), key=len, reverse=True)
             for name, tool in self.tools._tools.items():
-                if name.startswith("mcp_") and not uctx.tools.has(name):
-                    uctx.tools.register(tool)
+                if not name.startswith("mcp_") or uctx.tools.has(name):
+                    continue
+                if mcp_filter is not None:
+                    remainder = name[len("mcp_"):]
+                    server_name = next(
+                        (s for s in server_names if remainder.startswith(f"{s}_")),
+                        remainder.split("_", 1)[0],
+                    )
+                    if server_name not in mcp_filter:
+                        continue
+                uctx.tools.register(tool)
 
         self._user_contexts[cache_key] = uctx
         self._user_contexts[f"{user_id}:{uctx.agent_id}"] = uctx

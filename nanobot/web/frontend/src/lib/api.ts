@@ -213,6 +213,21 @@ export interface AgentConfig {
   memory_window?: number;
   language?: string;
   custom_instructions?: string;
+  skills_enabled?: string[] | null;
+  mcp_servers_enabled?: string[] | null;
+  rag?: { enabled?: boolean };
+}
+
+export interface AgentSelection {
+  tools_enabled: string[];
+  skills_enabled: string[] | null;
+  mcp_servers_enabled: string[] | null;
+  channels_enabled: string[];
+  rag_enabled: boolean;
+}
+
+export async function getAgentSelection(agentId: string): Promise<AgentSelection> {
+  return request(`/agents/${encodeURIComponent(agentId)}/selection`);
 }
 
 export async function getConfig(): Promise<AgentConfig> {
@@ -288,8 +303,12 @@ export interface MCPServerConfig {
   auth_header_name?: string;
 }
 
+export interface MCPServer extends MCPServerConfig {
+  name: string;
+}
+
 export interface MCPData {
-  mcpServers: Record<string, MCPServerConfig>;
+  mcpServers: MCPServer[];
 }
 
 export async function getMcpConfig(): Promise<MCPData> {

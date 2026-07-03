@@ -467,6 +467,55 @@ ALTER TABLE channel_bindings_v6 RENAME TO channel_bindings;
 CREATE INDEX IF NOT EXISTS idx_bindings_user_agent ON channel_bindings(user_id, agent_id);
 CREATE INDEX IF NOT EXISTS idx_bindings_channel_sender ON channel_bindings(channel, sender_id);
 """),
+
+    (7, """
+-- ===================== v7: revert skills + rag_chunks to user scope =====================
+
+CREATE TABLE skills_v7 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    always_active INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, name)
+);
+INSERT OR IGNORE INTO skills_v7 (id, user_id, name, content, description, always_active, enabled, created_at, updated_at)
+SELECT MIN(id), user_id, name, content, description, MAX(always_active), MAX(enabled), MIN(created_at), MAX(updated_at)
+FROM skills GROUP BY user_id, name;
+DROP TABLE skills;
+ALTER TABLE skills_v7 RENAME TO skills;
+CREATE INDEX idx_skills_user_enabled ON skills(user_id, enabled);
+
+CREATE TABLE rag_chunks_v7 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO rag_chunks_v7 (id, user_id, content, metadata, created_at)
+SELECT id, user_id, content, metadata, created_at FROM rag_chunks;
+DROP TABLE rag_chunks;
+ALTER TABLE rag_chunks_v7 RENAME TO rag_chunks;
+CREATE INDEX idx_rag_chunks_user ON rag_chunks(user_id);
+DROP TABLE IF EXISTS rag_chunks_fts;
+CREATE VIRTUAL TABLE rag_chunks_fts USING fts5(content, content='rag_chunks', content_rowid='id');
+INSERT INTO rag_chunks_fts(rowid, content) SELECT id, content FROM rag_chunks;
+CREATE TRIGGER rag_ai AFTER INSERT ON rag_chunks BEGIN
+    INSERT INTO rag_chunks_fts(rowid, content) VALUES (NEW.id, NEW.content);
+END;
+CREATE TRIGGER rag_ad AFTER DELETE ON rag_chunks BEGIN
+    INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content) VALUES('delete', OLD.id, OLD.content);
+END;
+CREATE TRIGGER rag_au AFTER UPDATE OF content ON rag_chunks BEGIN
+    INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content) VALUES('delete', OLD.id, OLD.content);
+    INSERT INTO rag_chunks_fts(rowid, content) VALUES (NEW.id, NEW.content);
+END;
+"""),
 ]
 
 async def _safe_add_column(db: "aiosqlite.Connection", table: str, column: str, definition: str) -> None:
@@ -539,33 +588,21 @@ FROM users;
 
 
 async def _fixup_v6_add_columns(db: "aiosqlite.Connection") -> None:
-    """Add agent_id columns introduced in v6 — safe to call even if already present."""
+    """Ensure agent-scoped columns exist on tables that keep agent scope."""
     await _safe_add_column(db, "sessions", "agent_id", "TEXT")
     await _safe_add_column(db, "messages", "agent_id", "TEXT")
     await _safe_add_column(db, "memories", "agent_id", "TEXT")
-    await _safe_add_column(db, "rag_chunks", "agent_id", "TEXT")
     await _safe_add_column(db, "channel_bindings", "agent_id", "TEXT")
     await db.commit()
 
 
-async def _fixup_v6_skills_cron(db: "aiosqlite.Connection") -> None:
-    """Add agent_id to skills and cron_jobs when v6 DROP+RECREATE was skipped.
+async def _fixup_v6_cron(db: "aiosqlite.Connection") -> None:
+    """Add agent_id to cron_jobs when v6 DROP+RECREATE was skipped.
 
-    The v6 migration replaces these tables entirely, but on databases whose
-    schema_version was already 6 from a divergent branch the new columns are
+    The v6 migration replaces this table entirely, but on databases whose
+    schema_version was already 6 from a divergent branch the new column is
     absent.  ALTER TABLE is safe to run multiple times via _safe_add_column.
     """
-    await _safe_add_column(db, "skills", "agent_id", "TEXT")
-    await db.execute(
-        """UPDATE skills SET agent_id = (
-            SELECT a.agent_id FROM agents a
-            WHERE a.user_id = skills.user_id AND a.is_default = 1 LIMIT 1
-        ) WHERE agent_id IS NULL"""
-    )
-    await db.execute(
-        "UPDATE skills SET agent_id = user_id || ':default' WHERE agent_id IS NULL"
-    )
-
     await _safe_add_column(db, "cron_jobs", "agent_id", "TEXT")
     await db.execute(
         """UPDATE cron_jobs SET agent_id = (
@@ -607,7 +644,12 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
     for version, sql in _MIGRATIONS:
         if version > current_version:
             if version == 6:
-                await _fixup_v6_add_columns(db)
+                await _safe_add_column(db, "sessions", "agent_id", "TEXT")
+                await _safe_add_column(db, "messages", "agent_id", "TEXT")
+                await _safe_add_column(db, "memories", "agent_id", "TEXT")
+                await _safe_add_column(db, "rag_chunks", "agent_id", "TEXT")
+                await _safe_add_column(db, "channel_bindings", "agent_id", "TEXT")
+                await db.commit()
             await db.executescript(sql)
             if current_version > 0:
                 await db.execute("INSERT INTO _schema_version (version) VALUES (?)", (version,))
@@ -619,4 +661,4 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
 
     await _ensure_agents_table(db)
     await _fixup_v6_add_columns(db)
-    await _fixup_v6_skills_cron(db)
+    await _fixup_v6_cron(db)

@@ -257,7 +257,7 @@ export function SkillsCatalogPage() {
         avatar: tpl.name.slice(0, 1),
         tools_enabled: tpl.tools,
         bootstrap: { "AGENTS.md": tpl.system_prompt },
-        agent_config: { rag: { enabled: tpl.rag_enabled } } as Record<string, unknown>,
+        agent_config: { rag: { enabled: tpl.rag_enabled } },
         metadata: { template_id: SKILL_AUTHOR_TEMPLATE_ID },
         status: "active",
       });
@@ -286,7 +286,7 @@ export function SkillsCatalogPage() {
       <PageHeader
         icon={Wrench}
         title="Minhas skills"
-        subtitle="Procedimentos que seus agentes seguem. Crie do zero, ajuste os built-in ou peça pro agente montar via conversa."
+        subtitle="Skills são compartilhadas entre todos os seus agentes. Para escolher quais um agente usa, edite o agente."
         action={
           <div className="flex items-center gap-2">
             <Button variant="subtle" onClick={openChat} disabled={startingChat}>

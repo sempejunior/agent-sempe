@@ -478,7 +478,12 @@ export function CapabilitiesPage() {
         setEnabledTools(skillsRes.tools_enabled);
         setBuiltinSkills(builtin);
         setCustomSkills(custom);
-        setMcpConfig(mcp.mcpServers || {});
+        const mcpMap: Record<string, MCPServerConfig> = {};
+        for (const s of mcp.mcpServers ?? []) {
+          const { name, ...rest } = s;
+          mcpMap[name] = rest;
+        }
+        setMcpConfig(mcpMap);
       } catch (e) {
         toast("error", `Falha ao carregar: ${(e as Error).message}`);
       }
@@ -530,7 +535,12 @@ export function CapabilitiesPage() {
   const handleSaveMcp = async () => {
     setMcpSaving(true);
     try {
-      await updateMcpConfig({ mcpServers: mcpConfig });
+      await updateMcpConfig({
+        mcpServers: Object.entries(mcpConfig).map(([name, cfg]) => ({
+          name,
+          ...cfg,
+        })),
+      });
       toast("success", "Configuração MCP salva");
       setMcpDirty(false);
     } catch (e) {
