@@ -33,12 +33,14 @@ class SkillsLoader:
         *,
         skill_repo: SkillRepository | None = None,
         user_id: str | None = None,
+        agent_id: str | None = None,
         builtin_skills_dir: Path | None = None,
     ):
         if skill_repo is not None:
             self._mode = "db"
             self._repo = skill_repo
             self._user_id = user_id
+            self._agent_id = agent_id
         elif workspace is not None:
             self._mode = "fs"
             self.workspace = workspace
@@ -57,7 +59,7 @@ class SkillsLoader:
     async def load_skill(self, name: str) -> str | None:
         """Load a skill by name."""
         if self._mode == "db":
-            skill = await self._repo.get_skill(self._user_id, name)
+            skill = await self._repo.get_skill(self._user_id, name, self._agent_id)
             if skill:
                 return skill["content"]
         else:
@@ -145,7 +147,7 @@ class SkillsLoader:
         """List skills: DB user skills + filesystem builtin skills."""
         skills = []
 
-        db_skills = await self._repo.list_skills(self._user_id)
+        db_skills = await self._repo.list_skills(self._user_id, agent_id=self._agent_id)
         for s in db_skills:
             skills.append({
                 "name": s["name"],

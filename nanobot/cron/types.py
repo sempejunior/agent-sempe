@@ -46,6 +46,7 @@ class CronJob:
     updated_at_ms: int = 0
     delete_after_run: bool = False
     user_id: str = ""
+    agent_id: str = ""
 
 
 @dataclass

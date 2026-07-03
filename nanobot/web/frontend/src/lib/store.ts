@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { User, Session, Message, WsIncoming } from "./api";
+import type { Agent, AgentTemplate, User, Session, Message, WsIncoming } from "./api";
 import {
   login as apiLogin,
   register as apiRegister,
@@ -8,10 +8,38 @@ import {
   getMessages,
   deleteSession as apiDeleteSession,
   createChatSocket,
+  createAgent as apiCreateAgent,
+  listAgents,
+  setActiveAgentId,
+  updateAgent as apiUpdateAgent,
+  deleteAgent as apiDeleteAgent,
+  duplicateAgent as apiDuplicateAgent,
+  getAgentTemplates,
 } from "./api";
 import { toast } from "./toast";
 
-export type View = "chat" | "capabilities" | "memory" | "prompts" | "channels" | "rag" | "cron" | "settings" | "clients";
+export type View =
+  | "chat"
+  | "agents"
+  | "agent-config"
+  | "agent-create"
+  | "agent-team"
+  | "agent-store"
+  | "agent-studio"
+  | "capabilities"
+  | "skills-catalog"
+  | "api-connections"
+  | "mcp"
+  | "dbs"
+  | "memory"
+  | "prompts"
+  | "channels"
+  | "rag"
+  | "rag-manager"
+  | "cron"
+  | "alerts"
+  | "settings"
+  | "clients";
 
 interface ChatMessage {
   id: string;
@@ -21,6 +49,22 @@ interface ChatMessage {
   toolHint?: string;
 }
 
+interface WizardDraft {
+  template_id: string | null;
+  name: string;
+  role: string;
+  description: string;
+  avatar: string;
+  persona: string;
+  guidelines: string;
+  rag_enabled: boolean;
+  tools: string[];
+  skills: string[];
+  channels: string[];
+}
+
+export type WizardStep = 1 | 2 | 3 | 4 | 5;
+
 interface AppState {
   // Auth
   user: User | null;
@@ -29,10 +73,17 @@ interface AppState {
   authError: string | null;
 
   // Sessions
+  agents: Agent[];
+  activeAgentId: string | null;
   sessions: Session[];
   activeSessionKey: string | null;
   messages: ChatMessage[];
   loadingSessions: boolean;
+
+  // Templates + wizard
+  templates: AgentTemplate[];
+  wizardStep: WizardStep;
+  wizardDraft: WizardDraft;
 
   // Chat
   ws: WebSocket | null;
@@ -43,6 +94,7 @@ interface AppState {
   sidebarOpen: boolean;
   activeView: View;
   selectedClientId: string | null;
+  editingAgentId: string | null;
 
   // Actions
   initAuth: () => Promise<void>;
@@ -51,6 +103,12 @@ interface AppState {
   logout: () => void;
 
   loadSessions: () => Promise<void>;
+  loadAgents: () => Promise<void>;
+  selectAgent: (agentId: string) => Promise<void>;
+  createAgent: (data: Partial<Agent>) => Promise<Agent | null>;
+  updateAgent: (agentId: string, data: Partial<Agent>) => Promise<void>;
+  deleteAgent: (agentId: string) => Promise<boolean>;
+  duplicateAgent: (agentId: string) => Promise<Agent | null>;
   selectSession: (key: string) => Promise<void>;
   newChat: () => void;
   removeSession: (key: string) => Promise<void>;
@@ -62,7 +120,27 @@ interface AppState {
   toggleSidebar: () => void;
   setActiveView: (view: View) => void;
   setSelectedClientId: (id: string | null) => void;
+  setEditingAgentId: (id: string | null) => void;
+
+  loadTemplates: () => Promise<void>;
+  setWizardStep: (step: WizardStep) => void;
+  updateWizardDraft: (patch: Partial<WizardDraft>) => void;
+  resetWizard: () => void;
 }
+
+const EMPTY_WIZARD: WizardDraft = {
+  template_id: null,
+  name: "",
+  role: "",
+  description: "",
+  avatar: "",
+  persona: "",
+  guidelines: "",
+  rag_enabled: false,
+  tools: [],
+  skills: [],
+  channels: [],
+};
 
 let msgCounter = 0;
 function nextId(): string {
@@ -77,6 +155,8 @@ export const useStore = create<AppState>((set, get) => ({
   authLoading: false,
   authError: null,
 
+  agents: [],
+  activeAgentId: localStorage.getItem("nanobot_agent_id"),
   sessions: [],
   activeSessionKey: null,
   messages: [],
@@ -87,8 +167,13 @@ export const useStore = create<AppState>((set, get) => ({
   sending: false,
 
   sidebarOpen: true,
-  activeView: "chat",
+  activeView: "agent-team",
   selectedClientId: null,
+  editingAgentId: null,
+
+  templates: [],
+  wizardStep: 1,
+  wizardDraft: { ...EMPTY_WIZARD },
 
   // ---- Auth ----
 
@@ -99,6 +184,7 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const user = await getMe();
       set({ user, authLoading: false });
+      await get().loadAgents();
       get().connectWs();
       get().loadSessions();
     } catch {
@@ -113,6 +199,7 @@ export const useStore = create<AppState>((set, get) => ({
       const res = await apiLogin(userId);
       localStorage.setItem("nanobot_token", res.token);
       set({ token: res.token, user: res.user, authLoading: false });
+      await get().loadAgents();
       get().connectWs();
       get().loadSessions();
     } catch (e) {
@@ -126,6 +213,7 @@ export const useStore = create<AppState>((set, get) => ({
       const res = await apiRegister(userId, displayName, email);
       localStorage.setItem("nanobot_token", res.token);
       set({ token: res.token, user: res.user, authLoading: false });
+      await get().loadAgents();
       get().connectWs();
       get().loadSessions();
     } catch (e) {
@@ -136,16 +224,94 @@ export const useStore = create<AppState>((set, get) => ({
   logout() {
     get().disconnectWs();
     localStorage.removeItem("nanobot_token");
+    setActiveAgentId(null);
     set({
       user: null,
       token: null,
       sessions: [],
+      agents: [],
+      activeAgentId: null,
       activeSessionKey: null,
       messages: [],
     });
   },
 
   // ---- Sessions ----
+
+  async loadAgents() {
+    try {
+      const agents = await listAgents();
+      const current = get().activeAgentId;
+      const active = agents.find((agent) => agent.agent_id === current)
+        ?? agents.find((agent) => agent.is_default)
+        ?? agents[0]
+        ?? null;
+      set({ agents, activeAgentId: active?.agent_id ?? null });
+      setActiveAgentId(active?.agent_id ?? null);
+    } catch (e) {
+      toast("error", `Failed to load agents: ${(e as Error).message}`);
+    }
+  },
+
+  async selectAgent(agentId: string) {
+    setActiveAgentId(agentId);
+    set({ activeAgentId: agentId, activeSessionKey: null, messages: [] });
+    await get().loadSessions();
+  },
+
+  async createAgent(data: Partial<Agent>) {
+    try {
+      const agent = await apiCreateAgent(data);
+      await get().loadAgents();
+      await get().selectAgent(agent.agent_id);
+      return agent;
+    } catch (e) {
+      toast("error", `Failed to create agent: ${(e as Error).message}`);
+      return null;
+    }
+  },
+
+  async updateAgent(agentId: string, data: Partial<Agent>) {
+    try {
+      await apiUpdateAgent(agentId, data);
+      await get().loadAgents();
+    } catch (e) {
+      toast("error", `Failed to update agent: ${(e as Error).message}`);
+    }
+  },
+
+  async deleteAgent(agentId: string) {
+    try {
+      const res = await apiDeleteAgent(agentId);
+      if (!res.ok) {
+        toast("error", "Não foi possível excluir este agente");
+        return false;
+      }
+      const wasActive = get().activeAgentId === agentId;
+      await get().loadAgents();
+      if (wasActive) {
+        const fallback = get().agents.find((a) => a.is_default) ?? get().agents[0];
+        if (fallback) await get().selectAgent(fallback.agent_id);
+      }
+      toast("success", "Agente excluído");
+      return true;
+    } catch (e) {
+      toast("error", `Falha ao excluir agente: ${(e as Error).message}`);
+      return false;
+    }
+  },
+
+  async duplicateAgent(agentId: string) {
+    try {
+      const agent = await apiDuplicateAgent(agentId);
+      await get().loadAgents();
+      toast("success", `Agente duplicado: ${agent.name}`);
+      return agent;
+    } catch (e) {
+      toast("error", `Falha ao duplicar agente: ${(e as Error).message}`);
+      return null;
+    }
+  },
 
   async loadSessions() {
     set({ loadingSessions: true });
@@ -315,7 +481,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   sendMessage(content: string) {
-    const { ws, activeSessionKey, messages } = get();
+    const { ws, activeSessionKey, messages, activeAgentId } = get();
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
     const sessionKey = activeSessionKey || `web:${crypto.randomUUID().slice(0, 12)}`;
@@ -337,6 +503,7 @@ export const useStore = create<AppState>((set, get) => ({
         type: "message",
         content,
         session_key: sessionKey,
+        agent_id: activeAgentId,
       })
     );
   },
@@ -351,5 +518,30 @@ export const useStore = create<AppState>((set, get) => ({
 
   setSelectedClientId(id: string | null) {
     set({ selectedClientId: id, activeView: "clients" });
+  },
+
+  setEditingAgentId(id: string | null) {
+    set({ editingAgentId: id });
+  },
+
+  async loadTemplates() {
+    try {
+      const templates = await getAgentTemplates();
+      set({ templates });
+    } catch (e) {
+      toast("error", `Falha ao carregar templates: ${(e as Error).message}`);
+    }
+  },
+
+  setWizardStep(step) {
+    set({ wizardStep: step });
+  },
+
+  updateWizardDraft(patch) {
+    set({ wizardDraft: { ...get().wizardDraft, ...patch } });
+  },
+
+  resetWizard() {
+    set({ wizardStep: 1, wizardDraft: { ...EMPTY_WIZARD } });
   },
 }));

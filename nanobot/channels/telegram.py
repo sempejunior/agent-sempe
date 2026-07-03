@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import logging
 import re
 
@@ -131,11 +132,13 @@ class TelegramChannel(BaseChannel):
         config: TelegramConfig,
         bus: MessageBus,
         groq_api_key: str = "",
+        on_allow_from_verified: Callable[[str, str], Awaitable[None]] | None = None,
         **kwargs,
     ):
         super().__init__(config, bus, **kwargs)
         self.config: TelegramConfig = config
         self.groq_api_key = groq_api_key
+        self._on_allow_from_verified = on_allow_from_verified
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
@@ -346,6 +349,34 @@ class TelegramChannel(BaseChannel):
         sid = str(user.id)
         return f"{sid}|{user.username}" if user.username else sid
 
+    async def _maybe_verify_allow_code(self, message, sender_numeric_id: str) -> bool:
+        """Convert a pending allow_from code into the sender's Telegram user id."""
+        if not message.text:
+            return False
+        code = message.text.strip()
+        allow_from = list(getattr(self.config, "allow_from", []) or [])
+        if not code or code not in allow_from:
+            return False
+
+        next_allow_from: list[str] = []
+        for item in allow_from:
+            if item == code:
+                if sender_numeric_id not in next_allow_from:
+                    next_allow_from.append(sender_numeric_id)
+            elif item and item not in next_allow_from:
+                next_allow_from.append(item)
+        self.config.allow_from = next_allow_from
+
+        if self._on_allow_from_verified:
+            try:
+                await self._on_allow_from_verified(code, sender_numeric_id)
+            except Exception as exc:
+                logger.warning("Failed to persist Telegram allow code confirmation: {}", exc)
+
+        await message.reply_text("Telegram autorizado para este agente.")
+        logger.info("Telegram allow code confirmed for sender {}", sender_numeric_id)
+        return True
+
     async def _forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward slash commands to the bus for unified handling in AgentLoop."""
         if not update.message or not update.effective_user:
@@ -365,6 +396,10 @@ class TelegramChannel(BaseChannel):
         user = update.effective_user
         chat_id = message.chat_id
         sender_id = self._sender_id(user)
+        sender_numeric_id = str(user.id)
+
+        if not self.is_allowed(sender_id) and await self._maybe_verify_allow_code(message, sender_numeric_id):
+            return
 
         # Store chat_id for replies
         self._chat_ids[sender_id] = chat_id
@@ -439,7 +474,12 @@ class TelegramChannel(BaseChannel):
         # Start typing indicator before processing
         self._start_typing(str_chat_id)
 
-        # Forward to the message bus
+        sender_name = user.full_name or (
+            f"{user.first_name or ''} {user.last_name or ''}".strip()
+            or user.username
+            or ""
+        )
+
         await self._handle_message(
             sender_id=sender_id,
             chat_id=str_chat_id,
@@ -450,6 +490,7 @@ class TelegramChannel(BaseChannel):
                 "user_id": user.id,
                 "username": user.username,
                 "first_name": user.first_name,
+                "sender_name": sender_name,
                 "is_group": message.chat.type != "private"
             }
         )

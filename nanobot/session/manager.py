@@ -89,12 +89,14 @@ class SessionManager:
         session_repo: SessionRepository | None = None,
         message_repo: MessageRepository | None = None,
         user_id: str | None = None,
+        agent_id: str | None = None,
     ):
         if session_repo is not None:
             self._mode = "db"
             self._session_repo = session_repo
             self._message_repo = message_repo
             self._user_id = user_id
+            self._agent_id = agent_id
         elif workspace is not None:
             self._mode = "fs"
             self.workspace = workspace
@@ -106,6 +108,11 @@ class SessionManager:
         self._cache: dict[str, Session] = {}
         self._session_ids: dict[str, int] = {}
         self._loaded_counts: dict[str, int] = {}
+
+    def _db_key(self, key: str) -> str:
+        if self._mode == "db" and self._agent_id:
+            return f"agent:{self._agent_id}:{key}"
+        return key
 
 
     async def get_or_create(self, key: str) -> Session:
@@ -136,13 +143,19 @@ class SessionManager:
     async def list_sessions(self) -> list[dict[str, Any]]:
         """List all sessions."""
         if self._mode == "db":
-            return await self._session_repo.list_sessions(self._user_id)
+            rows = await self._session_repo.list_sessions(self._user_id, agent_id=self._agent_id)
+            if self._agent_id:
+                prefix = f"agent:{self._agent_id}:"
+                for row in rows:
+                    if isinstance(row.get("session_key"), str) and row["session_key"].startswith(prefix):
+                        row["session_key"] = row["session_key"][len(prefix):]
+            return rows
         return self._list_sessions_fs()
 
     async def delete(self, key: str) -> bool:
         """Delete a session."""
         if self._mode == "db":
-            ok = await self._session_repo.delete(self._user_id, key)
+            ok = await self._session_repo.delete(self._user_id, self._db_key(key), agent_id=self._agent_id)
             self._cache.pop(key, None)
             self._session_ids.pop(key, None)
             self._loaded_counts.pop(key, None)
@@ -162,7 +175,7 @@ class SessionManager:
         self._loaded_counts.pop(key, None)
 
     async def _load_from_db(self, key: str) -> Session | None:
-        row = await self._session_repo.get(self._user_id, key)
+        row = await self._session_repo.get(self._user_id, self._db_key(key), agent_id=self._agent_id)
         if not row:
             return None
 
@@ -184,7 +197,8 @@ class SessionManager:
     async def _save_to_db(self, session: Session) -> None:
         session_id = await self._session_repo.save({
             "user_id": self._user_id,
-            "session_key": session.key,
+            "agent_id": self._agent_id,
+            "session_key": self._db_key(session.key),
             "last_consolidated": session.last_consolidated,
             "message_count": len(session.messages),
         })

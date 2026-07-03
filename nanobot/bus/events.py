@@ -18,6 +18,7 @@ class InboundMessage:
     metadata: dict[str, Any] = field(default_factory=dict)
     session_key_override: str | None = None
     user_id: str | None = None
+    agent_id: str | None = None
 
     @property
     def session_key(self) -> str:
@@ -35,5 +36,4 @@ class OutboundMessage:
     reply_to: str | None = None
     media: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
-
 

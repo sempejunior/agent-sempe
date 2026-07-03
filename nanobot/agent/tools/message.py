@@ -20,6 +20,8 @@ class MessageTool(Tool):
         self._default_channel = default_channel
         self._default_chat_id = default_chat_id
         self._default_message_id = default_message_id
+        self._owner_id = ""
+        self._agent_id = ""
         self._sent_in_turn: bool = False
 
     def set_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
@@ -27,6 +29,11 @@ class MessageTool(Tool):
         self._default_channel = channel
         self._default_chat_id = chat_id
         self._default_message_id = message_id
+
+    def set_owner_context(self, *, user_id: str = "", agent_id: str = "") -> None:
+        """Set the current owner/agent routing context."""
+        self._owner_id = user_id
+        self._agent_id = agent_id
 
     def set_send_callback(self, callback: Callable[[OutboundMessage], Awaitable[None]]) -> None:
         """Set the callback for sending messages."""
@@ -96,6 +103,8 @@ class MessageTool(Tool):
             media=media or [],
             metadata={
                 "message_id": message_id,
+                "_owner_id": self._owner_id,
+                "_agent_id": self._agent_id,
             }
         )
 

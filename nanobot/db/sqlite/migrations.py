@@ -331,7 +331,253 @@ END;
 ALTER TABLE sessions ADD COLUMN client_id TEXT REFERENCES clients(client_id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_client_id ON sessions(client_id);
 """),
+
+    (6, """
+-- ===================== v6: multi-agent ownership =====================
+
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id        TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    role            TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    avatar          TEXT NOT NULL DEFAULT '',
+    is_default      INTEGER NOT NULL DEFAULT 0,
+    agent_config    TEXT NOT NULL DEFAULT '{}',
+    bootstrap       TEXT NOT NULL DEFAULT '{}',
+    tools_enabled   TEXT NOT NULL DEFAULT '[]',
+    channel_configs TEXT NOT NULL DEFAULT '{}',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'active',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_user_status ON agents(user_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_default ON agents(user_id, is_default)
+    WHERE is_default = 1 AND status != 'deleted';
+
+INSERT OR IGNORE INTO agents (
+    agent_id, user_id, name, role, description, avatar, is_default,
+    agent_config, bootstrap, tools_enabled, channel_configs, metadata,
+    status, created_at, updated_at
+)
+SELECT
+    user_id || ':default',
+    user_id,
+    COALESCE(NULLIF(display_name, ''), 'Paulo'),
+    'Especialista em DP',
+    'Agente padrão migrado da configuração original.',
+    'P',
+    1,
+    agent_config,
+    bootstrap,
+    tools_enabled,
+    channel_configs,
+    '{"source":"migration_v6","template":"default"}',
+    'active',
+    created_at,
+    updated_at
+FROM users;
+
+UPDATE sessions SET agent_id = user_id || ':default' WHERE agent_id IS NULL OR agent_id = '';
+CREATE INDEX IF NOT EXISTS idx_sessions_agent_status ON sessions(user_id, agent_id, status);
+
+UPDATE messages
+SET agent_id = (
+    SELECT s.agent_id FROM sessions s WHERE s.id = messages.session_id
+)
+WHERE agent_id IS NULL OR agent_id = '';
+CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(user_id, agent_id);
+
+UPDATE memories SET agent_id = user_id || ':default' WHERE agent_id IS NULL OR agent_id = '';
+CREATE INDEX IF NOT EXISTS idx_memories_agent_type ON memories(user_id, agent_id, type);
+
+UPDATE rag_chunks SET agent_id = user_id || ':default' WHERE agent_id IS NULL OR agent_id = '';
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_agent ON rag_chunks(user_id, agent_id);
+
+CREATE TABLE IF NOT EXISTS skills_v6 (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    agent_id      TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    description   TEXT NOT NULL DEFAULT '',
+    always_active INTEGER NOT NULL DEFAULT 0,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, agent_id, name)
+);
+INSERT OR IGNORE INTO skills_v6
+    (id, user_id, agent_id, name, content, description, always_active, enabled, created_at, updated_at)
+SELECT id, user_id, user_id || ':default', name, content, description, always_active, enabled, created_at, updated_at
+FROM skills;
+DROP TABLE skills;
+ALTER TABLE skills_v6 RENAME TO skills;
+CREATE INDEX IF NOT EXISTS idx_skills_user_agent_enabled ON skills(user_id, agent_id, enabled);
+
+CREATE TABLE IF NOT EXISTS cron_jobs_v6 (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    agent_id         TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    job_id           TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    enabled          INTEGER NOT NULL DEFAULT 1,
+    schedule         TEXT NOT NULL,
+    payload          TEXT NOT NULL,
+    next_run_at_ms   INTEGER,
+    last_run_at_ms   INTEGER,
+    last_status      TEXT,
+    last_error       TEXT,
+    delete_after_run INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, agent_id, job_id)
+);
+INSERT OR IGNORE INTO cron_jobs_v6
+    (id, user_id, agent_id, job_id, name, enabled, schedule, payload,
+     next_run_at_ms, last_run_at_ms, last_status, last_error, delete_after_run,
+     created_at, updated_at)
+SELECT id, user_id, user_id || ':default', job_id, name, enabled, schedule, payload,
+       next_run_at_ms, last_run_at_ms, last_status, last_error, delete_after_run,
+       created_at, updated_at
+FROM cron_jobs;
+DROP TABLE cron_jobs;
+ALTER TABLE cron_jobs_v6 RENAME TO cron_jobs;
+CREATE INDEX IF NOT EXISTS idx_cron_enabled_next ON cron_jobs(enabled, next_run_at_ms);
+CREATE INDEX IF NOT EXISTS idx_cron_user_agent ON cron_jobs(user_id, agent_id, enabled);
+
+CREATE TABLE IF NOT EXISTS channel_bindings_v6 (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    agent_id   TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+    channel    TEXT NOT NULL,
+    sender_id  TEXT NOT NULL,
+    verified   INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(agent_id, channel, sender_id)
+);
+INSERT OR IGNORE INTO channel_bindings_v6
+    (id, user_id, agent_id, channel, sender_id, verified, created_at)
+SELECT id, user_id, user_id || ':default', channel, sender_id, verified, created_at
+FROM channel_bindings;
+DROP TABLE channel_bindings;
+ALTER TABLE channel_bindings_v6 RENAME TO channel_bindings;
+CREATE INDEX IF NOT EXISTS idx_bindings_user_agent ON channel_bindings(user_id, agent_id);
+CREATE INDEX IF NOT EXISTS idx_bindings_channel_sender ON channel_bindings(channel, sender_id);
+"""),
 ]
+
+async def _safe_add_column(db: "aiosqlite.Connection", table: str, column: str, definition: str) -> None:
+    cursor = await db.execute(f"PRAGMA table_info({table})")
+    columns = [row[1] for row in await cursor.fetchall()]
+    if column not in columns:
+        await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+async def _ensure_agents_table(db: "aiosqlite.Connection") -> None:
+    """Create the agents table and related indices if missing.
+
+    Runs unconditionally after all version-based migrations so that databases
+    from divergent branches that already have a high schema_version but never
+    had the agents table still get it created correctly.
+    """
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'"
+    )
+    if await cursor.fetchone():
+        return
+
+    await db.executescript("""
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id        TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    role            TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    avatar          TEXT NOT NULL DEFAULT '',
+    is_default      INTEGER NOT NULL DEFAULT 0,
+    agent_config    TEXT NOT NULL DEFAULT '{}',
+    bootstrap       TEXT NOT NULL DEFAULT '{}',
+    tools_enabled   TEXT NOT NULL DEFAULT '[]',
+    channel_configs TEXT NOT NULL DEFAULT '{}',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    status          TEXT NOT NULL DEFAULT 'active',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_user_status ON agents(user_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_default ON agents(user_id, is_default)
+    WHERE is_default = 1 AND status != 'deleted';
+
+INSERT OR IGNORE INTO agents (
+    agent_id, user_id, name, role, description, avatar, is_default,
+    agent_config, bootstrap, tools_enabled, channel_configs, metadata,
+    status, created_at, updated_at
+)
+SELECT
+    user_id || ':default',
+    user_id,
+    COALESCE(NULLIF(display_name, ''), 'Paulo'),
+    'Especialista em DP',
+    'Agente padrão migrado da configuração original.',
+    'P',
+    1,
+    agent_config,
+    bootstrap,
+    tools_enabled,
+    channel_configs,
+    '{"source":"repair","template":"default"}',
+    'active',
+    created_at,
+    updated_at
+FROM users;
+""")
+    await db.commit()
+
+
+async def _fixup_v6_add_columns(db: "aiosqlite.Connection") -> None:
+    """Add agent_id columns introduced in v6 — safe to call even if already present."""
+    await _safe_add_column(db, "sessions", "agent_id", "TEXT")
+    await _safe_add_column(db, "messages", "agent_id", "TEXT")
+    await _safe_add_column(db, "memories", "agent_id", "TEXT")
+    await _safe_add_column(db, "rag_chunks", "agent_id", "TEXT")
+    await _safe_add_column(db, "channel_bindings", "agent_id", "TEXT")
+    await db.commit()
+
+
+async def _fixup_v6_skills_cron(db: "aiosqlite.Connection") -> None:
+    """Add agent_id to skills and cron_jobs when v6 DROP+RECREATE was skipped.
+
+    The v6 migration replaces these tables entirely, but on databases whose
+    schema_version was already 6 from a divergent branch the new columns are
+    absent.  ALTER TABLE is safe to run multiple times via _safe_add_column.
+    """
+    await _safe_add_column(db, "skills", "agent_id", "TEXT")
+    await db.execute(
+        """UPDATE skills SET agent_id = (
+            SELECT a.agent_id FROM agents a
+            WHERE a.user_id = skills.user_id AND a.is_default = 1 LIMIT 1
+        ) WHERE agent_id IS NULL"""
+    )
+    await db.execute(
+        "UPDATE skills SET agent_id = user_id || ':default' WHERE agent_id IS NULL"
+    )
+
+    await _safe_add_column(db, "cron_jobs", "agent_id", "TEXT")
+    await db.execute(
+        """UPDATE cron_jobs SET agent_id = (
+            SELECT a.agent_id FROM agents a
+            WHERE a.user_id = cron_jobs.user_id AND a.is_default = 1 LIMIT 1
+        ) WHERE agent_id IS NULL"""
+    )
+    await db.execute(
+        "UPDATE cron_jobs SET agent_id = user_id || ':default' WHERE agent_id IS NULL"
+    )
+    await db.commit()
+
 
 async def _fixup_v5_column_names(db: "aiosqlite.Connection") -> None:
     """Rename creator_id -> owner_id if v5 was applied from an early draft."""
@@ -360,6 +606,8 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
 
     for version, sql in _MIGRATIONS:
         if version > current_version:
+            if version == 6:
+                await _fixup_v6_add_columns(db)
             await db.executescript(sql)
             if current_version > 0:
                 await db.execute("INSERT INTO _schema_version (version) VALUES (?)", (version,))
@@ -368,3 +616,7 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
 
     if current_version >= 5:
         await _fixup_v5_column_names(db)
+
+    await _ensure_agents_table(db)
+    await _fixup_v6_add_columns(db)
+    await _fixup_v6_skills_cron(db)

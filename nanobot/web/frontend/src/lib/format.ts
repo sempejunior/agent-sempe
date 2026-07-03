@@ -11,9 +11,14 @@ export function relativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString("pt-BR");
 }
 
-export function getInitials(name: string): string {
-  if (!name) return "??";
-  const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.slice(0, 2).toUpperCase();
+export function getInitials(name: string, fallback?: string): string {
+  const source = (name || "").trim();
+  if (source) {
+    const parts = source.split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return source.slice(0, 2).toUpperCase();
+  }
+  const fb = (fallback || "").trim();
+  if (fb) return fb.slice(0, 2).toUpperCase();
+  return "•";
 }

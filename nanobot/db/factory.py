@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         ClientRepository,
     )
     from nanobot.db.repositories import (
+        AgentRepository,
         AuditRepository,
         ChannelBindingRepository,
         CronRepository,
@@ -33,6 +34,7 @@ class RepositoryFactory:
     """
 
     users: UserRepository
+    agents: AgentRepository
     sessions: SessionRepository
     messages: MessageRepository
     memories: MemoryRepository
@@ -53,6 +55,7 @@ def create_sqlite_factory(db) -> RepositoryFactory:
         db: An open ``aiosqlite.Connection``.
     """
     from nanobot.db.sqlite.audit_repo import SQLiteAuditRepository
+    from nanobot.db.sqlite.agent_repo import SQLiteAgentRepository
     from nanobot.db.sqlite.channel_binding_repo import SQLiteChannelBindingRepository
     from nanobot.db.sqlite.client_identity_repo import SQLiteClientIdentityRepository
     from nanobot.db.sqlite.client_memory_repo import SQLiteClientMemoryRepository
@@ -66,6 +69,7 @@ def create_sqlite_factory(db) -> RepositoryFactory:
 
     return RepositoryFactory(
         users=SQLiteUserRepository(db),
+        agents=SQLiteAgentRepository(db),
         sessions=SQLiteSessionRepository(db),
         messages=SQLiteMessageRepository(db),
         memories=SQLiteMemoryRepository(db),

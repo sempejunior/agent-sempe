@@ -268,6 +268,11 @@ class MCPServerConfig(Base):
     env: dict[str, str] = Field(default_factory=dict)
     url: str = ""
     headers: dict[str, str] = Field(default_factory=dict)
+    auth_type: str = "none"
+    auth_token: str = ""
+    auth_username: str = ""
+    auth_password: str = ""
+    auth_header_name: str = "Authorization"
     tool_timeout: int = 30
 
 

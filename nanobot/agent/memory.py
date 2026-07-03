@@ -57,11 +57,13 @@ class MemoryStore:
         *,
         memory_repo: MemoryRepository | None = None,
         user_id: str | None = None,
+        agent_id: str | None = None,
     ):
         if memory_repo is not None:
             self._mode = "db"
             self._repo = memory_repo
             self._user_id = user_id
+            self._agent_id = agent_id
         elif workspace is not None:
             self._mode = "fs"
             self.memory_dir = ensure_dir(workspace / "memory")
@@ -72,20 +74,20 @@ class MemoryStore:
 
     async def read_long_term(self) -> str:
         if self._mode == "db":
-            return await self._repo.get_long_term(self._user_id)
+            return await self._repo.get_long_term(self._user_id, self._agent_id)
         if self.memory_file.exists():
             return self.memory_file.read_text(encoding="utf-8")
         return ""
 
     async def write_long_term(self, content: str) -> None:
         if self._mode == "db":
-            await self._repo.save_long_term(self._user_id, content)
+            await self._repo.save_long_term(self._user_id, content, self._agent_id)
         else:
             self.memory_file.write_text(content, encoding="utf-8")
 
     async def append_history(self, entry: str) -> None:
         if self._mode == "db":
-            await self._repo.append_history(self._user_id, entry)
+            await self._repo.append_history(self._user_id, entry, self._agent_id)
         else:
             with open(self.history_file, "a", encoding="utf-8") as f:
                 f.write(entry.rstrip() + "\n\n")
@@ -93,7 +95,7 @@ class MemoryStore:
     async def search_history(self, query: str, limit: int = 20) -> list[str]:
         """Search conversation history for matching entries."""
         if self._mode == "db":
-            results = await self._repo.search_history(self._user_id, query, limit)
+            results = await self._repo.search_history(self._user_id, query, limit, self._agent_id)
             if not results:
                 return []
             return [r["content"] if isinstance(r, dict) else r for r in results]

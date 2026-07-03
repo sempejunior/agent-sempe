@@ -1,7 +1,20 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import { PageHeader } from "@/components/hub/PageHeader";
 import {
   listChannels,
   updateChannel,
@@ -10,6 +23,7 @@ import {
 } from "@/lib/api";
 import type { ChannelInfo, ChannelField } from "@/lib/api";
 import { toast } from "@/lib/toast";
+import { useStore } from "@/lib/store";
 import {
   Radio,
   ExternalLink,
@@ -20,70 +34,103 @@ import {
   X,
   Plus,
   Loader2,
+  AlertCircle,
+  CheckCircle2,
+  Info,
+  Save,
+  KeyRound,
   Send,
   MessageSquare,
   Hash,
   Mail,
   Phone,
   ChevronRight,
-  Settings2
+  Settings2,
 } from "lucide-react";
 
-function ChannelIcon({ name }: { name: string }) {
+type IconMeta = { Icon: typeof Send; tint: string };
+
+function iconMeta(name: string): IconMeta {
   const n = name.toLowerCase();
+  if (n.includes("telegram")) return { Icon: Send, tint: "text-[#0088cc]" };
+  if (n.includes("discord")) return { Icon: MessageSquare, tint: "text-[#5865F2]" };
+  if (n.includes("slack")) return { Icon: Hash, tint: "text-[#E01E5A]" };
+  if (n.includes("whatsapp")) return { Icon: Phone, tint: "text-[#25D366]" };
+  if (n.includes("email") || n.includes("mail")) return { Icon: Mail, tint: "text-yellow" };
+  return { Icon: Radio, tint: "text-purple" };
+}
 
-  if (n.includes("telegram")) {
-    return (
-      <div className="w-10 h-10 rounded-xl bg-[#0088cc]/10 border border-[#0088cc]/20 flex items-center justify-center shrink-0">
-        <Send className="w-5 h-5 text-[#0088cc] -ml-0.5 mt-0.5" />
-      </div>
-    );
-  }
-  if (n.includes("discord")) {
-    return (
-      <div className="w-10 h-10 rounded-xl bg-[#5865F2]/10 border border-[#5865F2]/20 flex items-center justify-center shrink-0">
-        <MessageSquare className="w-5 h-5 text-[#5865F2]" />
-      </div>
-    );
-  }
-  if (n.includes("slack")) {
-    return (
-      <div className="w-10 h-10 rounded-xl bg-[#E01E5A]/10 border border-[#E01E5A]/20 flex items-center justify-center shrink-0">
-        <Hash className="w-5 h-5 text-[#E01E5A]" />
-      </div>
-    );
-  }
-  if (n.includes("whatsapp")) {
-    return (
-      <div className="w-10 h-10 rounded-xl bg-[#25D366]/10 border border-[#25D366]/20 flex items-center justify-center shrink-0">
-        <Phone className="w-5 h-5 text-[#25D366]" />
-      </div>
-    );
-  }
-  if (n.includes("email") || n.includes("mail")) {
-    return (
-      <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center shrink-0">
-        <Mail className="w-5 h-5 text-amber-500" />
-      </div>
-    );
-  }
-
-  const label = name.charAt(0).toUpperCase();
+function ChannelIcon({ name, size = "md" }: { name: string; size?: "sm" | "md" }) {
+  const { Icon, tint } = iconMeta(name);
+  const dim = size === "sm" ? "w-8 h-8" : "w-10 h-10";
+  const iconDim = size === "sm" ? "w-4 h-4" : "w-5 h-5";
   return (
-    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-slate-50 to-slate-100 border border-slate-200/60 flex items-center justify-center text-base font-bold text-slate-500 shrink-0">
-      {label}
+    <div
+      className={cn(
+        "rounded-xl bg-surface-alt border border-border flex items-center justify-center shrink-0",
+        dim,
+      )}
+    >
+      <Icon className={cn(iconDim, tint)} />
     </div>
   );
 }
 
-function StatusIndicator({ enabled, running }: { enabled: boolean; running: boolean }) {
+function StatusDot({
+  enabled,
+  running,
+  lastError,
+}: {
+  enabled: boolean;
+  running: boolean;
+  lastError?: string | null;
+}) {
+  let cls = "bg-border";
+  let title = "Não configurado";
   if (running) {
-    return <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] animate-pulse" title="Connected" />;
+    cls = "bg-purple animate-pulse";
+    title = "Conectado";
+  } else if (lastError) {
+    cls = "bg-red";
+    title = "Falha";
+  } else if (enabled) {
+    cls = "bg-yellow";
+    title = "Salvo, parado";
   }
-  if (enabled) {
-    return <div className="w-2.5 h-2.5 rounded-full bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]" title="Enabled (Not Running)" />;
+  return <div className={cn("w-2.5 h-2.5 rounded-full shrink-0", cls)} title={title} />;
+}
+
+function ChannelStatusBadge({ channel }: { channel: ChannelInfo }) {
+  if (channel.running) {
+    return (
+      <Badge variant="success" className="gap-1.5">
+        <CheckCircle2 className="w-3 h-3" />
+        Conectado
+      </Badge>
+    );
   }
-  return <div className="w-2.5 h-2.5 rounded-full bg-slate-300" title="Disabled" />;
+  if (channel.last_error) {
+    return (
+      <Badge variant="danger" className="gap-1.5">
+        <AlertCircle className="w-3 h-3" />
+        Falhou
+      </Badge>
+    );
+  }
+  if (channel.enabled) {
+    return (
+      <Badge variant="warning" className="gap-1.5">
+        <Info className="w-3 h-3" />
+        Salvo, parado
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="muted" className="gap-1.5">
+      <KeyRound className="w-3 h-3" />
+      Precisa configurar
+    </Badge>
+  );
 }
 
 function FieldInput({
@@ -98,25 +145,13 @@ function FieldInput({
   const [showPassword, setShowPassword] = useState(false);
 
   if (field.type === "bool") {
-    return (
-      <button
-        type="button"
-        onClick={() => onChange(!value)}
-        className={`relative w-12 h-6 rounded-full transition-colors cursor-pointer ${value ? "bg-emerald-500" : "bg-slate-200"
-          }`}
-      >
-        <span
-          className={`absolute top-[3px] w-[18px] h-[18px] rounded-full bg-white shadow transition-transform ${value ? "translate-x-[26px]" : "translate-x-[3px]"
-            }`}
-        />
-      </button>
-    );
+    return <Switch checked={!!value} onCheckedChange={onChange} />;
   }
 
   if (field.type === "list") {
     const items = Array.isArray(value) ? (value as string[]) : [];
     return (
-      <div className="space-y-3">
+      <div className="space-y-2">
         {items.map((item, i) => (
           <div key={i} className="flex gap-2">
             <Input
@@ -127,18 +162,15 @@ function FieldInput({
                 onChange(next);
               }}
               placeholder={field.placeholder}
-              className="flex-1 bg-slate-50/50 border-slate-200 focus:bg-white h-11 rounded-xl shadow-sm text-base"
+              className="flex-1"
             />
             <Button
               type="button"
               variant="ghost"
               size="icon"
-              onClick={() => {
-                onChange(items.filter((_, j) => j !== i));
-              }}
-              className="shrink-0 h-11 w-11 text-slate-400 hover:text-red-500 rounded-xl"
+              onClick={() => onChange(items.filter((_, j) => j !== i))}
             >
-              <X className="w-5 h-5" />
+              <X className="w-4 h-4" />
             </Button>
           </div>
         ))}
@@ -147,10 +179,9 @@ function FieldInput({
           variant="outline"
           size="sm"
           onClick={() => onChange([...items, ""])}
-          className="text-slate-500 font-bold border-slate-200 hover:bg-slate-50 rounded-xl"
         >
-          <Plus className="w-4 h-4 mr-1.5" />
-          Add Item
+          <Plus className="w-4 h-4" />
+          Adicionar item
         </Button>
       </div>
     );
@@ -164,14 +195,14 @@ function FieldInput({
           value={(value as string) || ""}
           onChange={(e) => onChange(e.target.value)}
           placeholder={field.placeholder}
-          className="pr-12 bg-slate-50/50 border-slate-200 focus:bg-white h-11 rounded-xl shadow-sm text-base"
+          className="pr-10"
         />
         <button
           type="button"
           onClick={() => setShowPassword(!showPassword)}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
         >
-          {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+          {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
         </button>
       </div>
     );
@@ -185,49 +216,43 @@ function FieldInput({
         onChange(field.type === "number" ? Number(e.target.value) : e.target.value)
       }
       placeholder={field.placeholder}
-      className="bg-slate-50/50 border-slate-200 focus:bg-white h-11 rounded-xl shadow-sm text-base"
     />
   );
 }
 
-function StartChannelDialog({
+function StartConfirmDialog({
+  open,
   channelLabel,
   onStart,
   onDismiss,
 }: {
+  open: boolean;
   channelLabel: string;
   onStart: () => void;
   onDismiss: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md mx-4 p-8 animate-fade-in-up">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200/50 flex items-center justify-center">
-            <Play className="w-5 h-5 text-emerald-600 fill-current" />
-          </div>
-          <h3 className="text-lg font-bold text-slate-900">Start {channelLabel}?</h3>
-        </div>
-        <p className="text-sm text-slate-500 font-medium mb-6">
-          Configuration saved successfully. Would you like to start the channel now?
-        </p>
-        <div className="flex items-center gap-3 justify-end">
-          <Button
-            onClick={onDismiss}
-            className="px-5 h-10 text-slate-600 bg-slate-100 hover:bg-slate-200 border-none rounded-xl font-bold transition-all"
-          >
-            Later
+    <Dialog open={open} onOpenChange={(v) => !v && onDismiss()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Iniciar {channelLabel}?</DialogTitle>
+          <DialogDescription>
+            As credenciais foram salvas. Iniciar o conector testa a conexão: o
+            backend vai contatar {channelLabel} e avisar se o token ou
+            configuração for rejeitado.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onDismiss}>
+            Depois
           </Button>
-          <Button
-            onClick={onStart}
-            className="px-5 h-10 text-white bg-emerald-600 hover:bg-emerald-700 border-none rounded-xl font-bold shadow-md transition-all"
-          >
-            <Play className="w-4 h-4 mr-1.5 fill-current" />
-            Start Now
+          <Button onClick={onStart}>
+            <Play className="w-4 h-4" />
+            Iniciar conector
           </Button>
-        </div>
-      </div>
-    </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -246,11 +271,17 @@ function ChannelDetail({
   const [showStartDialog, setShowStartDialog] = useState(false);
 
   const isEnabled = (formData["enabled"] as boolean) ?? channel.enabled;
+  const missingRequiredFields = channel.fields
+    .filter((field) => field.required && !formData[field.key])
+    .map((field) => field.label);
+  const canSave = dirty && !saving && missingRequiredFields.length === 0;
 
   useEffect(() => {
     const initial: Record<string, unknown> = {};
     for (const field of channel.fields) {
-      initial[field.key] = channel.config[field.key] ?? (field.type === "bool" ? false : field.type === "list" ? [] : "");
+      initial[field.key] =
+        channel.config[field.key] ??
+        (field.type === "bool" ? false : field.type === "list" ? [] : "");
     }
     initial["enabled"] = channel.enabled;
     setFormData(initial);
@@ -264,6 +295,13 @@ function ChannelDetail({
   };
 
   const handleSave = async () => {
+    if (missingRequiredFields.length > 0) {
+      toast(
+        "error",
+        `Preencha os campos obrigatórios: ${missingRequiredFields.join(", ")}`,
+      );
+      return;
+    }
     setSaving(true);
     try {
       await updateChannel(channel.name, formData);
@@ -271,11 +309,11 @@ function ChannelDetail({
       if (isEnabled && !channel.running) {
         setShowStartDialog(true);
       } else {
-        toast("success", `${channel.label} config saved`);
+        toast("success", `${channel.label} salvo`);
       }
       onRefresh();
     } catch (e) {
-      toast("error", `Failed to save: ${(e as Error).message}`);
+      toast("error", `Falha ao salvar: ${(e as Error).message}`);
     }
     setSaving(false);
   };
@@ -285,10 +323,11 @@ function ChannelDetail({
     setStarting(true);
     try {
       await startChannel(channel.name);
-      toast("success", `${channel.label} is starting...`);
+      toast("success", `${channel.label} conectado`);
       setTimeout(onRefresh, 2000);
     } catch (e) {
-      toast("error", `Failed to start: ${(e as Error).message}`);
+      toast("error", `Falha ao iniciar: ${(e as Error).message}`);
+      onRefresh();
     }
     setStarting(false);
   };
@@ -297,135 +336,184 @@ function ChannelDetail({
     setStopping(true);
     try {
       await stopChannel(channel.name);
-      toast("success", `${channel.label} stopped`);
+      toast("success", `${channel.label} parado`);
       onRefresh();
     } catch (e) {
-      toast("error", `Failed to stop: ${(e as Error).message}`);
+      toast("error", `Falha ao parar: ${(e as Error).message}`);
     }
     setStopping(false);
   };
 
   return (
-    <div className="flex flex-col h-full bg-slate-50/50 border border-slate-200 rounded-3xl overflow-hidden shadow-sm animate-fade-in">
-      {showStartDialog && (
-        <StartChannelDialog
-          channelLabel={channel.label}
-          onStart={handleStart}
-          onDismiss={() => setShowStartDialog(false)}
-        />
-      )}
+    <div className="flex flex-col h-full">
+      <StartConfirmDialog
+        open={showStartDialog}
+        channelLabel={channel.label}
+        onStart={handleStart}
+        onDismiss={() => setShowStartDialog(false)}
+      />
 
-      {/* Detail Header */}
-      <div className="flex items-center gap-5 px-8 pt-8 pb-6 bg-white border-b border-slate-200">
-        <ChannelIcon name={channel.name} />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-3">
-            <h2 className="text-xl font-bold text-slate-900 leading-tight">{channel.label}</h2>
-            {channel.running ? (
-              <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200/50">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Connected
-              </span>
-            ) : isEnabled ? (
-              <span className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full bg-amber-50 text-amber-600 border border-amber-200/50">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                Enabled
-              </span>
-            ) : null}
+      <Card className="mb-4">
+        <CardContent className="p-5 pt-5 flex items-center gap-4">
+          <ChannelIcon name={channel.name} />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-base font-bold text-text-primary leading-tight">
+                {channel.label}
+              </h2>
+              <ChannelStatusBadge channel={channel} />
+            </div>
+            <p className="text-sm text-text-muted mt-1">{channel.description}</p>
           </div>
-          <p className="text-sm font-medium text-slate-500 mt-1">
-            {channel.description}
-          </p>
-        </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs font-bold text-text-secondary">
+              {isEnabled ? "Ativo" : "Inativo"}
+            </span>
+            <Switch
+              checked={isEnabled}
+              onCheckedChange={(v) => updateField("enabled", v)}
+            />
+          </div>
+        </CardContent>
+      </Card>
 
-        <button
-          type="button"
-          onClick={() => updateField("enabled", !isEnabled)}
-          className={cn(
-            "relative w-14 h-7 rounded-full transition-all duration-300 cursor-pointer shrink-0 shadow-inner",
-            isEnabled
-              ? "bg-gradient-to-r from-emerald-400 to-emerald-500 shadow-emerald-200"
-              : "bg-slate-200",
-          )}
-          title={isEnabled ? "Disable channel" : "Enable channel"}
-        >
-          <span
-            className={cn(
-              "absolute top-[3px] w-[22px] h-[22px] rounded-full bg-white shadow-md transition-all duration-300",
-              isEnabled ? "translate-x-[31px]" : "translate-x-[3px]",
-            )}
-          />
-        </button>
-      </div>
-
-      {/* Detail Scrollable Body */}
-      <div className="flex-1 overflow-y-auto p-8 space-y-6">
-        <div className="space-y-6 bg-white p-8 rounded-2xl border border-slate-200 shadow-[0_2px_8px_rgb(0,0,0,0.02)]">
-          {channel.fields.length === 0 ? (
-            <div className="text-sm text-slate-500 text-center py-4">No configuration needed for this channel.</div>
-          ) : (
-            channel.fields.map((field) => (
-              <div key={field.key}>
-                <label className="flex items-center gap-1.5 text-sm font-bold text-slate-700 mb-2">
-                  {field.label}
-                  {field.required && <span className="text-red-500 text-xs">*</span>}
-                </label>
-                <div className="w-full">
-                  <FieldInput
-                    field={field}
-                    value={formData[field.key]}
-                    onChange={(val) => updateField(field.key, val)}
-                  />
-                  {field.help && (
-                    <p className="text-xs font-medium text-slate-400 mt-2 leading-relaxed">{field.help}</p>
-                  )}
-                </div>
+      <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+        {channel.last_error && (
+          <Card className="border-red/30 bg-red-muted">
+            <CardContent className="p-4 pt-4 flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 mt-0.5 shrink-0 text-red" />
+              <div className="text-sm">
+                <div className="font-bold text-red">Conexão falhou</div>
+                <p className="mt-1 text-text-secondary leading-relaxed">
+                  {channel.last_error}
+                </p>
               </div>
-            ))
-          )}
-        </div>
+            </CardContent>
+          </Card>
+        )}
+
+        <Card>
+          <CardContent className="p-5 pt-5">
+            <div className="flex items-center justify-between gap-3 pb-4 mb-4 border-b border-border">
+              <div>
+                <h3 className="text-sm font-bold text-text-primary">
+                  Credenciais e opções
+                </h3>
+                <p className="text-xs text-text-muted mt-1">
+                  Salvar grava a configuração. Iniciar testa a conexão.
+                </p>
+              </div>
+              {missingRequiredFields.length > 0 && (
+                <Badge variant="warning">
+                  Faltando: {missingRequiredFields.join(", ")}
+                </Badge>
+              )}
+            </div>
+
+            {channel.fields.length === 0 ? (
+              <p className="text-sm text-text-muted text-center py-4">
+                Este conector não exige configuração.
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {channel.fields.map((field) => (
+                  <div key={field.key} className="space-y-1.5">
+                    <Label>
+                      {field.label}
+                      {field.required && (
+                        <span className="text-red ml-0.5">*</span>
+                      )}
+                    </Label>
+                    <FieldInput
+                      field={field}
+                      value={formData[field.key]}
+                      onChange={(val) => updateField(field.key, val)}
+                    />
+                    {field.help && (
+                      <p className="text-xs text-text-muted leading-relaxed">
+                        {field.help}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {channel.setup_steps?.length ? (
+          <Card>
+            <CardContent className="p-5 pt-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Info className="w-4 h-4 text-text-muted" />
+                <h3 className="text-sm font-bold text-text-primary">
+                  Como conectar
+                </h3>
+              </div>
+              <ol className="space-y-2">
+                {channel.setup_steps.map((step, index) => (
+                  <li
+                    key={step}
+                    className="flex gap-3 text-sm text-text-secondary leading-relaxed"
+                  >
+                    <span className="w-5 h-5 rounded-full bg-purple-muted text-purple text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                      {index + 1}
+                    </span>
+                    <span>{step}</span>
+                  </li>
+                ))}
+              </ol>
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
 
-      {/* Detail Footer */}
-      <div className="bg-white border-t border-slate-200 p-6 flex flex-col xl:flex-row items-center justify-between gap-5">
+      <div className="flex items-center justify-between gap-3 pt-4 mt-4 border-t border-border">
         {channel.docs_url ? (
           <a
             href={channel.docs_url}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-emerald-600 transition-colors shrink-0"
+            className="inline-flex items-center gap-1.5 text-sm font-semibold text-text-muted hover:text-purple transition-colors"
           >
             <ExternalLink className="w-4 h-4" />
-            Setup instructions
+            Instruções
           </a>
-        ) : <div className="hidden xl:block" />}
-
-        <div className="flex items-center gap-3 w-full xl:w-auto">
+        ) : (
+          <span />
+        )}
+        <div className="flex items-center gap-2">
           {channel.running && (
-            <Button
-              onClick={handleStop}
-              disabled={stopping}
-              className="flex-1 xl:flex-none bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl px-6 h-12 shadow-sm transition-all font-bold"
-            >
+            <Button variant="danger" onClick={handleStop} disabled={stopping}>
               {stopping ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
-                <Square className="w-4 h-4 mr-2 fill-current" />
+                <Square className="w-4 h-4" />
               )}
-              Stop Channel
+              Parar
             </Button>
           )}
-
-          <Button
-            onClick={handleSave}
-            disabled={!dirty || saving}
-            className="flex-1 xl:flex-none px-8 h-12 text-white bg-slate-900 hover:bg-slate-800 border-none rounded-xl shadow-md font-bold transition-all disabled:opacity-50"
-          >
-            {saving || starting ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
+          {!channel.running && isEnabled && (
+            <Button
+              onClick={handleStart}
+              disabled={starting || dirty || missingRequiredFields.length > 0}
+              title={dirty ? "Salve antes de iniciar" : undefined}
+            >
+              {starting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4" />
+              )}
+              Iniciar
+            </Button>
+          )}
+          <Button onClick={handleSave} disabled={!canSave} variant="secondary">
+            {saving ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
-              dirty ? "Save Config" : "Saved"
+              <Save className="w-4 h-4" />
             )}
+            {dirty ? "Salvar" : "Salvo"}
           </Button>
         </div>
       </div>
@@ -434,142 +522,131 @@ function ChannelDetail({
 }
 
 export function ChannelsPanel() {
+  const activeAgentId = useStore((s) => s.activeAgentId);
   const [channels, setChannels] = useState<ChannelInfo[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selectedChannelName, setSelectedChannelName] = useState<string | null>(null);
+  const [selectedChannelName, setSelectedChannelName] = useState<string | null>(
+    null,
+  );
 
-  const loadChannels = async () => {
+  const loadChannels = useCallback(async () => {
     setLoading(true);
     try {
       const data = await listChannels();
       setChannels(data);
-      if (data.length > 0 && !selectedChannelName) {
-        setSelectedChannelName(data[0].name);
-      }
+      setSelectedChannelName((current) => current ?? data[0]?.name ?? null);
     } catch (e) {
-      toast("error", `Failed to load channels: ${(e as Error).message}`);
+      toast("error", `Falha ao carregar conectores: ${(e as Error).message}`);
     }
     setLoading(false);
-  };
-
-  useEffect(() => {
-    loadChannels();
   }, []);
 
+  useEffect(() => {
+    setSelectedChannelName(null);
+    loadChannels();
+  }, [activeAgentId, loadChannels]);
+
   const connectedCount = channels.filter((c) => c.running).length;
-  const selectedChannel = channels.find(c => c.name === selectedChannelName);
+  const failedCount = channels.filter((c) => c.last_error).length;
+  const selectedChannel = channels.find((c) => c.name === selectedChannelName);
+
+  const subtitle =
+    channels.length === 0
+      ? "Configure os conectores que este agente vai usar para falar com clientes"
+      : `${connectedCount} conectado(s)${failedCount > 0 ? ` · ${failedCount} com falha` : ""}`;
 
   return (
-    <div className="flex-1 flex flex-col h-full overflow-hidden">
-      {/* Header Area */}
-      <div className="px-8 pt-8 pb-6 shrink-0">
-        <div className="content-container-wide">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center">
-              <Radio className="w-5 h-5 text-emerald-600" />
-            </div>
-            <div>
-              <h1 className="font-display text-2xl font-bold text-slate-900">Channels</h1>
-              <div className="flex items-center gap-3 mt-1">
-                <p className="text-sm font-medium text-slate-500">
-                  Connect your agent to messaging platforms
-                </p>
-                {channels.length > 0 && (
-                  <>
-                    <span className="w-1 h-1 rounded-full bg-slate-300" />
-                    <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
-                      {connectedCount} Active
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+    <div className="container-app">
+      <PageHeader icon={Radio} title="Canais deste agente" subtitle={subtitle} />
 
-      {/* Main Content Area */}
-      <div className="flex-1 overflow-hidden px-8 pb-8">
-        <div className="content-container-wide h-full">
-          {loading ? (
-            <div className="flex items-center justify-center h-full">
-              <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="w-6 h-6 text-purple animate-spin" />
+        </div>
+      ) : channels.length === 0 ? (
+        <Card>
+          <CardContent className="p-12 pt-12 flex flex-col items-center text-center">
+            <div className="w-14 h-14 rounded-2xl bg-surface-alt border border-border flex items-center justify-center mb-4">
+              <Radio className="w-7 h-7 text-text-muted" />
             </div>
-          ) : channels.length === 0 ? (
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 h-full flex items-center justify-center">
-              <div className="flex flex-col items-center justify-center text-slate-400">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center mb-5">
-                  <Radio className="w-8 h-8 text-emerald-500 opacity-60" />
-                </div>
-                <p className="text-base font-bold text-slate-900">No channels available</p>
-                <p className="text-sm mt-1.5 text-slate-500 font-medium">Add connection plugins to see them here.</p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex h-full gap-8 animate-fade-in-up">
-              {/* Master List (Left Sidebar) */}
-              <div className="w-80 shrink-0 flex flex-col h-full bg-white border border-slate-200 rounded-3xl overflow-hidden shadow-sm">
-                <div className="px-5 py-4 border-b border-slate-100/80 bg-slate-50/50">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-                    Available Channels
-                  </h3>
-                </div>
-                <div className="flex-1 overflow-y-auto p-3 space-y-1.5 scrollbar-thin">
-                  {channels.map((channel) => {
-                    const isActive = selectedChannelName === channel.name;
-                    return (
-                      <button
-                        key={channel.name}
-                        onClick={() => setSelectedChannelName(channel.name)}
+            <p className="font-display text-base font-bold text-text-primary">
+              Nenhum conector disponível
+            </p>
+            <p className="text-sm mt-1.5 text-text-muted">
+              Adicione plugins de conexão para aparecerem aqui.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-5">
+          <Card>
+            <CardContent className="p-2 pt-2 space-y-1">
+              {channels.map((channel) => {
+                const isActive = selectedChannelName === channel.name;
+                return (
+                  <button
+                    key={channel.name}
+                    onClick={() => setSelectedChannelName(channel.name)}
+                    className={cn(
+                      "w-full flex items-center gap-3 p-2.5 rounded-xl transition-colors cursor-pointer text-left border",
+                      isActive
+                        ? "bg-purple-muted border-purple/20"
+                        : "bg-transparent border-transparent hover:bg-surface-alt",
+                    )}
+                  >
+                    <ChannelIcon name={channel.name} size="sm" />
+                    <div className="flex-1 min-w-0">
+                      <div
                         className={cn(
-                          "w-full flex items-center gap-3.5 px-3 py-3 rounded-2xl transition-all cursor-pointer text-left border",
-                          isActive
-                            ? "bg-slate-900 border-slate-900 shadow-md transform scale-[1.02]"
-                            : "bg-transparent border-transparent hover:bg-slate-50 hover:border-slate-200"
+                          "text-sm font-bold truncate leading-tight",
+                          isActive ? "text-purple" : "text-text-primary",
                         )}
                       >
-                        <div className={cn(
-                          "transition-transform",
-                          isActive ? "scale-90 opacity-90 brightness-200 grayscale" : "scale-100"
-                        )}>
-                          <ChannelIcon name={channel.name} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className={cn(
-                            "text-sm font-bold truncate leading-tight",
-                            isActive ? "text-white" : "text-slate-900"
-                          )}>
-                            {channel.label}
-                          </div>
-                        </div>
-                        <StatusIndicator enabled={channel.enabled} running={channel.running} />
-                        <ChevronRight className={cn(
-                          "w-4 h-4 shrink-0 transition-colors",
-                          isActive ? "text-slate-400" : "text-transparent"
-                        )} />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Detail View (Right Panel) */}
-              <div className="flex-1 h-full min-w-0">
-                {selectedChannel ? (
-                  <ChannelDetail channel={selectedChannel} onRefresh={loadChannels} />
-                ) : (
-                  <div className="h-full bg-slate-50/50 border border-slate-200 rounded-3xl flex items-center justify-center">
-                    <div className="text-center text-slate-400">
-                      <Settings2 className="w-10 h-10 mx-auto mb-3 opacity-20" />
-                      <p className="text-sm font-medium">Select a channel to configure</p>
+                        {channel.label}
+                      </div>
+                      <div className="text-[11px] text-text-muted truncate mt-0.5">
+                        {channel.running
+                          ? "Conectado"
+                          : channel.last_error
+                            ? "Falha"
+                            : channel.enabled
+                              ? "Pronto"
+                              : "Configurar"}
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+                    <StatusDot
+                      enabled={channel.enabled}
+                      running={channel.running}
+                      lastError={channel.last_error}
+                    />
+                    <ChevronRight
+                      className={cn(
+                        "w-4 h-4 shrink-0 transition-colors",
+                        isActive ? "text-purple" : "text-transparent",
+                      )}
+                    />
+                  </button>
+                );
+              })}
+            </CardContent>
+          </Card>
+
+          <div className="min-w-0">
+            {selectedChannel ? (
+              <ChannelDetail channel={selectedChannel} onRefresh={loadChannels} />
+            ) : (
+              <Card>
+                <CardContent className="p-12 pt-12 flex flex-col items-center text-center">
+                  <Settings2 className="w-8 h-8 text-text-muted mb-3" />
+                  <p className="text-sm text-text-muted">
+                    Selecione um conector para configurar
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

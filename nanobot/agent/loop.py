@@ -185,13 +185,14 @@ class AgentLoop:
 
     def _set_tool_context(
         self, channel: str, chat_id: str, message_id: str | None = None,
-        *, tools: ToolRegistry | None = None, user_id: str = "",
+        *, tools: ToolRegistry | None = None, user_id: str = "", agent_id: str = "",
     ) -> None:
         """Update context for all tools that need routing info."""
         _tools = tools or self.tools
         if message_tool := _tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.set_context(channel, chat_id, message_id)
+                message_tool.set_owner_context(user_id=user_id, agent_id=agent_id)
 
         if spawn_tool := _tools.get("spawn"):
             if isinstance(spawn_tool, SpawnTool):
@@ -199,7 +200,7 @@ class AgentLoop:
 
         if cron_tool := _tools.get("cron"):
             if isinstance(cron_tool, CronTool):
-                cron_tool.set_context(channel, chat_id, user_id=user_id)
+                cron_tool.set_context(channel, chat_id, user_id=user_id, agent_id=agent_id)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -226,10 +227,27 @@ class AgentLoop:
             return await self._repos.channel_bindings.resolve_user(msg.channel, msg.sender_id)
         return None
 
-    async def _get_user_context(self, user_id: str) -> "UserContext":
-        """Get or build a cached UserContext for a user."""
-        if user_id in self._user_contexts:
-            return self._user_contexts[user_id]
+    async def _resolve_agent_id(self, user_id: str, msg: InboundMessage) -> str:
+        """Resolve agent_id from message metadata or the user's default agent."""
+        if msg.agent_id:
+            return msg.agent_id
+        if msg.metadata and msg.metadata.get("_agent_id"):
+            return str(msg.metadata["_agent_id"])
+        if self._repos:
+            if hasattr(self._repos.channel_bindings, "resolve_agent"):
+                binding = await self._repos.channel_bindings.resolve_agent(msg.channel, msg.sender_id)
+                if binding and binding.get("agent_id"):
+                    return binding["agent_id"]
+            agent = await self._repos.agents.get_default_agent(user_id)
+            if agent:
+                return agent["agent_id"]
+        raise ValueError(f"No agent available for user {user_id}")
+
+    async def _get_user_context(self, user_id: str, agent_id: str | None = None) -> "UserContext":
+        """Get or build a cached UserContext for a user-agent pair."""
+        cache_key = f"{user_id}:{agent_id or 'default'}"
+        if cache_key in self._user_contexts:
+            return self._user_contexts[cache_key]
 
         from nanobot.agent.user_context import build_user_context
         uctx = await build_user_context(
@@ -239,6 +257,7 @@ class AgentLoop:
             self.bus,
             brave_api_key=self.brave_api_key,
             cron_service=self.cron_service,
+            agent_id=agent_id,
         )
 
         if self._mcp_connected:
@@ -246,7 +265,8 @@ class AgentLoop:
                 if name.startswith("mcp_") and not uctx.tools.has(name):
                     uctx.tools.register(tool)
 
-        self._user_contexts[user_id] = uctx
+        self._user_contexts[cache_key] = uctx
+        self._user_contexts[f"{user_id}:{uctx.agent_id}"] = uctx
         return uctx
 
     async def _run_agent_loop(
@@ -436,7 +456,8 @@ class AgentLoop:
                         channel=msg.channel, chat_id=msg.chat_id, content=rate_err,
                     )
 
-            uctx = await self._get_user_context(user_id)
+            agent_id = await self._resolve_agent_id(user_id, msg)
+            uctx = await self._get_user_context(user_id, agent_id)
             if self._rate_limiter:
                 self._rate_limiter.record_request(user_id)
 
@@ -458,7 +479,11 @@ class AgentLoop:
             key = f"{channel}:{chat_id}"
             session = await sessions.get_or_create(key)
             _user_id = uctx.user_id if uctx else ""
-            self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"), tools=tools, user_id=_user_id)
+            _agent_id = uctx.agent_id if uctx else ""
+            self._set_tool_context(
+                channel, chat_id, msg.metadata.get("message_id"),
+                tools=tools, user_id=_user_id, agent_id=_agent_id,
+            )
             history = session.get_history(max_messages=_memory_window)
             messages = await context.build_messages(
                 history=history,
@@ -473,8 +498,12 @@ class AgentLoop:
                 all_msgs.append({"role": "assistant", "content": final_content})
             self._save_turn(session, all_msgs, 1 + len(history))
             await sessions.save(session)
-            return OutboundMessage(channel=channel, chat_id=chat_id,
-                                  content=final_content or "Background task completed.")
+            return OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                content=final_content or "Background task completed.",
+                metadata={"_owner_id": _user_id, "_agent_id": _agent_id},
+            )
 
         preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
         logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
@@ -537,7 +566,11 @@ class AgentLoop:
             self._consolidation_tasks.add(_task)
 
         _user_id = uctx.user_id if uctx else ""
-        self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"), tools=tools, user_id=_user_id)
+        _agent_id = uctx.agent_id if uctx else ""
+        self._set_tool_context(
+            msg.channel, msg.chat_id, msg.metadata.get("message_id"),
+            tools=tools, user_id=_user_id, agent_id=_agent_id,
+        )
         if message_tool := tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
@@ -554,6 +587,10 @@ class AgentLoop:
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
             meta["_tool_hint"] = tool_hint
+            if _user_id:
+                meta["_owner_id"] = _user_id
+            if _agent_id:
+                meta["_agent_id"] = _agent_id
             await self.bus.publish_outbound(OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
@@ -581,7 +618,7 @@ class AgentLoop:
 
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
-            metadata=msg.metadata or {},
+            metadata={**(msg.metadata or {}), "_owner_id": _user_id, "_agent_id": _agent_id},
         )
 
     _TOOL_RESULT_MAX_CHARS = 500
@@ -625,12 +662,13 @@ class AgentLoop:
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
         user_id: str | None = None,
+        agent_id: str | None = None,
     ) -> str:
         """Process a message directly (for CLI or cron usage)."""
         await self._connect_mcp()
         msg = InboundMessage(
             channel=channel, sender_id="user", chat_id=chat_id,
-            content=content, user_id=user_id,
+            content=content, user_id=user_id, agent_id=agent_id,
         )
         response = await self._process_message(msg, session_key=session_key, on_progress=on_progress)
         return response.content if response else ""

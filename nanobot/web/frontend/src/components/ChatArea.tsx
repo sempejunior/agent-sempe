@@ -1,105 +1,243 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import { ChatMessage } from "./ChatMessage";
-import { ChatInput } from "./ChatInput";
+import { Bot, Eye, Mic, Paperclip, Send, Sparkles, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Bot, Menu, Plus, Cpu } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+
+const QUICK_COMMANDS = [
+  "Qual a política de reembolso para combustível?",
+  "Qual o saldo de férias de Mariana Souza?",
+  "Consultar perfil comportamental no Profiler",
+];
 
 export function ChatArea() {
-  const { messages, activeSessionKey, sidebarOpen, toggleSidebar, newChat, sending, connected } =
+  const { agents, activeAgentId, messages, sending, sendMessage, updateAgent, selectAgent } =
     useStore();
+  const [input, setInput] = useState("");
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
-  const isEmpty = messages.length === 0 && !sending;
+  const currentAgent =
+    agents.find((agent) => agent.agent_id === activeAgentId) ??
+    agents[0] ?? { agent_id: "", name: "Paulo", role: "Especialista em DP", avatar: "P" };
   const lastMsg = messages[messages.length - 1];
   const needsThinkingBubble =
     sending && (!lastMsg || lastMsg.role !== "assistant" || !lastMsg.isStreaming);
 
-  return (
-    <div className="flex-1 flex flex-col min-w-0 h-full">
-      {/* Top bar */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100 bg-white/80 backdrop-blur-sm">
-        {!sidebarOpen && (
-          <Button variant="ghost" size="icon" onClick={toggleSidebar}>
-            <Menu className="w-5 h-5" />
-          </Button>
-        )}
-        <div className="flex-1 flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-emerald-50 flex items-center justify-center">
-            <Bot className="w-4 h-4 text-green" />
-          </div>
-          <span className="text-sm font-semibold text-text-primary font-display">
-            {activeSessionKey ? "Chat" : "New Chat"}
-          </span>
-          <div className="flex items-center gap-1.5">
-            <div
-              className={cn(
-                "w-2 h-2 rounded-full transition-colors",
-                connected
-                  ? "bg-green shadow-[0_0_6px_rgba(17,199,111,0.5)]"
-                  : "bg-yellow animate-pulse",
-              )}
-            />
-            <span className="text-[10px] text-text-muted font-medium">
-              {connected ? "Connected" : "Reconnecting..."}
-            </span>
-          </div>
-        </div>
-        <Button variant="ghost" size="icon" onClick={newChat} title="New Chat">
-          <Plus className="w-5 h-5" />
-        </Button>
-      </div>
+  function submit(text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    sendMessage(trimmed);
+    setInput("");
+  }
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto bg-gradient-to-b from-slate-50/50 to-background">
-        {isEmpty ? (
-          <div className="flex flex-col items-center justify-center h-full px-4 text-center animate-fade-in-up">
-            <div className="relative mb-8">
-              <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-emerald-50 to-emerald-100 border border-emerald-200/50 flex items-center justify-center shadow-lg shadow-emerald-500/5">
-                <Cpu className="w-10 h-10 text-green" />
+  return (
+    <div className="flex h-full overflow-hidden bg-surface">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex h-[68px] shrink-0 items-center justify-between border-b border-border bg-surface px-6">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-purple-muted text-purple">
+              <Bot className="h-4 w-4" />
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted leading-tight">
+                Falar com
+              </span>
+              <Select
+                value={activeAgentId ?? ""}
+                onValueChange={(v) => selectAgent(v)}
+              >
+                <SelectTrigger className="h-8 w-auto min-w-[180px] text-sm font-semibold">
+                  <SelectValue placeholder="Selecionar agente" />
+                </SelectTrigger>
+                <SelectContent>
+                  {agents.map((a) => (
+                    <SelectItem key={a.agent_id} value={a.agent_id}>
+                      {a.name}
+                      {a.role ? ` · ${a.role}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setTerminalOpen((v) => !v)}
+          >
+            <Terminal />
+            {terminalOpen ? "Ocultar Terminal" : "Mostrar Terminal"}
+          </Button>
+        </div>
+
+        {(currentAgent as { status?: string }).status === "draft" && (
+          <div className="flex items-center justify-between gap-3 border-b border-yellow/20 bg-yellow-muted px-6 py-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-yellow text-white">
+                <Eye className="h-3.5 w-3.5" />
               </div>
-              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-lg bg-gradient-to-br from-emerald-400 to-green flex items-center justify-center shadow-md">
-                <Bot className="w-3.5 h-3.5 text-white" />
+              <div className="min-w-0">
+                <p className="text-[12px] font-bold text-yellow leading-tight">
+                  Preview em rascunho
+                </p>
+                <p className="text-[11px] font-medium text-text-secondary leading-tight">
+                  Este agente ainda não foi ativado. Teste aqui e ative quando estiver pronto.
+                </p>
               </div>
             </div>
-            <h2 className="font-display text-2xl font-bold text-text-primary mb-2">
-              How can I help you?
-            </h2>
-            <p className="text-text-secondary text-sm max-w-md leading-relaxed">
-              Ask me anything. I can help with research, coding, writing,
-              analysis, and much more.
-            </p>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => activeAgentId && updateAgent(activeAgentId, { status: "active" })}
+            >
+              <Sparkles />
+              Ativar agente
+            </Button>
           </div>
-        ) : (
-          <div>
-            {messages.map((msg) => (
-              <ChatMessage
-                key={msg.id}
-                role={msg.role}
-                content={msg.content}
-                isStreaming={msg.isStreaming}
-                toolHint={msg.toolHint}
-              />
-            ))}
-            {needsThinkingBubble && (
-              <ChatMessage
-                role="assistant"
-                content=""
-                isStreaming
-              />
+        )}
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
+          <div className="w-full space-y-4">
+            {messages.length === 0 && !sending ? (
+              <div className="flex items-start gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-purple-muted text-sm font-bold text-purple">
+                  {(currentAgent.avatar || currentAgent.name[0] || "A").slice(0, 2)}
+                </div>
+                <div className="max-w-[min(960px,78%)]">
+                  <div className="rounded-2xl bg-surface-alt px-5 py-4 text-sm font-medium leading-7 text-text-primary shadow-sm">
+                    Olá. Sou o {currentAgent.name},{" "}
+                    {currentAgent.role || "agente configurado"}. Posso responder dúvidas com base
+                    no RAG, consultar memória e acionar ferramentas habilitadas no backend.
+                  </div>
+                  <span className="ml-1 mt-1 block text-[11px] font-medium text-text-muted">
+                    Agora
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <>
+                {messages.map((msg) => (
+                  <ChatMessage
+                    key={msg.id}
+                    role={msg.role}
+                    content={msg.content}
+                    isStreaming={msg.isStreaming}
+                    toolHint={msg.toolHint}
+                  />
+                ))}
+                {needsThinkingBubble && <ChatMessage role="assistant" content="" isStreaming />}
+              </>
             )}
             <div ref={bottomRef} />
           </div>
-        )}
+        </div>
+
+        <div className="shrink-0 border-t border-border bg-surface-alt/60 px-8 py-5">
+          <div className="w-full space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-text-muted">
+                <Sparkles className="h-3.5 w-3.5 text-purple" />
+                Comandos rápidos:
+              </span>
+              {QUICK_COMMANDS.map((command) => (
+                <button
+                  key={command}
+                  type="button"
+                  onClick={() => submit(command)}
+                  className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-text-secondary shadow-sm hover:border-purple/40 hover:bg-purple-muted hover:text-purple-hover transition-colors"
+                >
+                  {command}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1 rounded-full border border-border bg-surface px-4 py-1.5 shadow-sm focus-within:border-purple/40 focus-within:shadow-md transition-shadow">
+              <input
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") submit(input);
+                }}
+                placeholder={`Pergunte algo para ${currentAgent.name}...`}
+                className="h-10 min-w-0 flex-1 bg-transparent text-sm font-medium text-text-primary outline-none placeholder:text-text-muted"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                title="Anexar documento"
+                className="rounded-full"
+              >
+                <Paperclip />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                title="Gravar voz"
+                className="rounded-full"
+              >
+                <Mic />
+              </Button>
+              <Button
+                type="button"
+                size="icon"
+                onClick={() => submit(input)}
+                disabled={!input.trim() || sending}
+                title="Enviar"
+                className="rounded-full"
+              >
+                <Send />
+              </Button>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Input */}
-      <ChatInput />
+      {terminalOpen && (
+        <aside className="hidden w-80 shrink-0 flex-col border-l border-border bg-slate-950 text-slate-300 lg:flex">
+          <div className="flex items-center gap-2 border-b border-slate-800 bg-slate-950/80 p-3">
+            <Terminal className="h-4 w-4 text-purple" />
+            <span className="text-xs font-bold text-slate-100">Terminal de Execução MCP</span>
+          </div>
+          <div className="border-b border-slate-800 bg-slate-900 p-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-yellow">
+              Conexões ativas do agente {currentAgent.name}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <Badge variant="code">rag_search()</Badge>
+              <Badge variant="code">message()</Badge>
+              <Badge variant="code">save_memory()</Badge>
+            </div>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 font-mono text-[11px]">
+            <div className="space-y-3">
+              <p className="text-slate-500">[agora] Console acoplado ao chat real.</p>
+              {sending && (
+                <p className="text-purple">[processando] Aguardando resposta do agente...</p>
+              )}
+              {lastMsg?.toolHint && <p className="text-blue-300">[tool] {lastMsg.toolHint}</p>}
+              {!sending && !lastMsg?.toolHint && (
+                <p className="text-slate-600 italic">Aguardando interações...</p>
+              )}
+            </div>
+          </div>
+        </aside>
+      )}
     </div>
   );
 }

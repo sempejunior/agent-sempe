@@ -1,6 +1,7 @@
 """MCP client: connects to MCP servers and wraps their tools as native nanobot tools."""
 
 import asyncio
+import base64
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -9,6 +10,21 @@ from loguru import logger
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
+
+
+def _build_auth_headers(cfg) -> dict[str, str]:
+    """Build headers dict combining explicit headers and configured auth."""
+    headers = dict(cfg.headers or {})
+    auth_type = getattr(cfg, "auth_type", "none")
+    if auth_type == "bearer" and cfg.auth_token:
+        headers["Authorization"] = f"Bearer {cfg.auth_token}"
+    elif auth_type == "api_key" and cfg.auth_token:
+        header_name = cfg.auth_header_name or "Authorization"
+        headers[header_name] = cfg.auth_token
+    elif auth_type == "basic" and (cfg.auth_username or cfg.auth_password):
+        raw = f"{cfg.auth_username}:{cfg.auth_password}".encode()
+        headers["Authorization"] = f"Basic {base64.b64encode(raw).decode()}"
+    return headers
 
 
 class MCPToolWrapper(Tool):
@@ -81,9 +97,10 @@ async def connect_mcp_servers(
                 read, write = await stack.enter_async_context(stdio_client(params))
             elif cfg.url:
                 from mcp.client.streamable_http import streamable_http_client
+                merged_headers = _build_auth_headers(cfg)
                 http_client = await stack.enter_async_context(
                     httpx.AsyncClient(
-                        headers=cfg.headers or None,
+                        headers=merged_headers or None,
                         follow_redirects=True,
                         timeout=None,
                     )

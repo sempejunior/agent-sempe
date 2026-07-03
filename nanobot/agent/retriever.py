@@ -115,11 +115,13 @@ class RetrieverStore:
         *,
         retriever_repo: RetrieverRepository | None = None,
         user_id: str | None = None,
+        agent_id: str | None = None,
     ):
         if retriever_repo is not None:
             self._mode = "db"
             self._repo = retriever_repo
             self._user_id = user_id or ""
+            self._agent_id = agent_id
         elif workspace is not None:
             self._mode = "fs"
             self._rag_dir = ensure_dir(workspace / "rag")
@@ -129,7 +131,7 @@ class RetrieverStore:
 
     async def ingest(self, content: str, metadata: dict[str, Any] | None = None) -> str:
         if self._mode == "db":
-            return await self._repo.ingest(self._user_id, content, metadata)
+            return await self._repo.ingest(self._user_id, content, metadata, self._agent_id)
 
         entry = {"content": content, "metadata": metadata or {}}
         line = json.dumps(entry, ensure_ascii=False) + "\n"
@@ -138,18 +140,18 @@ class RetrieverStore:
 
     async def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         if self._mode == "db":
-            return await self._repo.search(self._user_id, query, top_k=top_k)
+            return await self._repo.search(self._user_id, query, top_k=top_k, agent_id=self._agent_id)
 
         return await asyncio.to_thread(self._search_fs, query, top_k)
 
     async def delete(self, chunk_id: str) -> bool:
         if self._mode == "db":
-            return await self._repo.delete(self._user_id, chunk_id)
+            return await self._repo.delete(self._user_id, chunk_id, self._agent_id)
         return False
 
     async def list_sources(self) -> list[dict[str, Any]]:
         if self._mode == "db":
-            return await self._repo.list_sources(self._user_id)
+            return await self._repo.list_sources(self._user_id, self._agent_id)
 
         return await asyncio.to_thread(self._list_sources_fs)
 

@@ -23,10 +23,12 @@ class SaveSkillTool(Tool):
         workspace: Path | None = None,
         skill_repo: Any | None = None,
         user_id: str | None = None,
+        agent_id: str | None = None,
     ):
         self.workspace = workspace
         self.skill_repo = skill_repo
         self.user_id = user_id
+        self.agent_id = agent_id
         if not workspace and not (skill_repo and user_id):
             raise ValueError("Must provide either workspace or (skill_repo + user_id)")
 
@@ -82,7 +84,8 @@ class SaveSkillTool(Tool):
                     "name": name,
                     "description": desc,
                     "content": full_markdown,
-                }
+                },
+                self.agent_id,
             )
             return f"Skill '{name}' successfully saved to database."
         elif self.workspace:

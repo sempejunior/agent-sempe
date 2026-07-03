@@ -4,9 +4,22 @@ function getToken(): string | null {
   return localStorage.getItem("nanobot_token");
 }
 
+export function getActiveAgentId(): string | null {
+  return localStorage.getItem("nanobot_agent_id");
+}
+
+export function setActiveAgentId(agentId: string | null): void {
+  if (agentId) localStorage.setItem("nanobot_agent_id", agentId);
+  else localStorage.removeItem("nanobot_agent_id");
+}
+
 function authHeaders(): Record<string, string> {
   const token = getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const agentId = getActiveAgentId();
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(agentId ? { "X-Agent-Id": agentId } : {}),
+  };
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -54,6 +67,72 @@ export async function login(user_id: string): Promise<AuthResponse> {
 
 export async function getMe(): Promise<User> {
   return request("/me");
+}
+
+// Agents
+export interface Agent {
+  agent_id: string;
+  name: string;
+  role: string;
+  description: string;
+  avatar: string;
+  is_default: boolean;
+  status: string;
+  metadata?: Record<string, unknown>;
+  agent_config?: AgentConfig;
+  tools_enabled?: string[];
+  channel_configs?: Record<string, unknown>;
+  bootstrap?: Record<string, string>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function listAgents(): Promise<Agent[]> {
+  return request("/agents");
+}
+
+export async function createAgent(data: Partial<Agent>): Promise<Agent> {
+  return request("/agents", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function updateAgent(agentId: string, data: Partial<Agent>): Promise<{ ok: boolean; agent: Agent }> {
+  return request(`/agents/${encodeURIComponent(agentId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteAgent(agentId: string): Promise<{ ok: boolean }> {
+  return request(`/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
+}
+
+export async function duplicateAgent(agentId: string): Promise<Agent> {
+  return request(`/agents/${encodeURIComponent(agentId)}/duplicate`, { method: "POST" });
+}
+
+export interface AgentTemplate {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+  icon: string;
+  system_prompt: string;
+  tools: string[];
+  rag_enabled: boolean;
+}
+
+export async function getAgentTemplates(): Promise<AgentTemplate[]> {
+  return request("/agents/templates");
+}
+
+export interface AgentMetrics {
+  messages_last_24h: number;
+  active_channels: number;
+  last_activity_at: string | null;
+}
+
+export async function getAgentMetrics(agentId: string): Promise<AgentMetrics> {
+  return request(`/agents/${encodeURIComponent(agentId)}/metrics`);
 }
 
 // Sessions
@@ -193,6 +272,8 @@ export interface CustomSkill {
 }
 
 // MCP Configuration
+export type MCPAuthType = "none" | "bearer" | "api_key" | "basic";
+
 export interface MCPServerConfig {
   command?: string;
   args?: string[];
@@ -200,6 +281,11 @@ export interface MCPServerConfig {
   url?: string;
   headers?: Record<string, string>;
   tool_timeout?: number;
+  auth_type?: MCPAuthType;
+  auth_token?: string;
+  auth_username?: string;
+  auth_password?: string;
+  auth_header_name?: string;
 }
 
 export interface MCPData {
@@ -219,7 +305,7 @@ export async function getCustomSkills(): Promise<CustomSkill[]> {
 }
 
 export async function deleteCustomSkill(name: string): Promise<void> {
-  return request(`/skills/custom/${name}`, { method: "DELETE" });
+  return request(`/skills/custom/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 export async function updateCustomSkill(name: string, data: {
@@ -307,9 +393,12 @@ export interface ChannelInfo {
   label: string;
   description: string;
   docs_url?: string;
+  setup_steps?: string[];
   fields: ChannelField[];
   enabled: boolean;
   running: boolean;
+  last_error?: string | null;
+  config_complete?: boolean;
   config: Record<string, unknown>;
 }
 
@@ -547,4 +636,12 @@ export function createChatSocket(token: string): WebSocket {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const host = window.location.host;
   return new WebSocket(`${protocol}//${host}/ws/chat?token=${encodeURIComponent(token)}`);
+}
+
+export async function listAgentsWithMetrics(): Promise<(Agent & { metrics?: AgentMetrics })[]> {
+  const agents = await listAgents();
+  const metrics = await Promise.all(
+    agents.map((a) => getAgentMetrics(a.agent_id).catch(() => null)),
+  );
+  return agents.map((a, i) => ({ ...a, metrics: metrics[i] ?? undefined }));
 }

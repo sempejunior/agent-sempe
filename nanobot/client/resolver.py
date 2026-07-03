@@ -52,6 +52,8 @@ async def resolve_client(
 
     client_id = str(uuid.uuid4())
     display_name = msg.metadata.get("sender_name", "") if msg.metadata else ""
+    if not display_name:
+        display_name = f"{msg.channel}:{external_id[:8]}"
 
     try:
         await clients.create({

@@ -42,6 +42,7 @@ class ContextBuilder:
         language: str = "",
         custom_instructions: str = "",
         rag_enabled: bool = False,
+        bootstrap_overrides: dict[str, str] | None = None,
     ):
         self.workspace = workspace
         self.memory = memory_store or MemoryStore(workspace)
@@ -51,6 +52,7 @@ class ContextBuilder:
         self._language = language
         self._custom_instructions = custom_instructions
         self._rag_enabled = rag_enabled
+        self._bootstrap_overrides = bootstrap_overrides
         self._mode: str = "db" if user_repo is not None and user_id is not None else "fs"
 
     async def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
@@ -215,8 +217,8 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         """Load bootstrap: base prompts (code) + user extensions (DB) + workspace fallback."""
         from nanobot.prompts import PROMPT_FILES, load_base_prompt
 
-        user_extensions: dict[str, str] = {}
-        if self._user_repo and self._user_id:
+        user_extensions: dict[str, str] = self._bootstrap_overrides or {}
+        if not self._bootstrap_overrides and self._user_repo and self._user_id:
             user = await self._user_repo.get_by_id(self._user_id)
             if user:
                 user_extensions = user.get("bootstrap", {})

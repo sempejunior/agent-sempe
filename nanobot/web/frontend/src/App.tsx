@@ -3,7 +3,7 @@ import { useStore } from "@/lib/store";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastContainer } from "@/components/ui/toast";
 import { AuthPage } from "@/components/AuthPage";
-import { Sidebar } from "@/components/Sidebar";
+import { HubShell } from "@/components/hub/HubShell";
 import { ChatArea } from "@/components/ChatArea";
 import { CapabilitiesPage } from "@/components/CapabilitiesPage";
 import { MemoryPage } from "@/components/MemoryPage";
@@ -13,13 +13,44 @@ import { ChannelsPanel } from "@/components/ChannelsPanel";
 import { CronPanel } from "@/components/CronPanel";
 import { RagPanel } from "@/components/RagPanel";
 import { ClientsPage } from "@/components/ClientsPage";
-import { Cpu } from "lucide-react";
+import { AgentsPage } from "@/components/AgentsPage";
+import { AgentConfigPage } from "@/components/AgentConfigPage";
+import { AgentStudioPage } from "@/components/hub/AgentStudio/AgentStudioPage";
+import { McpPage } from "@/components/McpPage";
+import { AgentTeamPage } from "@/components/hub/AgentTeamPage";
+import { AgentStorePage } from "@/components/hub/AgentStorePage";
+import { SkillsCatalogPage } from "@/components/hub/SkillsCatalogPage";
+import { AlertsPage } from "@/components/hub/AlertsPage";
+import { McpManagerPage } from "@/components/hub/McpManagerPage";
+import { DbManagerPage } from "@/components/hub/DbManagerPage";
+import { RagManagerPage } from "@/components/hub/RagManagerPage";
+import { Store } from "lucide-react";
 
 function MainContent() {
-  const { activeView } = useStore();
+  const activeView = useStore((s) => s.activeView);
   switch (activeView) {
+    case "chat":
+      return <ChatArea />;
+    case "agent-team":
+      return <AgentTeamPage />;
+    case "agents":
+      return <AgentsPage />;
+    case "agent-store":
+      return <AgentStorePage />;
+    case "agent-config":
+      return <AgentConfigPage />;
+    case "agent-studio":
+      return <AgentStudioPage />;
+    case "api-connections":
+      return <McpPage />;
+    case "mcp":
+      return <McpManagerPage />;
+    case "dbs":
+      return <DbManagerPage />;
     case "capabilities":
       return <CapabilitiesPage />;
+    case "skills-catalog":
+      return <SkillsCatalogPage />;
     case "memory":
       return <MemoryPage />;
     case "settings":
@@ -30,8 +61,12 @@ function MainContent() {
       return <ChannelsPanel />;
     case "cron":
       return <CronPanel />;
+    case "alerts":
+      return <AlertsPage />;
     case "rag":
       return <RagPanel />;
+    case "rag-manager":
+      return <RagManagerPage />;
     case "clients":
       return <ClientsPage />;
     default:
@@ -49,10 +84,10 @@ function App() {
   if (authLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-full bg-background gap-4">
-        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-400 to-green shadow-lg shadow-emerald-500/20 flex items-center justify-center animate-pulse">
-          <Cpu className="w-7 h-7 text-white" />
+        <div className="w-14 h-14 rounded-2xl bg-purple-600 shadow-lg shadow-purple-600/20 flex items-center justify-center animate-pulse">
+          <Store className="w-7 h-7 text-white" />
         </div>
-        <div className="w-8 h-8 border-3 border-emerald-200 border-t-emerald-500 rounded-full animate-spin" />
+        <div className="w-8 h-8 border-3 border-purple-200 border-t-purple-600 rounded-full animate-spin" />
       </div>
     );
   }
@@ -68,12 +103,9 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <div className="flex h-full bg-background">
-        <Sidebar />
-        <main className="flex-1 flex flex-col min-w-0 bg-grid">
-          <MainContent />
-        </main>
-      </div>
+      <HubShell>
+        <MainContent />
+      </HubShell>
       <ToastContainer />
     </ErrorBoundary>
   );

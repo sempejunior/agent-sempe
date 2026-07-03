@@ -21,3 +21,6 @@ poetry.lock
 .pytest_cache/
 botpy.log
 tests/
+.claude/
+.playwright-mcp/
+*.png

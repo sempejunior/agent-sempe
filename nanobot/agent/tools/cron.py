@@ -15,12 +15,14 @@ class CronTool(Tool):
         self._channel = ""
         self._chat_id = ""
         self._user_id = ""
+        self._agent_id = ""
 
-    def set_context(self, channel: str, chat_id: str, user_id: str = "") -> None:
+    def set_context(self, channel: str, chat_id: str, user_id: str = "", agent_id: str = "") -> None:
         """Set the current session context for delivery."""
         self._channel = channel
         self._chat_id = chat_id
         self._user_id = user_id
+        self._agent_id = agent_id
     
     @property
     def name(self) -> str:
@@ -131,11 +133,12 @@ class CronTool(Tool):
             to=self._chat_id,
             delete_after_run=delete_after,
             user_id=self._user_id,
+            agent_id=self._agent_id,
         )
         return f"Created job '{job.name}' (id: {job.id})"
 
     async def _list_jobs(self) -> str:
-        jobs = await self._cron.list_jobs(user_id=self._user_id)
+        jobs = await self._cron.list_jobs(user_id=self._user_id, agent_id=self._agent_id or None)
         if not jobs:
             return "No scheduled jobs."
         lines = [f"- {j.name} (id: {j.id}, {j.schedule.kind})" for j in jobs]
@@ -144,6 +147,6 @@ class CronTool(Tool):
     async def _remove_job(self, job_id: str | None) -> str:
         if not job_id:
             return "Error: job_id is required for remove"
-        if await self._cron.remove_job(job_id, user_id=self._user_id):
+        if await self._cron.remove_job(job_id, user_id=self._user_id, agent_id=self._agent_id or None):
             return f"Removed job {job_id}"
         return f"Job {job_id} not found"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -31,7 +32,9 @@ def _create_channel_instance(
     bus: MessageBus,
     *,
     owner_id: str | None = None,
+    agent_id: str | None = None,
     groq_api_key: str = "",
+    on_allow_from_verified: Any = None,
 ) -> BaseChannel:
     if name not in CHANNEL_MAP:
         raise ValueError(f"Unknown channel: {name}")
@@ -41,16 +44,34 @@ def _create_channel_instance(
     cls = getattr(mod, class_name)
 
     if name == "telegram":
-        return cls(config, bus, groq_api_key=groq_api_key, owner_id=owner_id)
-    return cls(config, bus, owner_id=owner_id)
+        return cls(
+            config,
+            bus,
+            groq_api_key=groq_api_key,
+            owner_id=owner_id,
+            agent_id=agent_id,
+            on_allow_from_verified=on_allow_from_verified,
+        )
+    return cls(config, bus, owner_id=owner_id, agent_id=agent_id)
 
 
 class ChannelManager:
     """Manages server-global and per-user chat channels."""
 
-    def __init__(self, config: Config, bus: MessageBus):
+    def __init__(
+        self,
+        config: Config,
+        bus: MessageBus,
+        *,
+        data_dir: Path | None = None,
+        db: Any = None,
+        repos: Any = None,
+    ):
         self.config = config
         self.bus = bus
+        self.data_dir = data_dir
+        self.db = db
+        self.repos = repos
         self.channels: dict[str, BaseChannel] = {}
         self.user_channels: dict[str, dict[str, BaseChannel]] = {}
         self._dispatch_task: asyncio.Task | None = None
@@ -82,31 +103,68 @@ class ChannelManager:
         )
         logger.info("{} channel initialized", name)
 
+    @staticmethod
+    def _owner_key(user_id: str, agent_id: str | None = None) -> str:
+        return f"{user_id}:{agent_id}" if agent_id else user_id
+
+    def _allow_from_verified_callback(self, user_id: str, channel_name: str) -> Any:
+        async def _persist(old_code: str, sender_id: str) -> None:
+            if not self.repos:
+                return
+            user = await self.repos.users.get_by_id(user_id)
+            if not user:
+                return
+            channel_configs = user.get("channel_configs") or {}
+            channel_cfg = dict(channel_configs.get(channel_name) or {})
+            allow_from = list(channel_cfg.get("allow_from") or [])
+            next_allow_from: list[str] = []
+            for item in allow_from:
+                if item == old_code:
+                    if sender_id not in next_allow_from:
+                        next_allow_from.append(sender_id)
+                elif item and item not in next_allow_from:
+                    next_allow_from.append(item)
+            if sender_id not in next_allow_from:
+                next_allow_from.append(sender_id)
+            channel_cfg["allow_from"] = next_allow_from
+            channel_configs[channel_name] = channel_cfg
+            await self.repos.users.update(user_id, {"channel_configs": channel_configs})
+
+        return _persist
+
     def create_user_channel(
         self,
         user_id: str,
         name: str,
         config: Any,
+        agent_id: str | None = None,
     ) -> BaseChannel:
         """Create a channel instance owned by a specific user."""
         ch = _create_channel_instance(
             name, config, self.bus,
             owner_id=user_id,
+            agent_id=agent_id,
             groq_api_key=self.config.providers.groq.api_key,
+            on_allow_from_verified=self._allow_from_verified_callback(user_id, name),
         )
-        self.user_channels.setdefault(user_id, {})[name] = ch
-        logger.info("User {} channel {} created", user_id, name)
+        owner_key = self._owner_key(user_id, agent_id)
+        self.user_channels.setdefault(owner_key, {})[name] = ch
+        logger.info("User {} agent {} channel {} created", user_id, agent_id or "-", name)
         return ch
 
-    async def start_user_channel(self, user_id: str, name: str) -> None:
-        user_chs = self.user_channels.get(user_id, {})
+    async def start_user_channel(
+        self, user_id: str, name: str, agent_id: str | None = None,
+    ) -> asyncio.Task[None]:
+        owner_key = self._owner_key(user_id, agent_id)
+        user_chs = self.user_channels.get(owner_key, {})
         ch = user_chs.get(name)
         if not ch:
-            raise ValueError(f"User {user_id} has no {name} channel")
-        asyncio.create_task(self._start_channel(f"{user_id}:{name}", ch))
+            raise ValueError(f"User {user_id} agent {agent_id or '-'} has no {name} channel")
+        return asyncio.create_task(self._start_channel(f"{owner_key}:{name}", ch))
 
-    async def stop_user_channel(self, user_id: str, name: str) -> None:
-        user_chs = self.user_channels.get(user_id, {})
+    async def stop_user_channel(self, user_id: str, name: str, agent_id: str | None = None) -> None:
+        owner_key = self._owner_key(user_id, agent_id)
+        user_chs = self.user_channels.get(owner_key, {})
         ch = user_chs.get(name)
         if not ch:
             return
@@ -116,24 +174,32 @@ class ChannelManager:
             logger.error("Error stopping {}:{}: {}", user_id, name, e)
         user_chs.pop(name, None)
         if not user_chs:
-            self.user_channels.pop(user_id, None)
-        logger.info("User {} channel {} stopped", user_id, name)
+            self.user_channels.pop(owner_key, None)
+        logger.info("User {} agent {} channel {} stopped", user_id, agent_id or "-", name)
 
-    def get_user_channel_status(self, user_id: str) -> dict[str, dict[str, Any]]:
-        user_chs = self.user_channels.get(user_id, {})
+    def get_user_channel_status(self, user_id: str, agent_id: str | None = None) -> dict[str, dict[str, Any]]:
+        user_chs = self.user_channels.get(self._owner_key(user_id, agent_id), {})
         return {
-            name: {"running": ch.is_running}
+            name: {
+                "running": ch.is_running,
+                "last_error": getattr(ch, "_last_error", None),
+            }
             for name, ch in user_chs.items()
         }
 
     async def _start_channel(self, label: str, channel: BaseChannel) -> None:
         try:
+            channel._last_error = None
             await channel.start()
         except Exception as e:
+            channel._running = False
+            channel._last_error = str(e)
             logger.error("Failed to start channel {}: {}", label, e)
 
     async def start_all(self, *, repos: Any = None) -> None:
         """Start all server-global channels, restore per-user channels, and dispatch."""
+        if repos is not None:
+            self.repos = repos
         self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
 
         if self.channels:
@@ -151,6 +217,8 @@ class ChannelManager:
     async def _restore_user_channels(self, repos: Any) -> None:
         """Restore enabled per-user channels from DB on startup."""
         from nanobot.config.schema import ChannelsConfig
+        from nanobot.channels.registry import CHANNEL_META
+        from nanobot.secrets import resolve_channel_secret
 
         try:
             users = await repos.users.list_all()
@@ -161,20 +229,48 @@ class ChannelManager:
         restored = 0
         for user in users:
             uid = user["user_id"]
-            channel_configs = user.get("channel_configs") or {}
-            for channel_name, cfg_dict in channel_configs.items():
-                if not cfg_dict.get("enabled") or channel_name not in CHANNEL_MAP:
-                    continue
-                try:
-                    cfg_cls = getattr(ChannelsConfig(), channel_name).__class__
-                    cfg = cfg_cls.model_validate(cfg_dict)
-                    self.create_user_channel(uid, channel_name, cfg)
-                    await self.start_user_channel(uid, channel_name)
-                    restored += 1
-                except Exception as e:
-                    logger.warning(
-                        "Failed to restore {}:{}: {}", uid, channel_name, e,
-                    )
+            user_channel_configs = user.get("channel_configs") or {}
+            agents = await repos.agents.list_agents(uid, status="active")
+            if not agents:
+                agents = [{"agent_id": None, "channel_configs": {
+                    name: {"enabled": bool(cfg.get("enabled"))}
+                    for name, cfg in user_channel_configs.items()
+                    if isinstance(cfg, dict)
+                }}]
+            for agent in agents:
+                agent_id = agent.get("agent_id")
+                agent_channel_configs = agent.get("channel_configs") or {}
+                for channel_name, agent_cfg in agent_channel_configs.items():
+                    if not agent_cfg.get("enabled") or channel_name not in CHANNEL_MAP:
+                        continue
+                    cfg_dict = dict(user_channel_configs.get(channel_name) or {})
+                    cfg_dict["enabled"] = True
+                    secret_keys = {
+                        f["key"]
+                        for f in CHANNEL_META.get(channel_name, {}).get("fields", [])
+                        if f.get("type") == "password"
+                    }
+                    if self.db and self.data_dir:
+                        for key in secret_keys:
+                            value = cfg_dict.get(key)
+                            if isinstance(value, str) and value.strip().lower() in {
+                                "@vault", "vault", "@secret", "@secrets",
+                            }:
+                                secret = await resolve_channel_secret(
+                                    self.db, self.data_dir, uid, channel_name, key,
+                                )
+                                if secret:
+                                    cfg_dict[key] = secret
+                    try:
+                        cfg_cls = getattr(ChannelsConfig(), channel_name).__class__
+                        cfg = cfg_cls.model_validate(cfg_dict)
+                        self.create_user_channel(uid, channel_name, cfg, agent_id=agent_id)
+                        await self.start_user_channel(uid, channel_name, agent_id=agent_id)
+                        restored += 1
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to restore {}:{}:{}: {}", uid, agent_id, channel_name, e,
+                        )
 
         if restored:
             logger.info("Restored {} user channel(s)", restored)
@@ -239,7 +335,13 @@ class ChannelManager:
     def _find_channel_for_outbound(self, msg: Any) -> BaseChannel | None:
         """Find the right channel instance for an outbound message."""
         owner = msg.metadata.get("_owner_id")
+        agent_id = msg.metadata.get("_agent_id")
         if owner:
+            owner_key = self._owner_key(owner, agent_id)
+            user_chs = self.user_channels.get(owner_key, {})
+            ch = user_chs.get(msg.channel)
+            if ch:
+                return ch
             user_chs = self.user_channels.get(owner, {})
             ch = user_chs.get(msg.channel)
             if ch:

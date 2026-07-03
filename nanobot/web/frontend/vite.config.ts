@@ -18,9 +18,19 @@ export default defineConfig({
       '/api': process.env.VITE_API_URL || 'http://127.0.0.1:18790',
       '/ws': { target: process.env.VITE_API_URL || 'ws://127.0.0.1:18790', ws: true },
     },
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
   },
   build: {
     outDir: 'static',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        preview: path.resolve(__dirname, 'preview.html'),
+      },
+    },
   },
 })

@@ -20,11 +20,17 @@ class SQLiteSessionRepository:
     def __init__(self, db: aiosqlite.Connection):
         self._db = db
 
-    async def get(self, user_id: str, session_key: str) -> dict[str, Any] | None:
-        cursor = await self._db.execute(
-            "SELECT * FROM sessions WHERE user_id = ? AND session_key = ?",
-            (user_id, session_key),
-        )
+    async def get(self, user_id: str, session_key: str, agent_id: str | None = None) -> dict[str, Any] | None:
+        if agent_id:
+            cursor = await self._db.execute(
+                "SELECT * FROM sessions WHERE user_id = ? AND agent_id = ? AND session_key = ?",
+                (user_id, agent_id, session_key),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM sessions WHERE user_id = ? AND session_key = ?",
+                (user_id, session_key),
+            )
         row = await cursor.fetchone()
         return _row_to_dict(row) if row else None
 
@@ -37,6 +43,7 @@ class SQLiteSessionRepository:
         """Upsert session. Returns the row id."""
         user_id = session["user_id"]
         session_key = session["session_key"]
+        agent_id = session.get("agent_id")
         client_id = session.get("client_id")
         now = datetime.now().isoformat()
         metadata = session.get("metadata", {})
@@ -44,11 +51,12 @@ class SQLiteSessionRepository:
             metadata = json.dumps(metadata)
 
         await self._db.execute(
-            """INSERT INTO sessions (user_id, session_key, client_id, last_consolidated,
+            """INSERT INTO sessions (user_id, agent_id, session_key, client_id, last_consolidated,
                                      message_count, status, metadata, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(user_id, session_key)
                DO UPDATE SET
+                   agent_id = COALESCE(excluded.agent_id, agent_id),
                    client_id = COALESCE(excluded.client_id, client_id),
                    last_consolidated = excluded.last_consolidated,
                    message_count = excluded.message_count,
@@ -57,6 +65,7 @@ class SQLiteSessionRepository:
                    updated_at = excluded.updated_at""",
             (
                 user_id,
+                agent_id,
                 session_key,
                 client_id,
                 session.get("last_consolidated", 0),
@@ -78,33 +87,44 @@ class SQLiteSessionRepository:
 
     async def list_sessions(
         self, user_id: str, status: str = "active", client_id: str | None = None,
+        agent_id: str | None = None,
     ) -> list[dict[str, Any]]:
         if client_id:
+            agent_clause = "AND agent_id = ?" if agent_id else ""
+            params: tuple[Any, ...] = (user_id, client_id, agent_id, status) if agent_id else (user_id, client_id, status)
             cursor = await self._db.execute(
-                """SELECT id, user_id, session_key, client_id, message_count,
+                f"""SELECT id, user_id, agent_id, session_key, client_id, message_count,
                           status, created_at, updated_at
                    FROM sessions
-                   WHERE user_id = ? AND client_id = ? AND status = ?
+                   WHERE user_id = ? AND client_id = ? {agent_clause} AND status = ?
                    ORDER BY updated_at DESC""",
-                (user_id, client_id, status),
+                params,
             )
         else:
+            agent_clause = "AND agent_id = ?" if agent_id else ""
+            params = (user_id, agent_id, status) if agent_id else (user_id, status)
             cursor = await self._db.execute(
-                """SELECT id, user_id, session_key, message_count,
+                f"""SELECT id, user_id, agent_id, session_key, message_count,
                           status, created_at, updated_at
                    FROM sessions
-                   WHERE user_id = ? AND status = ?
+                   WHERE user_id = ? {agent_clause} AND status = ?
                    ORDER BY updated_at DESC""",
-                (user_id, status),
+                params,
             )
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
 
-    async def delete(self, user_id: str, session_key: str) -> bool:
-        cursor = await self._db.execute(
-            "DELETE FROM sessions WHERE user_id = ? AND session_key = ?",
-            (user_id, session_key),
-        )
+    async def delete(self, user_id: str, session_key: str, agent_id: str | None = None) -> bool:
+        if agent_id:
+            cursor = await self._db.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND agent_id = ? AND session_key = ?",
+                (user_id, agent_id, session_key),
+            )
+        else:
+            cursor = await self._db.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND session_key = ?",
+                (user_id, session_key),
+            )
         await self._db.commit()
         return cursor.rowcount > 0
 
@@ -146,13 +166,20 @@ class SQLiteMessageRepository:
         if tool_calls and not isinstance(tool_calls, str):
             tool_calls = json.dumps(tool_calls)
 
+        agent_id = message.get("agent_id")
+        if agent_id is None:
+            session = await self._db.execute("SELECT agent_id FROM sessions WHERE id = ?", (session_id,))
+            row = await session.fetchone()
+            agent_id = row[0] if row else None
+
         cursor = await self._db.execute(
             """INSERT INTO messages
-               (session_id, user_id, role, content, tool_calls, tool_call_id, name, timestamp, seq)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (session_id, user_id, agent_id, role, content, tool_calls, tool_call_id, name, timestamp, seq)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session_id,
                 user_id,
+                agent_id,
                 message["role"],
                 message.get("content"),
                 tool_calls,
@@ -175,6 +202,9 @@ class SQLiteMessageRepository:
         if not messages:
             return
         base_seq = await self.count(session_id)
+        cur = await self._db.execute("SELECT agent_id FROM sessions WHERE id = ?", (session_id,))
+        session_row = await cur.fetchone()
+        session_agent_id = session_row[0] if session_row else None
         rows = []
         for i, msg in enumerate(messages):
             tool_calls = msg.get("tool_calls")
@@ -183,6 +213,7 @@ class SQLiteMessageRepository:
             rows.append((
                 session_id,
                 user_id,
+                msg.get("agent_id", session_agent_id),
                 msg["role"],
                 msg.get("content"),
                 tool_calls,
@@ -194,8 +225,8 @@ class SQLiteMessageRepository:
 
         await self._db.executemany(
             """INSERT INTO messages
-               (session_id, user_id, role, content, tool_calls, tool_call_id, name, timestamp, seq)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (session_id, user_id, agent_id, role, content, tool_calls, tool_call_id, name, timestamp, seq)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
         await self._db.execute(

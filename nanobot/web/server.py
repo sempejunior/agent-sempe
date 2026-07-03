@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import traceback
 import uuid
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,20 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             repos=repos,
         )
 
+        async def on_cron_job(job):
+            channel = job.payload.channel or "system"
+            to = job.payload.to or f"web:{job.user_id}"
+            return await agent.process_direct(
+                job.payload.message,
+                session_key=f"cron:{job.id}",
+                channel="system",
+                chat_id=f"{channel}:{to}",
+                user_id=job.user_id,
+                agent_id=job.agent_id or None,
+            )
+
+        cron.on_job = on_cron_job
+
         await cron.start()
 
         app.state.db = db
@@ -142,6 +157,143 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             raise HTTPException(401, "User not found")
         return user
 
+    def _public_agent(agent: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "agent_id": agent["agent_id"],
+            "name": agent.get("name", ""),
+            "role": agent.get("role", ""),
+            "description": agent.get("description", ""),
+            "avatar": agent.get("avatar", ""),
+            "is_default": bool(agent.get("is_default")),
+            "status": agent.get("status", "active"),
+            "metadata": agent.get("metadata", {}),
+            "agent_config": agent.get("agent_config", {}),
+            "bootstrap": agent.get("bootstrap", {}),
+            "tools_enabled": agent.get("tools_enabled", []),
+            "channel_configs": agent.get("channel_configs", {}),
+            "created_at": agent.get("created_at", ""),
+            "updated_at": agent.get("updated_at", ""),
+        }
+
+    async def _ensure_default_agent(user: dict[str, Any]) -> dict[str, Any]:
+        agent = await app.state.repos.agents.get_default_agent(user["user_id"])
+        if agent:
+            return agent
+        agent_id = await app.state.repos.agents.create_agent(user["user_id"], {
+            "agent_id": f"{user['user_id']}:default",
+            "name": "Paulo",
+            "role": "Especialista em DP",
+            "description": "Agente padrão conectado ao backend atual.",
+            "avatar": "P",
+            "is_default": True,
+            "agent_config": user.get("agent_config", {}),
+            "bootstrap": user.get("bootstrap", {}),
+            "tools_enabled": user.get("tools_enabled", []),
+            "channel_configs": user.get("channel_configs", {}),
+            "metadata": {"source": "compat_default"},
+        })
+        agent = await app.state.repos.agents.get_agent(user["user_id"], agent_id)
+        if not agent:
+            raise HTTPException(500, "Failed to create default agent")
+        return agent
+
+    async def _require_agent(request: Request, agent_id: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+        user = await _require_user(request)
+        agent_id = agent_id or request.headers.get("x-agent-id") or request.query_params.get("agent_id")
+        if agent_id:
+            agent = await app.state.repos.agents.get_agent(user["user_id"], agent_id)
+            if not agent or agent.get("status") == "deleted":
+                raise HTTPException(404, "Agent not found")
+        else:
+            agent = await _ensure_default_agent(user)
+        return user, agent
+
+    def _invalidate_agent_context(user_id: str, agent_id: str | None = None) -> None:
+        if not hasattr(app.state, "agent") or not hasattr(app.state.agent, "_user_contexts"):
+            return
+        if agent_id is None:
+            for key in list(app.state.agent._user_contexts):
+                if key.startswith(f"{user_id}:"):
+                    app.state.agent._user_contexts.pop(key, None)
+            return
+        if agent_id:
+            app.state.agent._user_contexts.pop(f"{user_id}:{agent_id}", None)
+        app.state.agent._user_contexts.pop(f"{user_id}:default", None)
+
+    def _mask_secret(value: str) -> str:
+        if not value:
+            return ""
+        return f"{'•' * min(8, max(0, len(value) - 4))}{value[-4:]}" if len(value) > 4 else "••••"
+
+    def _is_masked_secret(value: str) -> bool:
+        return "*" in value or "•" in value
+
+    def _is_unresolved_secret_ref(value: str) -> bool:
+        return value.strip().lower() in {"@vault", "vault", "@secret", "@secrets"}
+
+    def _provider_from_server_defaults(model: str) -> dict[str, Any]:
+        provider_name = config.get_provider_name(model) if model else ""
+        provider_cfg = config.get_provider(model) if model else None
+        if not provider_name or not provider_cfg:
+            return {"name": "", "api_key": "", "api_base": ""}
+        return {
+            "name": provider_name,
+            "api_key": provider_cfg.api_key or "",
+            "api_base": provider_cfg.api_base or "",
+        }
+
+    def _merge_provider_config(user_provider: dict[str, Any], server_provider: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(server_provider)
+        for key, value in (user_provider or {}).items():
+            if value not in (None, ""):
+                merged[key] = value
+        if user_provider.get("name"):
+            merged["name"] = user_provider["name"]
+        if "api_base" in user_provider:
+            merged["api_base"] = user_provider.get("api_base") or ""
+        return merged
+
+    async def _resolve_provider_config(user_id: str, provider_cfg: dict[str, Any]) -> dict[str, Any]:
+        provider_cfg = dict(provider_cfg or {})
+        provider_name = provider_cfg.get("name", "")
+        key = provider_cfg.get("api_key", "")
+        if provider_name and (not key or (isinstance(key, str) and _is_unresolved_secret_ref(key))):
+            from nanobot.secrets import get_credential_secret
+
+            secret = await get_credential_secret(
+                getattr(app.state, "db", None),
+                data_dir,
+                user_id,
+                "provider",
+                provider_name,
+            )
+            if secret:
+                provider_cfg["api_key"] = secret
+        return provider_cfg
+
+    async def _resolve_channel_config_secrets(
+        user_id: str,
+        channel_name: str,
+        cfg_dict: dict[str, Any],
+        secret_keys: set[str],
+    ) -> dict[str, Any]:
+        from nanobot.secrets import resolve_channel_secret
+
+        resolved = dict(cfg_dict or {})
+        for key in secret_keys:
+            value = resolved.get(key)
+            if isinstance(value, str) and _is_unresolved_secret_ref(value):
+                secret = await resolve_channel_secret(
+                    getattr(app.state, "db", None),
+                    data_dir,
+                    user_id,
+                    channel_name,
+                    key,
+                )
+                if secret:
+                    resolved[key] = secret
+        return resolved
+
     @app.post("/api/auth/register")
     async def register(request: Request):
         body = await request.json()
@@ -165,7 +317,9 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 "memory_window": config.agents.defaults.memory_window,
             },
         })
-        await repos.channel_bindings.bind(uid, "web", uid)
+        user = await repos.users.get_by_id(uid)
+        agent = await _ensure_default_agent(user)
+        await repos.channel_bindings.bind(uid, "web", uid, agent["agent_id"])
 
         user = await repos.users.get_by_id(uid)
         return {"token": uid, "user": _safe_user(user)}
@@ -188,14 +342,104 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         user = await _require_user(request)
         return _safe_user(user)
 
+    @app.get("/api/agents")
+    async def list_agents(request: Request):
+        user = await _require_user(request)
+        await _ensure_default_agent(user)
+        agents = await app.state.repos.agents.list_agents(user["user_id"])
+        return [_public_agent(a) for a in agents]
+
+    @app.get("/api/agents/templates")
+    async def list_agent_templates(request: Request):
+        await _require_user(request)
+        from nanobot.agent.templates import list_templates
+        return list_templates()
+
+    @app.post("/api/agents")
+    async def create_agent(request: Request):
+        user = await _require_user(request)
+        body = await request.json()
+
+        name = (body.get("name") or "").strip()
+        role = (body.get("role") or "").strip()
+        description = (body.get("description") or "").strip()
+        missing = [f for f, v in [("name", name), ("role", role), ("description", description)] if not v]
+        if missing:
+            raise HTTPException(status_code=422, detail=f"Campos obrigatórios ausentes: {', '.join(missing)}")
+
+        base = await _ensure_default_agent(user)
+        agent_id = await app.state.repos.agents.create_agent(user["user_id"], {
+            "name": name,
+            "role": role,
+            "description": description,
+            "avatar": body.get("avatar", name[:1].upper()),
+            "agent_config": {
+                **(user.get("agent_config", {}) or {}),
+                **(base.get("agent_config", {}) or {}),
+                **(body.get("agent_config", {}) or {}),
+            },
+            "bootstrap": body.get("bootstrap", {}),
+            "tools_enabled": body.get("tools_enabled", base.get("tools_enabled", [])),
+            "channel_configs": body.get("channel_configs", {}),
+            "metadata": body.get("metadata", {"template": body.get("template", "custom")}),
+            "status": body.get("status", "active"),
+        })
+        agent = await app.state.repos.agents.get_agent(user["user_id"], agent_id)
+        return _public_agent(agent)
+
+    @app.post("/api/agents/{agent_id}/duplicate")
+    async def duplicate_agent(request: Request, agent_id: str):
+        user, _agent = await _require_agent(request, agent_id)
+        new_id = await app.state.repos.agents.duplicate_agent(user["user_id"], agent_id)
+        if not new_id:
+            raise HTTPException(status_code=404, detail="Agente não encontrado")
+        agent = await app.state.repos.agents.get_agent(user["user_id"], new_id)
+        return _public_agent(agent)
+
+    @app.get("/api/agents/{agent_id}/metrics")
+    async def get_agent_metrics(request: Request, agent_id: str):
+        user, _agent = await _require_agent(request, agent_id)
+        return await app.state.repos.agents.get_agent_metrics(user["user_id"], agent_id)
+
+    @app.get("/api/agents/{agent_id}")
+    async def get_agent(request: Request, agent_id: str):
+        _, agent = await _require_agent(request, agent_id)
+        return _public_agent(agent)
+
+    @app.patch("/api/agents/{agent_id}")
+    async def update_agent(request: Request, agent_id: str):
+        user, _agent = await _require_agent(request, agent_id)
+        body = await request.json()
+        allowed = {
+            "name", "role", "description", "avatar", "is_default",
+            "agent_config", "bootstrap", "tools_enabled", "channel_configs",
+            "metadata", "status",
+        }
+        fields = {k: v for k, v in body.items() if k in allowed}
+        ok = await app.state.repos.agents.update_agent(user["user_id"], agent_id, fields)
+        _invalidate_agent_context(user["user_id"], agent_id)
+        agent = await app.state.repos.agents.get_agent(user["user_id"], agent_id)
+        return {"ok": ok, "agent": _public_agent(agent)}
+
+    @app.delete("/api/agents/{agent_id}")
+    async def delete_agent(request: Request, agent_id: str):
+        user, _agent = await _require_agent(request, agent_id)
+        ok = await app.state.repos.agents.delete_agent(user["user_id"], agent_id)
+        _invalidate_agent_context(user["user_id"], agent_id)
+        return {"ok": ok}
+
     @app.get("/api/sessions")
     async def list_sessions(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
         repos = app.state.repos
-        sessions = await repos.sessions.list_sessions(uid)
+        sessions = await repos.sessions.list_sessions(uid, agent_id=agent["agent_id"])
         result = []
+        key_prefix = f"agent:{agent['agent_id']}:"
         for s in sessions:
+            session_key = s["session_key"]
+            if isinstance(session_key, str) and session_key.startswith(key_prefix):
+                session_key = session_key[len(key_prefix):]
             title = "New Chat"
             try:
                 msgs = await repos.messages.get_messages(s["id"], limit=1)
@@ -205,7 +449,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             except Exception:
                 pass
             result.append({
-                "session_key": s["session_key"],
+                "session_key": session_key,
                 "title": title,
                 "message_count": s.get("message_count", 0),
                 "updated_at": s.get("updated_at", ""),
@@ -214,10 +458,13 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.get("/api/sessions/{session_key:path}/messages")
     async def get_messages(request: Request, session_key: str):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
         repos = app.state.repos
-        session = await repos.sessions.get(uid, session_key)
+        db_session_key = f"agent:{agent['agent_id']}:{session_key}"
+        session = await repos.sessions.get(uid, db_session_key, agent["agent_id"])
+        if not session:
+            session = await repos.sessions.get(uid, session_key, agent["agent_id"])
         if not session:
             return []
         msgs = await repos.messages.get_messages(session["id"], limit=200)
@@ -234,15 +481,20 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.delete("/api/sessions/{session_key:path}")
     async def delete_session(request: Request, session_key: str):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
-        ok = await app.state.repos.sessions.delete(uid, session_key)
+        db_session_key = f"agent:{agent['agent_id']}:{session_key}"
+        ok = await app.state.repos.sessions.delete(uid, db_session_key, agent["agent_id"])
+        if not ok:
+            ok = await app.state.repos.sessions.delete(uid, session_key, agent["agent_id"])
         return {"ok": ok}
 
     @app.get("/api/cron")
     async def list_cron(request: Request):
-        user = await _require_user(request)
-        jobs = await app.state.cron.list_jobs(user_id=user["user_id"], include_disabled=True)
+        user, agent = await _require_agent(request)
+        jobs = await app.state.cron.list_jobs(
+            user_id=user["user_id"], include_disabled=True, agent_id=agent["agent_id"],
+        )
         return [
             {
                 "id": j.id, "name": j.name, "enabled": j.enabled,
@@ -252,13 +504,17 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                     if j.schedule.kind == "every" else ""
                 ),
                 "message": j.payload.message,
+                "deliver": j.payload.deliver,
+                "channel": j.payload.channel,
+                "to": j.payload.to,
+                "tz": j.schedule.tz,
             }
             for j in jobs
         ]
 
     @app.post("/api/cron")
     async def add_cron(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         body = await request.json()
         from nanobot.cron.types import CronSchedule
 
@@ -278,96 +534,125 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             channel=body.get("channel"),
             to=body.get("to"),
             user_id=user["user_id"],
+            agent_id=agent["agent_id"],
         )
         return {"id": job.id, "name": job.name}
 
     @app.delete("/api/cron/{job_id}")
     async def delete_cron(request: Request, job_id: str):
-        user = await _require_user(request)
-        ok = await app.state.cron.remove_job(job_id, user_id=user["user_id"])
+        user, agent = await _require_agent(request)
+        ok = await app.state.cron.remove_job(job_id, user_id=user["user_id"], agent_id=agent["agent_id"])
         return {"ok": ok}
 
     @app.put("/api/cron/{job_id}/enable")
     async def enable_cron(request: Request, job_id: str):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         body = await request.json()
         enabled = bool(body.get("enabled", True))
-        job = await app.state.cron.enable_job(job_id, enabled=enabled, user_id=user["user_id"])
+        job = await app.state.cron.enable_job(
+            job_id, enabled=enabled, user_id=user["user_id"], agent_id=agent["agent_id"],
+        )
         if not job:
             raise HTTPException(404, "Job not found")
         return {"ok": True, "enabled": enabled}
 
     @app.post("/api/cron/{job_id}/run")
     async def run_cron(request: Request, job_id: str):
-        user = await _require_user(request)
-        ok = await app.state.cron.run_job(job_id, force=True, user_id=user["user_id"])
+        user, agent = await _require_agent(request)
+        ok = await app.state.cron.run_job(
+            job_id, force=True, user_id=user["user_id"], agent_id=agent["agent_id"],
+        )
         if not ok:
             raise HTTPException(404, "Job not found or could not be run")
         return {"ok": True}
 
     @app.get("/api/config")
     async def get_config(request: Request):
-        user = await _require_user(request)
-        return user.get("agent_config", {})
+        user, agent = await _require_agent(request)
+        return {
+            **(user.get("agent_config", {}) or {}),
+            **(agent.get("agent_config", {}) or {}),
+        }
 
     @app.put("/api/config")
     async def update_config(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         body = await request.json()
-        current = user.get("agent_config", {})
-        current.update(body)
-        await app.state.repos.users.update(user["user_id"], {"agent_config": current})
-        if hasattr(app.state, "agent") and hasattr(app.state.agent, "_user_contexts"):
-            app.state.agent._user_contexts.pop(user["user_id"], None)
-        return {"ok": True, "agent_config": current}
+        global_keys = {
+            "model", "max_tokens", "temperature", "max_tool_iterations",
+            "memory_window", "language", "custom_instructions",
+        }
+        user_cfg = user.get("agent_config", {}) or {}
+        agent_cfg = agent.get("agent_config", {}) or {}
+        for key, value in body.items():
+            if key in global_keys:
+                user_cfg[key] = value
+                agent_cfg.pop(key, None)
+            else:
+                agent_cfg[key] = value
+        await app.state.repos.users.update(user["user_id"], {"agent_config": user_cfg})
+        await app.state.repos.agents.update_agent(user["user_id"], agent["agent_id"], {"agent_config": agent_cfg})
+        _invalidate_agent_context(user["user_id"])
+        return {"ok": True, "agent_config": {**user_cfg, **agent_cfg}}
 
     @app.get("/api/config/provider")
     async def get_provider_config(request: Request):
-        user = await _require_user(request)
-        provider = user.get("agent_config", {}).get("provider", {})
+        user, agent = await _require_agent(request)
+        user_cfg = user.get("agent_config", {}) or {}
+        agent_cfg = agent.get("agent_config", {}) or {}
+        model = user_cfg.get("model") or agent_cfg.get("model") or config.agents.defaults.model
+        server_provider = _provider_from_server_defaults(model)
+        provider = await _resolve_provider_config(
+            user["user_id"],
+            _merge_provider_config(user_cfg.get("provider") or {}, server_provider),
+        )
         masked = dict(provider)
         key = masked.get("api_key", "")
         if key:
-            masked["api_key"] = (
-                f"{'•' * max(0, len(key) - 4)}{key[-4:]}"
-                if len(key) > 4 else "••••"
-            )
+            masked["api_key"] = _mask_secret(key)
         return masked
 
     @app.put("/api/config/provider")
     async def update_provider_config(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         body = await request.json()
-        agent_cfg = user.get("agent_config", {})
-        current = agent_cfg.get("provider", {})
+        user_cfg = user.get("agent_config", {}) or {}
+        current = user_cfg.get("provider", {}) or {}
+        model = user_cfg.get("model") or agent.get("agent_config", {}).get("model") or config.agents.defaults.model
+        effective_current = await _resolve_provider_config(
+            user["user_id"],
+            _merge_provider_config(current, _provider_from_server_defaults(model)),
+        )
         new_key = body.get("api_key", "")
-        if "•" in new_key:
-            body["api_key"] = current.get("api_key", "")
-        agent_cfg["provider"] = {
+        if isinstance(new_key, str) and _is_masked_secret(new_key):
+            body["api_key"] = effective_current.get("api_key", "")
+        elif isinstance(new_key, str) and _is_unresolved_secret_ref(new_key):
+            raise HTTPException(400, "API key placeholder is not supported. Paste the real key.")
+        user_cfg["provider"] = {
             "name": body.get("name", ""),
             "api_key": body.get("api_key", ""),
             "api_base": body.get("api_base", ""),
         }
-        await app.state.repos.users.update(user["user_id"], {"agent_config": agent_cfg})
-        if hasattr(app.state, "agent") and hasattr(app.state.agent, "_user_contexts"):
-            app.state.agent._user_contexts.pop(user["user_id"], None)
+        await app.state.repos.users.update(user["user_id"], {"agent_config": user_cfg})
+        _invalidate_agent_context(user["user_id"])
         return {"ok": True}
 
     @app.get("/api/config/mcp")
     async def get_mcp_config(request: Request):
-        user = await _require_user(request)
-        agent_cfg = user.get("agent_config", {})
+        _user, agent = await _require_agent(request)
+        agent_cfg = agent.get("agent_config", {})
         return {"mcpServers": agent_cfg.get("mcp_servers", {})}
 
     @app.put("/api/config/mcp")
     async def update_mcp_config(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         body = await request.json()
         new_servers = body.get("mcpServers", {})
 
-        agent_cfg = user.get("agent_config", {})
+        agent_cfg = agent.get("agent_config", {})
         agent_cfg["mcp_servers"] = new_servers
-        await app.state.repos.users.update(user["user_id"], {"agent_config": agent_cfg})
+        await app.state.repos.agents.update_agent(user["user_id"], agent["agent_id"], {"agent_config": agent_cfg})
+        _invalidate_agent_context(user["user_id"], agent["agent_id"])
 
         try:
             from nanobot.config.schema import MCPServerConfig
@@ -401,51 +686,56 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.get("/api/skills")
     async def get_skills(request: Request):
-        user = await _require_user(request)
-        return {"tools_enabled": user.get("tools_enabled", [])}
+        _user, agent = await _require_agent(request)
+        return {"tools_enabled": agent.get("tools_enabled", [])}
 
     @app.put("/api/skills")
     async def update_skills(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         body = await request.json()
         tools = body.get("tools_enabled", [])
-        await app.state.repos.users.update(user["user_id"], {"tools_enabled": tools})
+        await app.state.repos.agents.update_agent(user["user_id"], agent["agent_id"], {"tools_enabled": tools})
+        _invalidate_agent_context(user["user_id"], agent["agent_id"])
         return {"ok": True, "tools_enabled": tools}
 
     @app.get("/api/skills/custom")
     async def get_custom_skills(request: Request):
-        user = await _require_user(request)
-        skills = await app.state.repos.skills.list_skills(user["user_id"], enabled_only=False)
+        user, agent = await _require_agent(request)
+        skills = await app.state.repos.skills.list_skills(
+            user["user_id"], enabled_only=False, agent_id=agent["agent_id"],
+        )
         return skills
 
     @app.delete("/api/skills/custom/{name}")
     async def delete_custom_skill(request: Request, name: str):
-        user = await _require_user(request)
-        ok = await app.state.repos.skills.delete_skill(user["user_id"], name)
+        user, agent = await _require_agent(request)
+        ok = await app.state.repos.skills.delete_skill(user["user_id"], name, agent["agent_id"])
+        _invalidate_agent_context(user["user_id"], agent["agent_id"])
         return {"ok": ok}
 
     @app.put("/api/skills/custom/{name}")
     async def update_custom_skill(request: Request, name: str):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         body = await request.json()
-        skill = await app.state.repos.skills.get_skill(user["user_id"], name)
+        skill = await app.state.repos.skills.get_skill(user["user_id"], name, agent["agent_id"])
         if not skill:
-            raise HTTPException(404, f"Skill '{name}' not found")
+            skill = {"name": name, "content": "", "description": "", "enabled": 1, "always_active": 0}
         skill["content"] = body.get("content", skill["content"])
         skill["description"] = body.get("description", skill.get("description", ""))
         skill["always_active"] = body.get("always_active", skill.get("always_active", 0))
         skill["enabled"] = body.get("enabled", skill.get("enabled", 1))
-        await app.state.repos.skills.save_skill(user["user_id"], skill)
+        await app.state.repos.skills.save_skill(user["user_id"], skill, agent["agent_id"])
+        _invalidate_agent_context(user["user_id"], agent["agent_id"])
         return {"ok": True}
 
     @app.get("/api/memory")
     async def get_memory(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
         repos = app.state.repos
 
-        long_term = await repos.memories.get_long_term(uid)
-        history = await repos.memories.get_history(uid)
+        long_term = await repos.memories.get_long_term(uid, agent["agent_id"])
+        history = await repos.memories.get_history(uid, agent_id=agent["agent_id"])
 
         return {
             "long_term": long_term,
@@ -454,39 +744,41 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.get("/api/memory/search")
     async def search_memory(request: Request, q: str = ""):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         if not q.strip():
             return {"results": []}
-        results = await app.state.repos.memories.search_history(user["user_id"], q.strip())
+        results = await app.state.repos.memories.search_history(
+            user["user_id"], q.strip(), agent_id=agent["agent_id"],
+        )
         return {"results": results}
 
     @app.delete("/api/memory")
     async def clear_memory(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
-        count = await app.state.repos.memories.clear_history(uid)
+        count = await app.state.repos.memories.clear_history(uid, agent["agent_id"])
         return {"ok": True, "deleted": count}
 
     @app.delete("/api/memory/{entry_id}")
     async def delete_memory(request: Request, entry_id: int):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
-        ok = await app.state.repos.memories.delete_history(uid, entry_id)
+        ok = await app.state.repos.memories.delete_history(uid, entry_id, agent["agent_id"])
         return {"ok": ok}
 
     @app.put("/api/memory/long_term")
     async def update_long_term_memory(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
         body = await request.json()
         content = body.get("content", "")
-        await app.state.repos.memories.save_long_term(uid, content)
+        await app.state.repos.memories.save_long_term(uid, content, agent["agent_id"])
         return {"ok": True}
 
     @app.get("/api/config/rag")
     async def get_rag_config(request: Request):
-        user = await _require_user(request)
-        agent_cfg = user.get("agent_config", {})
+        _user, agent = await _require_agent(request)
+        agent_cfg = agent.get("agent_config", {})
         rag = dict(agent_cfg.get("rag", {"enabled": False, "default_backend": "local", "backends": {}}))
         backends = dict(rag.get("backends", {}))
         for name, b in backends.items():
@@ -500,9 +792,9 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.put("/api/config/rag")
     async def update_rag_config(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         body = await request.json()
-        agent_cfg = user.get("agent_config", {})
+        agent_cfg = agent.get("agent_config", {})
         current_rag = agent_cfg.get("rag", {})
         current_backends = current_rag.get("backends", {})
         new_backends = body.get("backends", {})
@@ -512,17 +804,16 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 b["api_key"] = old.get("api_key", "")
         body["backends"] = new_backends
         agent_cfg["rag"] = body
-        await app.state.repos.users.update(user["user_id"], {"agent_config": agent_cfg})
-        if hasattr(app.state, "agent") and hasattr(app.state.agent, "_user_contexts"):
-            app.state.agent._user_contexts.pop(user["user_id"], None)
+        await app.state.repos.agents.update_agent(user["user_id"], agent["agent_id"], {"agent_config": agent_cfg})
+        _invalidate_agent_context(user["user_id"], agent["agent_id"])
         return {"ok": True}
 
     @app.get("/api/config/prompts")
     async def get_prompts(request: Request):
-        user = await _require_user(request)
+        _user, agent = await _require_agent(request)
         from nanobot.prompts import PROMPT_FILES, PROMPT_ORDER, load_base_prompt
 
-        user_extensions = user.get("bootstrap", {})
+        user_extensions = agent.get("bootstrap", {})
         result = []
         for filename in PROMPT_ORDER:
             meta = PROMPT_FILES[filename]
@@ -538,11 +829,11 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.put("/api/config/prompts")
     async def update_prompts(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         body = await request.json()
         from nanobot.prompts import PROMPT_FILES
 
-        extensions = user.get("bootstrap", {})
+        extensions = agent.get("bootstrap", {})
         for item in body:
             filename = item.get("filename", "")
             if filename in PROMPT_FILES:
@@ -552,46 +843,74 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 elif filename in extensions:
                     del extensions[filename]
 
-        await app.state.repos.users.update(user["user_id"], {"bootstrap": extensions})
-        if hasattr(app.state, "agent") and hasattr(app.state.agent, "_user_contexts"):
-            app.state.agent._user_contexts.pop(user["user_id"], None)
+        await app.state.repos.agents.update_agent(user["user_id"], agent["agent_id"], {"bootstrap": extensions})
+        _invalidate_agent_context(user["user_id"], agent["agent_id"])
         return {"ok": True}
 
     def _get_user_channel_configs(user: dict) -> dict:
-        return user.get("channel_configs", {})
+        return user.get("channel_configs", {}) or {}
+
+    def _get_agent_channel_configs(agent: dict) -> dict:
+        return agent.get("channel_configs", {}) or {}
 
     @app.get("/api/channels")
     async def list_channels(request: Request):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
         from nanobot.channels.registry import CHANNEL_META, CHANNEL_ORDER, mask_channel_config
 
         user_cfgs = _get_user_channel_configs(user)
+        agent_cfgs = _get_agent_channel_configs(agent)
         channels_mgr = getattr(app.state, "channels", None)
-        user_status = channels_mgr.get_user_channel_status(uid) if channels_mgr else {}
+        user_status = channels_mgr.get_user_channel_status(uid, agent["agent_id"]) if channels_mgr else {}
 
         result = []
         for name in CHANNEL_ORDER:
             meta = CHANNEL_META.get(name, {})
-            cfg_dict = user_cfgs.get(name, {})
-            enabled = cfg_dict.get("enabled", False)
-            running = user_status.get(name, {}).get("running", False)
+            raw_cfg_dict = user_cfgs.get(name, {})
+            agent_channel_cfg = agent_cfgs.get(name, {})
+            enabled = bool(agent_channel_cfg.get("enabled", False))
+            status = user_status.get(name, {})
+            running = status.get("running", False)
+            last_error = status.get("last_error")
+            required_fields = [
+                f["key"] for f in meta.get("fields", [])
+                if f.get("required") and f.get("key") != "enabled"
+            ]
+            secret_keys = {f["key"] for f in meta.get("fields", []) if f.get("type") == "password"}
+            cfg_dict = await _resolve_channel_config_secrets(uid, name, raw_cfg_dict, secret_keys)
+            config_complete = all(
+                bool(cfg_dict.get(key))
+                and not (
+                    key in secret_keys
+                    and isinstance(cfg_dict.get(key), str)
+                    and _is_unresolved_secret_ref(cfg_dict[key])
+                )
+                for key in required_fields
+            )
+            masked_config = mask_channel_config(name, cfg_dict)
+            for key in secret_keys:
+                if isinstance(cfg_dict.get(key), str) and _is_unresolved_secret_ref(cfg_dict[key]):
+                    masked_config[key] = ""
 
             result.append({
                 "name": name,
                 "label": meta.get("label", name),
                 "description": meta.get("description", ""),
                 "docs_url": meta.get("docs_url"),
+                "setup_steps": meta.get("setup_steps", []),
                 "fields": meta.get("fields", []),
                 "enabled": enabled,
                 "running": running,
-                "config": mask_channel_config(name, cfg_dict),
+                "last_error": last_error,
+                "config_complete": config_complete,
+                "config": {**masked_config, "enabled": enabled},
             })
         return result
 
     @app.put("/api/channels/{channel_name}")
     async def update_channel(request: Request, channel_name: str):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
         from nanobot.channels.registry import CHANNEL_META
 
@@ -602,21 +921,40 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         meta = CHANNEL_META[channel_name]
         secret_keys = {f["key"] for f in meta.get("fields", []) if f.get("type") == "password"}
 
-        all_cfgs = _get_user_channel_configs(user)
-        current = all_cfgs.get(channel_name, {})
+        all_user_cfgs = _get_user_channel_configs(user)
+        current = dict(all_user_cfgs.get(channel_name, {}))
+        all_agent_cfgs = _get_agent_channel_configs(agent)
+        current_agent_cfg = dict(all_agent_cfgs.get(channel_name, {}))
 
         for key, value in body.items():
+            if key == "enabled":
+                current_agent_cfg["enabled"] = bool(value)
+                continue
             if key in secret_keys and isinstance(value, str) and "*" in value:
                 continue
+            if key in secret_keys and isinstance(value, str) and "•" in value:
+                continue
+            if key in secret_keys and isinstance(value, str) and _is_unresolved_secret_ref(value):
+                raise HTTPException(400, f"{meta.get('label', channel_name)} credential placeholder is not supported. Paste the real secret.")
             current[key] = value
 
-        all_cfgs[channel_name] = current
-        await app.state.repos.users.update(uid, {"channel_configs": all_cfgs})
+        all_user_cfgs[channel_name] = current
+        if current_agent_cfg.get("enabled"):
+            all_agent_cfgs[channel_name] = current_agent_cfg
+        else:
+            all_agent_cfgs.pop(channel_name, None)
+        await app.state.repos.users.update(uid, {"channel_configs": all_user_cfgs})
+        await app.state.repos.agents.update_agent(uid, agent["agent_id"], {"channel_configs": all_agent_cfgs})
+        channels_mgr = getattr(app.state, "channels", None)
+        owner_key = channels_mgr._owner_key(uid, agent["agent_id"]) if channels_mgr else uid
+        existing = channels_mgr.user_channels.get(owner_key, {}).get(channel_name) if channels_mgr else None
+        if existing:
+            existing._last_error = None
         return {"ok": True}
 
     @app.post("/api/channels/{channel_name}/start")
     async def start_channel(request: Request, channel_name: str):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
         from nanobot.channels.registry import CHANNEL_META
         from nanobot.config.schema import ChannelsConfig
@@ -629,11 +967,29 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             raise HTTPException(503, "Channel manager not available")
 
         user_cfgs = _get_user_channel_configs(user)
-        ch_cfg_dict = user_cfgs.get(channel_name, {})
-        if not ch_cfg_dict.get("enabled"):
+        agent_cfgs = _get_agent_channel_configs(agent)
+        ch_cfg_dict = dict(user_cfgs.get(channel_name, {}))
+        agent_ch_cfg = agent_cfgs.get(channel_name, {})
+        if not agent_ch_cfg.get("enabled"):
             raise HTTPException(400, f"Channel {channel_name} is not enabled. Save config first.")
+        ch_cfg_dict["enabled"] = True
+        secret_keys = {
+            f["key"] for f in CHANNEL_META[channel_name].get("fields", [])
+            if f.get("type") == "password"
+        }
+        ch_cfg_dict = await _resolve_channel_config_secrets(uid, channel_name, ch_cfg_dict, secret_keys)
+        bad_refs = [
+            key for key in secret_keys
+            if isinstance(ch_cfg_dict.get(key), str) and _is_unresolved_secret_ref(ch_cfg_dict[key])
+        ]
+        if bad_refs:
+            raise HTTPException(
+                400,
+                f"Channel {channel_name} has unresolved credential placeholder(s): {', '.join(bad_refs)}. Paste the real secret.",
+            )
 
-        user_chs = channels_mgr.user_channels.get(uid, {})
+        owner_key = channels_mgr._owner_key(uid, agent["agent_id"])
+        user_chs = channels_mgr.user_channels.get(owner_key, {})
         existing = user_chs.get(channel_name)
         if existing and existing.is_running:
             return {"ok": True, "message": "Already running"}
@@ -646,17 +1002,24 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             raise HTTPException(400, f"Invalid config for {channel_name}: {e}")
 
         try:
-            channels_mgr.create_user_channel(uid, channel_name, cfg)
-            await channels_mgr.start_user_channel(uid, channel_name)
+            channels_mgr.create_user_channel(uid, channel_name, cfg, agent_id=agent["agent_id"])
+            task = await channels_mgr.start_user_channel(uid, channel_name, agent_id=agent["agent_id"])
+            await asyncio.wait({task}, timeout=3)
+            current = channels_mgr.user_channels.get(owner_key, {}).get(channel_name)
+            last_error = getattr(current, "_last_error", None) if current else None
+            if last_error:
+                raise RuntimeError(last_error)
+            if task.done():
+                task.result()
         except Exception as e:
             raise HTTPException(500, f"Failed to start {channel_name}: {e}")
 
-        await app.state.repos.channel_bindings.bind(uid, channel_name, uid)
+        await app.state.repos.channel_bindings.bind(uid, channel_name, uid, agent["agent_id"])
         return {"ok": True, "message": f"{channel_name} starting"}
 
     @app.post("/api/channels/{channel_name}/stop")
     async def stop_channel(request: Request, channel_name: str):
-        user = await _require_user(request)
+        user, agent = await _require_agent(request)
         uid = user["user_id"]
         from nanobot.channels.registry import CHANNEL_META
 
@@ -667,7 +1030,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         if not channels_mgr:
             raise HTTPException(503, "Channel manager not available")
 
-        await channels_mgr.stop_user_channel(uid, channel_name)
+        await channels_mgr.stop_user_channel(uid, channel_name, agent_id=agent["agent_id"])
         return {"ok": True, "message": f"{channel_name} stopped"}
 
     from nanobot.web.routes.clients import router as clients_router
@@ -707,6 +1070,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 if msg_type == "message":
                     content = data.get("content", "").strip()
                     session_key = data.get("session_key", f"web:{uuid.uuid4().hex[:12]}")
+                    agent_id = data.get("agent_id")
 
                     if not content:
                         continue
@@ -728,6 +1092,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                             chat_id=uid,
                             on_progress=on_progress,
                             user_id=uid,
+                            agent_id=agent_id,
                         )
                     except Exception as e:
                         logger.exception("Chat error for {}", uid)

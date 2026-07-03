@@ -30,6 +30,7 @@ class UserContext:
     """Per-user runtime state built from the users table."""
 
     user_id: str
+    agent_id: str
     sessions: SessionManager
     context: ContextBuilder
     memory: MemoryStore
@@ -71,6 +72,25 @@ def _make_user_provider(agent_config: dict[str, Any]) -> LLMProvider | None:
     )
 
 
+def _effective_agent_config(user_config: dict[str, Any], agent_config: dict[str, Any]) -> dict[str, Any]:
+    """Merge global user config with agent overrides.
+
+    Provider credentials are user-level settings. Agents can override runtime
+    behavior such as RAG/prompts, but should not accidentally lose the user's
+    saved model/provider when created from a template.
+    """
+    merged = {**user_config, **agent_config}
+    global_keys = {
+        "provider", "model", "max_tokens", "temperature",
+        "max_tool_iterations", "memory_window", "language",
+        "custom_instructions",
+    }
+    for key in global_keys:
+        if key in user_config:
+            merged[key] = user_config[key]
+    return merged
+
+
 async def build_user_context(
     user_id: str,
     repos: RepositoryFactory,
@@ -80,6 +100,7 @@ async def build_user_context(
     brave_api_key: str | None = None,
     cron_service: CronService | None = None,
     builtin_skills_dir: Path | None = None,
+    agent_id: str | None = None,
 ) -> UserContext:
     """Build a UserContext from the user's DB record.
 
@@ -90,12 +111,23 @@ async def build_user_context(
     if not user_doc:
         raise ValueError(f"User not found: {user_id}")
 
-    agent_config: dict[str, Any] = user_doc.get("agent_config", {})
-    tools_enabled: list[str] = user_doc.get("tools_enabled", [])
+    agent_doc = (
+        await repos.agents.get_agent(user_id, agent_id)
+        if agent_id else await repos.agents.get_default_agent(user_id)
+    )
+    if not agent_doc:
+        raise ValueError(f"Agent not found for user: {user_id}")
+
+    agent_id = agent_doc["agent_id"]
+    agent_config = _effective_agent_config(
+        user_doc.get("agent_config", {}),
+        agent_doc.get("agent_config", {}),
+    )
+    tools_enabled: list[str] = agent_doc.get("tools_enabled", [])
     limits: dict[str, Any] = user_doc.get("limits", {})
 
     from nanobot.agent.retriever import RetrieverStore
-    memory = MemoryStore(memory_repo=repos.memories, user_id=user_id)
+    memory = MemoryStore(memory_repo=repos.memories, user_id=user_id, agent_id=agent_id)
     rag_config = agent_config.get("rag", {})
     retriever: RetrieverStore | None = None
     if rag_config.get("enabled"):
@@ -113,18 +145,20 @@ async def build_user_context(
                 delete_path=backend_cfg.get("delete_path", "/delete"),
                 timeout=backend_cfg.get("timeout", 30),
             )
-            retriever = RetrieverStore(retriever_repo=http_repo, user_id=user_id)
+            retriever = RetrieverStore(retriever_repo=http_repo, user_id=user_id, agent_id=agent_id)
         else:
-            retriever = RetrieverStore(retriever_repo=repos.retriever, user_id=user_id)
+            retriever = RetrieverStore(retriever_repo=repos.retriever, user_id=user_id, agent_id=agent_id)
     skills = SkillsLoader(
         skill_repo=repos.skills,
         user_id=user_id,
+        agent_id=agent_id,
         builtin_skills_dir=builtin_skills_dir or BUILTIN_SKILLS_DIR,
     )
     sessions = SessionManager(
         session_repo=repos.sessions,
         message_repo=repos.messages,
         user_id=user_id,
+        agent_id=agent_id,
     )
     context = ContextBuilder(
         workspace,
@@ -135,6 +169,7 @@ async def build_user_context(
         language=agent_config.get("language", ""),
         custom_instructions=agent_config.get("custom_instructions", ""),
         rag_enabled=retriever is not None,
+        bootstrap_overrides=agent_doc.get("bootstrap", {}),
     )
     tools = build_tool_registry(
         tools_enabled=tools_enabled,
@@ -146,12 +181,15 @@ async def build_user_context(
         cron_service=cron_service,
         user_id=user_id,
         skill_repo=repos.skills,
+        agent_repo=repos.agents,
+        agent_id=agent_id,
         memory_store=memory,
         retriever_store=retriever,
     )
 
     return UserContext(
         user_id=user_id,
+        agent_id=agent_id,
         sessions=sessions,
         context=context,
         memory=memory,
@@ -178,6 +216,8 @@ def build_tool_registry(
     cron_service: CronService | None = None,
     user_id: str | None = None,
     skill_repo: Any | None = None,
+    agent_repo: Any | None = None,
+    agent_id: str | None = None,
     memory_store: Any | None = None,
     retriever_store: Any | None = None,
 ) -> ToolRegistry:
@@ -210,8 +250,16 @@ def build_tool_registry(
         "web_search": lambda: WebSearchTool(api_key=brave_api_key),
         "web_fetch": lambda: WebFetchTool(),
         "message": lambda: MessageTool(send_callback=bus.publish_outbound),
-        "save_skill": lambda: SaveSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace),
+        "save_skill": lambda: SaveSkillTool(user_id=user_id, agent_id=agent_id, skill_repo=skill_repo, workspace=workspace),
     }
+
+    if agent_repo:
+        from nanobot.agent.tools.mcp_config import SaveMCPServerTool
+        factories["save_mcp_server"] = lambda: SaveMCPServerTool(
+            user_id=user_id,
+            agent_id=agent_id,
+            agent_repo=agent_repo,
+        )
 
     if memory_store:
         from nanobot.agent.tools.memory import SaveMemoryTool, SearchMemoryTool

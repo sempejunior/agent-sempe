@@ -66,6 +66,7 @@ def _job_to_dict(job: CronJob) -> dict[str, Any]:
     """Convert a CronJob to a dict suitable for CronRepository.save_job()."""
     return {
         "user_id": job.user_id,
+        "agent_id": job.agent_id,
         "job_id": job.id,
         "name": job.name,
         "enabled": job.enabled,
@@ -99,6 +100,7 @@ def _dict_to_job(d: dict[str, Any]) -> CronJob:
         id=d["job_id"],
         name=d["name"],
         user_id=d.get("user_id", ""),
+        agent_id=d.get("agent_id", ""),
         enabled=bool(d.get("enabled", True)),
         schedule=CronSchedule(
             kind=sched.get("kind", "every"),
@@ -349,7 +351,7 @@ class CronService:
         if job.schedule.kind == "at":
             if job.delete_after_run:
                 if self._mode == "db":
-                    await self._cron_repo.delete_job(job.user_id, job.id)
+                    await self._cron_repo.delete_job(job.user_id, job.id, agent_id=job.agent_id or None)
                 else:
                     self._store.jobs = [j for j in self._store.jobs if j.id != job.id]
                 return
@@ -375,10 +377,12 @@ class CronService:
         store = self._load_store()
         return len(store.jobs)
 
-    async def list_jobs(self, user_id: str = "", include_disabled: bool = False) -> list[CronJob]:
+    async def list_jobs(
+        self, user_id: str = "", include_disabled: bool = False, agent_id: str | None = None,
+    ) -> list[CronJob]:
         """List jobs. In DB mode, scoped to user_id."""
         if self._mode == "db":
-            rows = await self._cron_repo.list_jobs(user_id, include_disabled)
+            rows = await self._cron_repo.list_jobs(user_id, include_disabled, agent_id=agent_id)
             return [_dict_to_job(r) for r in rows]
         else:
             store = self._load_store()
@@ -395,6 +399,7 @@ class CronService:
         to: str | None = None,
         delete_after_run: bool = False,
         user_id: str = "",
+        agent_id: str = "",
     ) -> CronJob:
         """Add a new job."""
         _validate_schedule_for_add(schedule)
@@ -404,6 +409,7 @@ class CronService:
             id=str(uuid.uuid4())[:8],
             name=name,
             user_id=user_id,
+            agent_id=agent_id,
             enabled=True,
             schedule=schedule,
             payload=CronPayload(
@@ -430,10 +436,10 @@ class CronService:
         logger.info("Cron: added job '{}' ({}) for user '{}'", name, job.id, user_id or "default")
         return job
 
-    async def remove_job(self, job_id: str, user_id: str = "") -> bool:
+    async def remove_job(self, job_id: str, user_id: str = "", agent_id: str | None = None) -> bool:
         """Remove a job by ID."""
         if self._mode == "db":
-            removed = await self._cron_repo.delete_job(user_id, job_id)
+            removed = await self._cron_repo.delete_job(user_id, job_id, agent_id=agent_id)
         else:
             store = self._load_store()
             before = len(store.jobs)
@@ -447,10 +453,12 @@ class CronService:
             logger.info("Cron: removed job {}", job_id)
         return removed
 
-    async def enable_job(self, job_id: str, enabled: bool = True, user_id: str = "") -> CronJob | None:
+    async def enable_job(
+        self, job_id: str, enabled: bool = True, user_id: str = "", agent_id: str | None = None,
+    ) -> CronJob | None:
         """Enable or disable a job."""
         if self._mode == "db":
-            job_dict = await self._cron_repo.get_job(user_id, job_id)
+            job_dict = await self._cron_repo.get_job(user_id, job_id, agent_id=agent_id)
             if not job_dict:
                 return None
             next_run = _compute_next_run(
@@ -460,7 +468,7 @@ class CronService:
                 "enabled": 1 if enabled else 0,
                 "next_run_at_ms": next_run,
             }, user_id=user_id or None)
-            job_dict = await self._cron_repo.get_job(user_id, job_id)
+            job_dict = await self._cron_repo.get_job(user_id, job_id, agent_id=agent_id)
             self._arm_timer()
             return _dict_to_job(job_dict) if job_dict else None
         else:
@@ -478,10 +486,12 @@ class CronService:
                     return job
             return None
 
-    async def run_job(self, job_id: str, force: bool = False, user_id: str = "") -> bool:
+    async def run_job(
+        self, job_id: str, force: bool = False, user_id: str = "", agent_id: str | None = None,
+    ) -> bool:
         """Manually run a job."""
         if self._mode == "db":
-            job_dict = await self._cron_repo.get_job(user_id, job_id)
+            job_dict = await self._cron_repo.get_job(user_id, job_id, agent_id=agent_id)
             if not job_dict:
                 return False
             job = _dict_to_job(job_dict)

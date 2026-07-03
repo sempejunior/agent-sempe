@@ -1,47 +1,60 @@
 import { forwardRef, type ButtonHTMLAttributes } from "react";
+import { Slot } from "@radix-ui/react-slot";
+import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
-type Variant = "default" | "ghost" | "outline" | "danger";
-type Size = "sm" | "md" | "lg" | "icon";
+const buttonVariants = cva(
+  cn(
+    "inline-flex items-center justify-center gap-2 font-medium whitespace-nowrap select-none",
+    "transition-all duration-200",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+    "disabled:opacity-50 disabled:pointer-events-none",
+    "[&_svg]:pointer-events-none [&_svg]:shrink-0",
+  ),
+  {
+    variants: {
+      variant: {
+        default:
+          "bg-purple text-white font-semibold shadow-sm shadow-purple/25 hover:bg-purple-hover active:brightness-95 cursor-pointer",
+        ghost:
+          "bg-transparent hover:bg-surface-alt text-text-secondary hover:text-text-primary cursor-pointer",
+        outline:
+          "border border-border bg-surface hover:bg-surface-alt hover:border-border-light text-text-primary cursor-pointer",
+        secondary:
+          "bg-surface-alt text-text-primary hover:bg-surface-hover cursor-pointer",
+        danger:
+          "bg-red text-white font-semibold hover:brightness-110 cursor-pointer",
+        subtle:
+          "bg-purple-muted text-purple-hover hover:brightness-95 cursor-pointer",
+      },
+      size: {
+        sm: "h-8 px-3 text-xs rounded-lg [&_svg]:size-3.5",
+        md: "h-10 px-4 text-sm rounded-xl [&_svg]:size-4",
+        lg: "h-11 px-5 text-sm rounded-xl [&_svg]:size-4",
+        xl: "h-12 px-6 text-base rounded-xl [&_svg]:size-5",
+        icon: "h-9 w-9 rounded-xl [&_svg]:size-4",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "md",
+    },
+  },
+);
 
-interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: Variant;
-  size?: Size;
+interface ButtonProps
+  extends ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean;
 }
 
-const variantStyles: Record<Variant, string> = {
-  default:
-    "bg-gradient-to-b from-green to-green-hover text-white font-semibold shadow-sm shadow-green/20 hover:shadow-md hover:shadow-green/25 active:shadow-sm",
-  ghost:
-    "bg-transparent hover:bg-slate-100 text-text-secondary hover:text-text-primary",
-  outline:
-    "border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300 text-text-primary",
-  danger:
-    "bg-red-muted text-red hover:bg-red/20",
-};
-
-const sizeStyles: Record<Size, string> = {
-  sm: "h-8 px-3 text-sm rounded-lg",
-  md: "h-10 px-4 text-sm rounded-xl",
-  lg: "h-12 px-6 text-base rounded-xl",
-  icon: "h-9 w-9 rounded-xl flex items-center justify-center",
-};
-
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant = "default", size = "md", disabled, ...props }, ref) => {
+  ({ className, variant, size, asChild = false, ...props }, ref) => {
+    const Comp = asChild ? Slot : "button";
     return (
-      <button
+      <Comp
         ref={ref}
-        className={cn(
-          "inline-flex items-center justify-center font-medium transition-all duration-200",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green/40 focus-visible:ring-offset-1",
-          "disabled:opacity-50 disabled:pointer-events-none",
-          "cursor-pointer",
-          variantStyles[variant],
-          sizeStyles[size],
-          className,
-        )}
-        disabled={disabled}
+        className={cn(buttonVariants({ variant, size }), className)}
         {...props}
       />
     );

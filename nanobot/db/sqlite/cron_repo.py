@@ -21,23 +21,30 @@ class SQLiteCronRepository:
     def __init__(self, db: aiosqlite.Connection):
         self._db = db
 
-    async def list_jobs(self, user_id: str, include_disabled: bool = False) -> list[dict[str, Any]]:
+    def _agent_clause(self, agent_id: str | None) -> tuple[str, tuple[Any, ...]]:
+        return (" AND agent_id = ?", (agent_id,)) if agent_id else ("", ())
+
+    async def list_jobs(
+        self, user_id: str, include_disabled: bool = False, agent_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clause, extra = self._agent_clause(agent_id)
         if include_disabled:
             cursor = await self._db.execute(
-                "SELECT * FROM cron_jobs WHERE user_id = ? ORDER BY next_run_at_ms ASC NULLS LAST",
-                (user_id,),
+                f"SELECT * FROM cron_jobs WHERE user_id = ?{clause} ORDER BY next_run_at_ms ASC NULLS LAST",
+                (user_id, *extra),
             )
         else:
             cursor = await self._db.execute(
-                "SELECT * FROM cron_jobs WHERE user_id = ? AND enabled = 1 ORDER BY next_run_at_ms ASC NULLS LAST",
-                (user_id,),
+                f"SELECT * FROM cron_jobs WHERE user_id = ?{clause} AND enabled = 1 ORDER BY next_run_at_ms ASC NULLS LAST",
+                (user_id, *extra),
             )
         rows = await cursor.fetchall()
         return [_row_to_dict(r) for r in rows]
 
-    async def get_job(self, user_id: str, job_id: str) -> dict[str, Any] | None:
+    async def get_job(self, user_id: str, job_id: str, agent_id: str | None = None) -> dict[str, Any] | None:
+        clause, extra = self._agent_clause(agent_id)
         cursor = await self._db.execute(
-            "SELECT * FROM cron_jobs WHERE user_id = ? AND job_id = ?", (user_id, job_id),
+            f"SELECT * FROM cron_jobs WHERE user_id = ?{clause} AND job_id = ?", (user_id, *extra, job_id),
         )
         row = await cursor.fetchone()
         return _row_to_dict(row) if row else None
@@ -60,14 +67,22 @@ class SQLiteCronRepository:
             schedule = json.dumps(schedule)
         if not isinstance(payload, str):
             payload = json.dumps(payload)
+        agent_id = job.get("agent_id")
+        if not agent_id:
+            cursor = await self._db.execute(
+                "SELECT agent_id FROM agents WHERE user_id = ? AND is_default = 1 LIMIT 1",
+                (job["user_id"],),
+            )
+            row = await cursor.fetchone()
+            agent_id = row[0] if row else f"{job['user_id']}:default"
 
         await self._db.execute(
             """INSERT INTO cron_jobs
-               (user_id, job_id, name, enabled, schedule, payload,
+               (user_id, agent_id, job_id, name, enabled, schedule, payload,
                 next_run_at_ms, last_run_at_ms, last_status, last_error,
                 delete_after_run, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, job_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, agent_id, job_id)
                DO UPDATE SET
                    name = excluded.name,
                    enabled = excluded.enabled,
@@ -81,6 +96,7 @@ class SQLiteCronRepository:
                    updated_at = excluded.updated_at""",
             (
                 job["user_id"],
+                agent_id,
                 job["job_id"],
                 job["name"],
                 1 if job.get("enabled", True) else 0,
@@ -97,9 +113,10 @@ class SQLiteCronRepository:
         )
         await self._db.commit()
 
-    async def delete_job(self, user_id: str, job_id: str) -> bool:
+    async def delete_job(self, user_id: str, job_id: str, agent_id: str | None = None) -> bool:
+        clause, extra = self._agent_clause(agent_id)
         cursor = await self._db.execute(
-            "DELETE FROM cron_jobs WHERE user_id = ? AND job_id = ?", (user_id, job_id),
+            f"DELETE FROM cron_jobs WHERE user_id = ?{clause} AND job_id = ?", (user_id, *extra, job_id),
         )
         await self._db.commit()
         return cursor.rowcount > 0

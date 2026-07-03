@@ -62,7 +62,8 @@ class ClientAwareAgentLoop(AgentLoop):
 
         lock = self._get_swap_lock(user_id)
         async with lock:
-            uctx = await self._get_user_context(user_id)
+            agent_id = await self._resolve_agent_id(user_id, msg)
+            uctx = await self._get_user_context(user_id, agent_id)
             client_memory = self._build_client_memory(uctx.memory, client_id, user_id)
 
             originals = self._swap_memory(uctx, client_memory)

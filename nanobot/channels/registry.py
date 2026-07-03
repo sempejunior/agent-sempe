@@ -7,22 +7,34 @@ CHANNEL_META: dict[str, dict] = {
         "label": "Telegram",
         "description": "Connect a Telegram bot to receive and send messages.",
         "docs_url": "https://core.telegram.org/bots#botfather",
+        "setup_steps": [
+            "Open Telegram and talk to @BotFather.",
+            "Run /newbot or select an existing bot, then copy the HTTP API token.",
+            "Paste the token here, enable the channel, and click Save credentials.",
+            "Click Start channel, then send /start to your bot in Telegram.",
+        ],
         "fields": [
             {"key": "token", "label": "Bot Token", "type": "password", "required": True,
              "placeholder": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-             "help": "Get from @BotFather on Telegram"},
+             "help": "Paste the HTTP API token from @BotFather. If this field shows masked text, a token is already saved."},
             {"key": "proxy", "label": "Proxy URL", "type": "text", "required": False,
-             "placeholder": "socks5://host:port"},
+             "placeholder": "socks5://host:port",
+             "help": "Optional. Leave empty unless Telegram is blocked on this network."},
             {"key": "reply_to_message", "label": "Reply to messages", "type": "bool", "required": False},
             {"key": "allow_from", "label": "Allowed user IDs", "type": "list",
              "required": False, "placeholder": "123456789",
-             "help": "Leave empty to allow everyone"},
+             "help": "Optional numeric Telegram user IDs. Leave empty during setup; restrict after the bot connects."},
         ],
     },
     "discord": {
         "label": "Discord",
         "description": "Connect a Discord bot to your server.",
         "docs_url": "https://discord.com/developers/applications",
+        "setup_steps": [
+            "Create or open an app in the Discord Developer Portal.",
+            "Create a bot, copy its bot token, and invite it to your server.",
+            "Paste the token here, enable the channel, save, then start it.",
+        ],
         "fields": [
             {"key": "token", "label": "Bot Token", "type": "password", "required": True,
              "placeholder": "MTIz..."},
@@ -34,6 +46,12 @@ CHANNEL_META: dict[str, dict] = {
         "label": "Slack",
         "description": "Connect a Slack app using Socket Mode.",
         "docs_url": "https://api.slack.com/apps",
+        "setup_steps": [
+            "Create a Slack app with Socket Mode enabled.",
+            "Add bot scopes, install the app, and copy the xoxb bot token.",
+            "Create an app-level token with connections:write and copy the xapp token.",
+            "Paste both tokens here, enable the channel, save, then start it.",
+        ],
         "fields": [
             {"key": "bot_token", "label": "Bot Token (xoxb-...)", "type": "password", "required": True,
              "placeholder": "xoxb-..."},
@@ -49,6 +67,11 @@ CHANNEL_META: dict[str, dict] = {
     "whatsapp": {
         "label": "WhatsApp",
         "description": "Connect via WhatsApp bridge (requires matrix-whatsapp bridge).",
+        "setup_steps": [
+            "Start the WhatsApp bridge service and confirm its WebSocket URL.",
+            "Paste the bridge URL and token if your bridge requires one.",
+            "Enable the channel, save, then start it.",
+        ],
         "fields": [
             {"key": "bridge_url", "label": "Bridge WebSocket URL", "type": "text", "required": True,
              "placeholder": "ws://localhost:3001"},
@@ -60,6 +83,11 @@ CHANNEL_META: dict[str, dict] = {
     "email": {
         "label": "Email",
         "description": "Receive emails via IMAP and reply via SMTP.",
+        "setup_steps": [
+            "Create an app password or SMTP/IMAP credentials with your email provider.",
+            "Fill both IMAP and SMTP settings.",
+            "Enable the channel, save, then start it.",
+        ],
         "fields": [
             {"key": "imap_host", "label": "IMAP Host", "type": "text", "required": True,
              "placeholder": "imap.gmail.com"},
