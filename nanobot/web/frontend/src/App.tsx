@@ -22,6 +22,7 @@ import { AgentStorePage } from "@/components/hub/AgentStorePage";
 import { SkillsCatalogPage } from "@/components/hub/SkillsCatalogPage";
 import { AlertsPage } from "@/components/hub/AlertsPage";
 import { McpManagerPage } from "@/components/hub/McpManagerPage";
+import { IntegrationsPage } from "@/components/hub/IntegrationsPage";
 import { DbManagerPage } from "@/components/hub/DbManagerPage";
 import { RagManagerPage } from "@/components/hub/RagManagerPage";
 import { Store } from "lucide-react";
@@ -45,6 +46,8 @@ function MainContent() {
       return <McpPage />;
     case "mcp":
       return <McpManagerPage />;
+    case "integrations":
+      return <IntegrationsPage />;
     case "dbs":
       return <DbManagerPage />;
     case "capabilities":

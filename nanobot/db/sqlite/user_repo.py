@@ -32,6 +32,7 @@ _DEFAULT_TOOLS = [
     "web_search", "web_fetch", "exec", "read_file",
     "write_file", "edit_file", "list_dir", "spawn", "cron", "message", "save_skill",
     "save_memory", "search_memory", "rag_search", "rag_ingest",
+    "http_call",
     "computer", "browser",
 ]
 

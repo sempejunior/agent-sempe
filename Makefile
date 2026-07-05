@@ -1,38 +1,55 @@
-.PHONY: up down dev build rebuild logs shell
+.PHONY: up down dev build rebuild logs shell open
 
-# Start the application in production mode (using the built image)
+FRONTEND_URL := http://localhost:5173
+VNC_URL      := http://localhost:7080/vnc.html?autoconnect=1&resize=scale
+
+OPENER := $(shell command -v xdg-open 2>/dev/null || command -v open 2>/dev/null || echo true)
+
+define open_browsers
+	@echo ""
+	@echo "  Waiting for services..."
+	@for i in $$(seq 1 40); do \
+		curl -sf -o /dev/null $(FRONTEND_URL) && curl -sf -o /dev/null "http://localhost:7080/vnc.html" && break; \
+		sleep 1; \
+	done
+	@echo "  Opening browser tabs..."
+	@$(OPENER) "$(FRONTEND_URL)" >/dev/null 2>&1 &
+	@sleep 1
+	@$(OPENER) "$(VNC_URL)" >/dev/null 2>&1 &
+endef
+
 up:
 	docker compose up -d
+	$(call open_browsers)
 
-# Stop and remove all containers
 down:
 	docker compose down
 
-# Rebuild the Docker image
 build:
 	docker compose build
 
-# Rebuild and start in production mode
 rebuild:
 	docker compose up -d --build
+	$(call open_browsers)
 
-# Start the application in development mode with hot-reload
 dev:
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml down
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 	@echo ""
-	@echo "  ┌─────────────────────────────────────────────────┐"
-	@echo "  │  Dev mode ready!                                │"
-	@echo "  │                                                 │"
-	@echo "  │  Frontend:  http://localhost:5173                │"
-	@echo "  │  API:       http://localhost:18790               │"
-	@echo "  │  noVNC:     http://localhost:6080/vnc.html       │"
-	@echo "  │                                                 │"
-	@echo "  │  Frontend has hot-reload via Vite.              │"
-	@echo "  │  Python code has hot-reload via watchmedo.      │"
-	@echo "  └─────────────────────────────────────────────────┘"
+	@echo "  Dev mode ready!"
+	@echo ""
+	@echo "  Frontend:  $(FRONTEND_URL)"
+	@echo "  API:       http://localhost:18790"
+	@echo "  noVNC:     $(VNC_URL)"
+	@echo ""
+	@echo "  Frontend has hot-reload via Vite."
+	@echo "  Python code has hot-reload via watchmedo."
+	$(call open_browsers)
 	@echo ""
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f
+
+open:
+	$(call open_browsers)
 
 # Follow the container logs
 logs:

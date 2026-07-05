@@ -64,7 +64,8 @@ function useSections(): SidebarSection[] {
       label: "Integrações Ativas",
       items: [
         { key: "channels", label: "WhatsApp / Canais", icon: Send },
-        { key: "mcp", label: "APIs (MCP)", icon: Plug },
+        { key: "integrations", label: "MCPs & APIs", icon: Plug },
+        { key: "mcp", label: "MCPs (legado)", icon: Plug },
         { key: "dbs", label: "Bancos de Dados", icon: Database, soon: true },
         { key: "rag-manager", label: "Bases RAG / FAQ", icon: BookOpen },
       ],

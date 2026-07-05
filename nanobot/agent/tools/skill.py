@@ -90,5 +90,71 @@ class SaveSkillTool(Tool):
             skill_file = skill_dir / "SKILL.md"
             skill_file.write_text(full_markdown, encoding="utf-8")
             return f"Skill '{name}' successfully saved to filesystem at {skill_file}."
-        
+
         return "Error: No storage configured for skills."
+
+
+class ReadSkillTool(Tool):
+    """Load a skill's full markdown content on demand."""
+
+    def __init__(
+        self,
+        *,
+        skill_repo: Any | None = None,
+        user_id: str | None = None,
+        workspace: Path | None = None,
+        builtin_dir: Path | None = None,
+    ):
+        self.skill_repo = skill_repo
+        self.user_id = user_id
+        self.workspace = workspace
+        self.builtin_dir = builtin_dir
+        if not (skill_repo and user_id) and not workspace:
+            raise ValueError("Must provide either (skill_repo + user_id) or workspace")
+
+    @property
+    def name(self) -> str:
+        return "read_skill"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Load the full instructions for a skill by name. Call this when you decide "
+            "to use one of the skills listed in the system prompt. Returns the markdown "
+            "content of the skill so you can follow its steps."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "The skill name exactly as listed in the <skills> block.",
+                }
+            },
+            "required": ["skill_name"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        name = kwargs.get("skill_name", "").strip().lower()
+        if not name:
+            return "Error: skill_name is required."
+
+        if self.skill_repo and self.user_id:
+            skill = await self.skill_repo.get_skill(self.user_id, name)
+            if skill and skill.get("content"):
+                return skill["content"]
+
+        if self.workspace:
+            workspace_skill = self.workspace / "skills" / name / "SKILL.md"
+            if workspace_skill.exists():
+                return workspace_skill.read_text(encoding="utf-8")
+
+        if self.builtin_dir:
+            builtin_skill = self.builtin_dir / name / "SKILL.md"
+            if builtin_skill.exists():
+                return builtin_skill.read_text(encoding="utf-8")
+
+        return f"Error: skill '{name}' not found."

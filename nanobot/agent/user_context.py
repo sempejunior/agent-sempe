@@ -181,6 +181,7 @@ async def build_user_context(
         language=agent_config.get("language", ""),
         custom_instructions=agent_config.get("custom_instructions", ""),
         rag_enabled=retriever is not None,
+        integration_repo=repos.integrations,
     )
     tools = build_tool_registry(
         tools_enabled=tools_enabled,
@@ -195,6 +196,8 @@ async def build_user_context(
         user_repo=repos.users,
         memory_store=memory,
         retriever_store=retriever,
+        integration_repo=repos.integrations,
+        credential_repo=repos.credentials,
     )
 
     return UserContext(
@@ -229,6 +232,8 @@ def build_tool_registry(
     user_repo: Any | None = None,
     memory_store: Any | None = None,
     retriever_store: Any | None = None,
+    integration_repo: Any | None = None,
+    credential_repo: Any | None = None,
 ) -> ToolRegistry:
     """Build a ToolRegistry with only the enabled tools."""
     from nanobot.agent.tools.cron import CronTool
@@ -240,7 +245,7 @@ def build_tool_registry(
     )
     from nanobot.agent.tools.message import MessageTool
     from nanobot.agent.tools.shell import ExecTool
-    from nanobot.agent.tools.skill import SaveSkillTool
+    from nanobot.agent.tools.skill import ReadSkillTool, SaveSkillTool
     from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 
     registry = ToolRegistry()
@@ -260,6 +265,7 @@ def build_tool_registry(
         "web_fetch": lambda: WebFetchTool(),
         "message": lambda: MessageTool(send_callback=bus.publish_outbound),
         "save_skill": lambda: SaveSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace),
+        "read_skill": lambda: ReadSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace),
     }
 
     if user_repo:
@@ -267,6 +273,14 @@ def build_tool_registry(
         factories["save_mcp_server"] = lambda: SaveMCPServerTool(
             user_id=user_id,
             user_repo=user_repo,
+        )
+
+    if integration_repo and credential_repo and user_id:
+        from nanobot.agent.tools.http_call import HttpCallTool
+        factories["http_call"] = lambda: HttpCallTool(
+            user_id=user_id,
+            integration_repo=integration_repo,
+            credential_repo=credential_repo,
         )
 
     if memory_store:
@@ -307,6 +321,9 @@ def build_tool_registry(
             registry.register(RAGSearchTool(retriever_store))
         if not registry.has("rag_ingest"):
             registry.register(RAGIngestTool(retriever_store))
+
+    if skill_repo and user_id and not registry.has("read_skill"):
+        registry.register(ReadSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace))
 
     if os.environ.get("DISPLAY"):
         from nanobot.agent.tools.screenshot import ScreenshotTool

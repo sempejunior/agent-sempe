@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import traceback
 import uuid
 import asyncio
@@ -64,7 +65,9 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         from nanobot.cron.service import CronService
         from nanobot.db.factory import create_sqlite_factory
         from nanobot.db.sqlite.connection import create_database
+        from nanobot.utils.crypto import ensure_master_key
 
+        ensure_master_key(data_dir)
         db_path = data_dir / "nanobot.db"
         db = await create_database(db_path)
         repos = create_sqlite_factory(db)
@@ -518,6 +521,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.get("/api/cron")
     async def list_cron(request: Request):
+        from nanobot.cron.service import compute_next_runs
         user, agent = await _require_agent(request)
         jobs = await app.state.cron.list_jobs(
             user_id=user["user_id"], include_disabled=True, agent_id=agent["agent_id"],
@@ -535,9 +539,35 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 "channel": j.payload.channel,
                 "to": j.payload.to,
                 "tz": j.schedule.tz,
+                "next_runs": compute_next_runs(j.schedule, count=3) if j.enabled else [],
+                "last_run_at_ms": j.state.last_run_at_ms,
+                "last_status": j.state.last_status,
+                "last_error": j.state.last_error,
             }
             for j in jobs
         ]
+
+    @app.post("/api/cron/preview")
+    async def preview_cron(request: Request):
+        """Given a schedule, return the next N run timestamps. Does not persist anything."""
+        from nanobot.cron.service import compute_next_runs
+        from nanobot.cron.types import CronSchedule
+        body = await request.json()
+        kind = body.get("kind", "every")
+        count = min(int(body.get("count", 5)), 20)
+        if kind == "every":
+            sched = CronSchedule(kind="every", every_ms=int(body.get("every_seconds", 3600)) * 1000)
+        elif kind == "cron":
+            sched = CronSchedule(kind="cron", expr=body.get("expr", ""), tz=body.get("tz"))
+        elif kind == "at":
+            sched = CronSchedule(kind="at", at_ms=int(body.get("at_ms", 0)))
+        else:
+            raise HTTPException(400, "Invalid schedule kind")
+        try:
+            runs = compute_next_runs(sched, count=count)
+        except Exception as e:
+            raise HTTPException(400, f"Invalid schedule: {e}") from e
+        return {"next_runs": runs}
 
     @app.post("/api/cron")
     async def add_cron(request: Request):
@@ -550,6 +580,8 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             sched = CronSchedule(kind="every", every_ms=int(body.get("every_seconds", 3600)) * 1000)
         elif kind == "cron":
             sched = CronSchedule(kind="cron", expr=body.get("expr", "0 9 * * *"), tz=body.get("tz"))
+        elif kind == "at":
+            sched = CronSchedule(kind="at", at_ms=int(body.get("at_ms", 0)))
         else:
             raise HTTPException(400, "Invalid schedule kind")
 
@@ -560,6 +592,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             deliver=bool(body.get("deliver", False)),
             channel=body.get("channel"),
             to=body.get("to"),
+            delete_after_run=bool(body.get("delete_after_run", kind == "at")),
             user_id=user["user_id"],
             agent_id=agent["agent_id"],
         )
@@ -843,6 +876,189 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         await app.state.repos.users.update(user["user_id"], {"agent_config": user_cfg})
         _invalidate_agent_context(user["user_id"])
         return {"ok": True}
+
+    def _serialize_catalog_entry(entry: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "id": entry.id,
+            "kind": entry.kind,
+            "name": entry.name,
+            "description": entry.description,
+            "category": entry.category,
+            "docs_url": entry.docs_url,
+            "credential_fields": [
+                {
+                    "key": f.key,
+                    "label": f.label,
+                    "kind": f.kind,
+                    "required": f.required,
+                    "hint": f.hint,
+                }
+                for f in entry.credential_fields
+            ],
+            "auth_mode": entry.auth.mode,
+        }
+        if entry.api:
+            base["api"] = {
+                "base_url": entry.api.base_url,
+                "endpoints": [
+                    {
+                        "key": e.key,
+                        "method": e.method,
+                        "path": e.path,
+                        "description": e.description,
+                        "query_params": list(e.query_params),
+                        "body_params": list(e.body_params),
+                    }
+                    for e in entry.api.endpoints
+                ],
+            }
+        if entry.mcp:
+            base["mcp"] = {
+                "command": entry.mcp.command,
+                "args": list(entry.mcp.args),
+                "url": entry.mcp.url,
+                "env_from_credential": dict(entry.mcp.env_from_credential),
+            }
+        return base
+
+    def _public_credential(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "provider_key": row.get("provider_key", ""),
+            "metadata": row.get("metadata", {}),
+            "created_at": row.get("created_at", ""),
+            "updated_at": row.get("updated_at", ""),
+        }
+
+    def _public_integration(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "slug": row["slug"],
+            "kind": row["kind"],
+            "system_integration_id": row.get("system_integration_id"),
+            "label": row.get("label", ""),
+            "enabled": bool(row.get("enabled")),
+            "credential_id": row.get("credential_id"),
+            "config": row.get("config", {}),
+            "created_at": row.get("created_at", ""),
+            "updated_at": row.get("updated_at", ""),
+        }
+
+    @app.get("/api/integrations/catalog")
+    async def get_integrations_catalog(request: Request):
+        await _require_user(request)
+        from nanobot.integrations.catalog import CATALOG
+        return [_serialize_catalog_entry(e) for e in CATALOG]
+
+    @app.get("/api/integrations")
+    async def list_user_integrations(request: Request):
+        user = await _require_user(request)
+        rows = await app.state.repos.integrations.list_integrations(user["user_id"])
+        return [_public_integration(r) for r in rows]
+
+    @app.put("/api/integrations/{slug}")
+    async def upsert_user_integration(request: Request, slug: str):
+        from nanobot.integrations.catalog import get_integration as get_catalog_entry
+        user = await _require_user(request)
+        body = await request.json()
+        kind = body.get("kind")
+        system_id = body.get("system_integration_id")
+        credential_id = body.get("credential_id")
+
+        if system_id:
+            entry = get_catalog_entry(system_id)
+            if not entry:
+                raise HTTPException(400, f"Unknown system integration '{system_id}'")
+            kind = entry.kind
+            if entry.credential_fields and not credential_id:
+                raise HTTPException(
+                    400,
+                    f"Integration '{system_id}' requires a credential.",
+                )
+
+        if credential_id:
+            cred = await app.state.repos.credentials.get_credential(user["user_id"], credential_id)
+            if not cred:
+                raise HTTPException(404, "Credential not found")
+
+        integration_id = await app.state.repos.integrations.upsert({
+            "user_id": user["user_id"],
+            "slug": slug,
+            "kind": kind or "api",
+            "system_integration_id": system_id,
+            "label": body.get("label", ""),
+            "enabled": bool(body.get("enabled", True)),
+            "credential_id": credential_id,
+            "config": body.get("config", {}),
+        })
+        row = await app.state.repos.integrations.get_by_id(user["user_id"], integration_id)
+        _invalidate_agent_context(user["user_id"])
+        return _public_integration(row) if row else {"ok": True}
+
+    @app.delete("/api/integrations/{slug}")
+    async def delete_user_integration(request: Request, slug: str):
+        user = await _require_user(request)
+        ok = await app.state.repos.integrations.delete(user["user_id"], slug)
+        _invalidate_agent_context(user["user_id"])
+        return {"ok": ok}
+
+    @app.get("/api/credentials")
+    async def list_credentials(request: Request):
+        user = await _require_user(request)
+        rows = await app.state.repos.credentials.list_credentials(user["user_id"])
+        return [_public_credential(r) for r in rows]
+
+    @app.post("/api/credentials")
+    async def create_credential(request: Request):
+        from nanobot.utils.crypto import encrypt
+        user = await _require_user(request)
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+        if not name:
+            raise HTTPException(400, "name is required")
+        secret = body.get("secret", {})
+        if not isinstance(secret, dict):
+            raise HTTPException(400, "secret must be an object of key/value pairs")
+        cipher = encrypt(json.dumps(secret))
+        credential_id = await app.state.repos.credentials.create({
+            "user_id": user["user_id"],
+            "name": name,
+            "provider_key": body.get("provider_key", ""),
+            "secret_cipher": cipher,
+            "metadata": body.get("metadata", {}),
+        })
+        row = await app.state.repos.credentials.get_credential(user["user_id"], credential_id)
+        return _public_credential(row) if row else {"id": credential_id}
+
+    @app.put("/api/credentials/{credential_id}")
+    async def update_credential(request: Request, credential_id: int):
+        from nanobot.utils.crypto import encrypt
+        user = await _require_user(request)
+        body = await request.json()
+        current = await app.state.repos.credentials.get_credential(user["user_id"], credential_id)
+        if not current:
+            raise HTTPException(404, "Credential not found")
+        fields: dict[str, Any] = {}
+        if "name" in body:
+            fields["name"] = str(body["name"]).strip()
+        if "provider_key" in body:
+            fields["provider_key"] = body["provider_key"]
+        if "metadata" in body:
+            fields["metadata"] = body["metadata"]
+        if "secret" in body and isinstance(body["secret"], dict):
+            fields["secret_cipher"] = encrypt(json.dumps(body["secret"]))
+        await app.state.repos.credentials.update(user["user_id"], credential_id, fields)
+        row = await app.state.repos.credentials.get_credential(user["user_id"], credential_id)
+        _invalidate_agent_context(user["user_id"])
+        return _public_credential(row) if row else {"ok": True}
+
+    @app.delete("/api/credentials/{credential_id}")
+    async def delete_credential(request: Request, credential_id: int):
+        user = await _require_user(request)
+        ok = await app.state.repos.credentials.delete(user["user_id"], credential_id)
+        _invalidate_agent_context(user["user_id"])
+        return {"ok": ok}
 
     @app.get("/api/config/prompts")
     async def get_prompts(request: Request):

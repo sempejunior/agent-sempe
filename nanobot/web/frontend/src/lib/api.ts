@@ -172,22 +172,46 @@ export interface CronJob {
   channel?: string | null;
   to?: string | null;
   tz?: string | null;
+  next_runs?: number[];
+  last_run_at_ms?: number | null;
+  last_status?: "ok" | "error" | "skipped" | null;
+  last_error?: string | null;
 }
 
 export async function listCronJobs(): Promise<CronJob[]> {
   return request("/cron");
 }
 
-export async function addCronJob(data: {
-  name: string;
-  message: string;
-  kind: string;
+export interface CronSchedulePayload {
+  kind: "every" | "cron" | "at";
   every_seconds?: number;
   expr?: string;
   tz?: string;
+  at_ms?: number;
+}
+
+export async function previewCronSchedule(
+  schedule: CronSchedulePayload,
+  count = 5,
+): Promise<{ next_runs: number[] }> {
+  return request("/cron/preview", {
+    method: "POST",
+    body: JSON.stringify({ ...schedule, count }),
+  });
+}
+
+export async function addCronJob(data: {
+  name: string;
+  message: string;
+  kind: "every" | "cron" | "at";
+  every_seconds?: number;
+  expr?: string;
+  tz?: string;
+  at_ms?: number;
   deliver?: boolean;
   channel?: string | null;
   to?: string | null;
+  delete_after_run?: boolean;
 }): Promise<{ id: string; name: string }> {
   return request("/cron", { method: "POST", body: JSON.stringify(data) });
 }
@@ -640,6 +664,133 @@ export async function mergeClients(
 export async function countActiveClients(): Promise<number> {
   const res = await listClients({ status: "active", limit: 0 });
   return res.total;
+}
+
+// Integrations catalog + user integrations + credentials
+
+export interface CatalogCredentialField {
+  key: string;
+  label: string;
+  kind: "text" | "password" | "url";
+  required: boolean;
+  hint: string;
+}
+
+export interface CatalogApiEndpoint {
+  key: string;
+  method: string;
+  path: string;
+  description: string;
+  query_params: string[];
+  body_params: string[];
+}
+
+export interface CatalogApi {
+  base_url: string;
+  endpoints: CatalogApiEndpoint[];
+}
+
+export interface CatalogMcp {
+  command: string;
+  args: string[];
+  url: string;
+  env_from_credential: Record<string, string>;
+}
+
+export interface CatalogEntry {
+  id: string;
+  kind: "api" | "mcp";
+  name: string;
+  description: string;
+  category: string;
+  docs_url: string;
+  credential_fields: CatalogCredentialField[];
+  auth_mode: string;
+  api?: CatalogApi;
+  mcp?: CatalogMcp;
+}
+
+export interface UserCredential {
+  id: number;
+  name: string;
+  provider_key: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserIntegration {
+  id: number;
+  slug: string;
+  kind: "api" | "mcp";
+  system_integration_id: string | null;
+  label: string;
+  enabled: boolean;
+  credential_id: number | null;
+  config: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getIntegrationsCatalog(): Promise<CatalogEntry[]> {
+  return request("/integrations/catalog");
+}
+
+export async function listIntegrations(): Promise<UserIntegration[]> {
+  return request("/integrations");
+}
+
+export async function upsertIntegration(
+  slug: string,
+  data: {
+    kind?: "api" | "mcp";
+    system_integration_id?: string | null;
+    label?: string;
+    enabled?: boolean;
+    credential_id?: number | null;
+    config?: Record<string, unknown>;
+  },
+): Promise<UserIntegration> {
+  return request(`/integrations/${encodeURIComponent(slug)}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteIntegration(slug: string): Promise<{ ok: boolean }> {
+  return request(`/integrations/${encodeURIComponent(slug)}`, { method: "DELETE" });
+}
+
+export async function listCredentials(): Promise<UserCredential[]> {
+  return request("/credentials");
+}
+
+export async function createCredential(data: {
+  name: string;
+  provider_key?: string;
+  secret: Record<string, string>;
+  metadata?: Record<string, unknown>;
+}): Promise<UserCredential> {
+  return request("/credentials", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function updateCredential(
+  credentialId: number,
+  data: {
+    name?: string;
+    provider_key?: string;
+    secret?: Record<string, string>;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<UserCredential> {
+  return request(`/credentials/${credentialId}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteCredential(credentialId: number): Promise<{ ok: boolean }> {
+  return request(`/credentials/${credentialId}`, { method: "DELETE" });
 }
 
 // WebSocket

@@ -13,7 +13,7 @@ from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 
 if TYPE_CHECKING:
-    from nanobot.db.repositories import UserRepository
+    from nanobot.db.repositories import IntegrationRepository, UserRepository
 
 
 class ContextBuilder:
@@ -42,6 +42,7 @@ class ContextBuilder:
         language: str = "",
         custom_instructions: str = "",
         rag_enabled: bool = False,
+        integration_repo: "IntegrationRepository | None" = None,
     ):
         self.workspace = workspace
         self.memory = memory_store or MemoryStore(workspace)
@@ -51,6 +52,7 @@ class ContextBuilder:
         self._language = language
         self._custom_instructions = custom_instructions
         self._rag_enabled = rag_enabled
+        self._integration_repo = integration_repo
         self._mode: str = "db" if user_repo is not None and user_id is not None else "fs"
 
     async def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
@@ -83,14 +85,79 @@ class ContextBuilder:
 
         skills_summary = await self.skills.build_skills_summary()
         if skills_summary:
+            how_to_load = (
+                "call the read_skill tool with its name"
+                if self._mode == "db"
+                else "read its SKILL.md file using the read_file tool"
+            )
             parts.append(f"""# Skills
 
-The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
+The following skills extend your capabilities. To use a skill, {how_to_load}.
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 {skills_summary}""")
 
+        integrations_section = await self._build_integrations_section()
+        if integrations_section:
+            parts.append(integrations_section)
+
         return "\n\n---\n\n".join(parts)
+
+    async def _build_integrations_section(self) -> str:
+        """List user's active integrations/MCPs and catalog options.
+
+        Gives the agent (especially the skill-creator) explicit visibility into
+        which systems the client already has active and which can be activated
+        on demand, so it can design skills around them or propose activation.
+        """
+        if self._mode != "db" or not self._integration_repo or not self._user_id:
+            return ""
+
+        active = await self._integration_repo.list_integrations(
+            self._user_id, enabled_only=True,
+        )
+
+        from nanobot.integrations.catalog import CATALOG
+
+        lines = ["# Integrations & MCPs"]
+
+        if active:
+            lines.append("\n## Active for this client (usable now)")
+            for row in active:
+                slug = row.get("slug", "")
+                kind = row.get("kind", "")
+                label = row.get("label") or slug
+                if kind == "mcp":
+                    lines.append(
+                        f"- `{slug}` — {label} (MCP). Tools exposed as `mcp_{slug}_*`.",
+                    )
+                else:
+                    lines.append(
+                        f"- `{slug}` — {label} (API). Call via "
+                        f"`http_call(integration_slug='{slug}', endpoint_key=...)`.",
+                    )
+        else:
+            lines.append(
+                "\nNo integrations active yet for this client. "
+                "Encourage activation when a request would benefit.",
+            )
+
+        catalog_slugs = [f"`{e.id}`" for e in CATALOG]
+        if catalog_slugs:
+            lines.append(
+                "\n## Available in catalog (client can activate at Integrations page)\n"
+                + ", ".join(catalog_slugs)
+                + ".",
+            )
+
+        lines.append(
+            "\n## Guidance\n"
+            "When designing a skill or answering a request, prefer using active "
+            "integrations to compose real behavior. If the request would benefit "
+            "from a system that is not yet active, propose activating it from the "
+            "catalog before or alongside creating the skill.",
+        )
+        return "\n".join(lines)
 
     def _get_desktop_section(self) -> str:
         """Return desktop environment section if a display is available."""

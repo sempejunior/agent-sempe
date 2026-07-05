@@ -48,6 +48,38 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
     return None
 
 
+def compute_next_runs(schedule: CronSchedule, count: int = 3, now_ms: int | None = None) -> list[int]:
+    """Compute the next N run times in ms for a schedule."""
+    if count <= 0:
+        return []
+    base = now_ms if now_ms is not None else _now_ms()
+
+    if schedule.kind == "at":
+        return [schedule.at_ms] if schedule.at_ms and schedule.at_ms > base else []
+
+    if schedule.kind == "every":
+        if not schedule.every_ms or schedule.every_ms <= 0:
+            return []
+        return [base + schedule.every_ms * (i + 1) for i in range(count)]
+
+    if schedule.kind == "cron" and schedule.expr:
+        try:
+            from croniter import croniter
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(schedule.tz) if schedule.tz else datetime.now().astimezone().tzinfo
+            base_dt = datetime.fromtimestamp(base / 1000, tz=tz)
+            it = croniter(schedule.expr, base_dt)
+            out = []
+            for _ in range(count):
+                nxt = it.get_next(datetime)
+                out.append(int(nxt.timestamp() * 1000))
+            return out
+        except Exception:
+            return []
+
+    return []
+
+
 def _validate_schedule_for_add(schedule: CronSchedule) -> None:
     """Validate schedule fields that would otherwise create non-runnable jobs."""
     if schedule.tz and schedule.kind != "cron":

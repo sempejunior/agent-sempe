@@ -516,6 +516,43 @@ CREATE TRIGGER rag_au AFTER UPDATE OF content ON rag_chunks BEGIN
     INSERT INTO rag_chunks_fts(rowid, content) VALUES (NEW.id, NEW.content);
 END;
 """),
+
+    (8, """
+-- ===================== v8: credentials + user integrations =====================
+
+CREATE TABLE IF NOT EXISTS credentials (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    name           TEXT NOT NULL,
+    provider_key   TEXT NOT NULL DEFAULT '',
+    secret_cipher  TEXT NOT NULL,
+    metadata       TEXT NOT NULL DEFAULT '{}',
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_credentials_user ON credentials(user_id);
+CREATE INDEX IF NOT EXISTS idx_credentials_user_provider ON credentials(user_id, provider_key);
+
+CREATE TABLE IF NOT EXISTS user_integrations (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id               TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    kind                  TEXT NOT NULL,
+    slug                  TEXT NOT NULL,
+    system_integration_id TEXT,
+    label                 TEXT NOT NULL DEFAULT '',
+    enabled               INTEGER NOT NULL DEFAULT 1,
+    credential_id         INTEGER REFERENCES credentials(id) ON DELETE SET NULL,
+    config                TEXT NOT NULL DEFAULT '{}',
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_integrations_user ON user_integrations(user_id, enabled);
+CREATE INDEX IF NOT EXISTS idx_user_integrations_user_kind ON user_integrations(user_id, kind);
+"""),
 ]
 
 async def _safe_add_column(db: "aiosqlite.Connection", table: str, column: str, definition: str) -> None:

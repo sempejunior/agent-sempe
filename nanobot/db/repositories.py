@@ -203,6 +203,40 @@ class RetrieverRepository(Protocol):
 
 
 @runtime_checkable
+class CredentialRepository(Protocol):
+    """Encrypted per-user credential storage."""
+
+    async def list_credentials(self, user_id: str) -> list[dict[str, Any]]: ...
+
+    async def get_credential(self, user_id: str, credential_id: int) -> dict[str, Any] | None: ...
+
+    async def get_by_name(self, user_id: str, name: str) -> dict[str, Any] | None: ...
+
+    async def create(self, credential: dict[str, Any]) -> int: ...
+
+    async def update(self, user_id: str, credential_id: int, fields: dict[str, Any]) -> bool: ...
+
+    async def delete(self, user_id: str, credential_id: int) -> bool: ...
+
+
+@runtime_checkable
+class IntegrationRepository(Protocol):
+    """Per-user activated integrations (MCP servers or REST APIs)."""
+
+    async def list_integrations(
+        self, user_id: str, kind: str | None = None, enabled_only: bool = False,
+    ) -> list[dict[str, Any]]: ...
+
+    async def get_integration(self, user_id: str, slug: str) -> dict[str, Any] | None: ...
+
+    async def get_by_id(self, user_id: str, integration_id: int) -> dict[str, Any] | None: ...
+
+    async def upsert(self, integration: dict[str, Any]) -> int: ...
+
+    async def delete(self, user_id: str, slug: str) -> bool: ...
+
+
+@runtime_checkable
 class AuditRepository(Protocol):
     """Append-only audit trail with TTL cleanup."""
 

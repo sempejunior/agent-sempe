@@ -21,6 +21,38 @@ equipped with procedural knowledge that no model can fully possess.
 3. Domain expertise - Company-specific knowledge, schemas, business logic
 4. Bundled resources - Scripts, references, and assets for complex and repetitive tasks
 
+## Leveraging Active Integrations and MCPs
+
+Skills become dramatically more useful when they compose real behavior on top of
+the client's active integrations (Jira, GitHub, Grafana, Slack, Notion, custom
+MCPs, etc.). **Before designing any skill, inspect what is already active for
+this client and what could be activated.** The system prompt lists both under
+the `Integrations & MCPs` section:
+
+- **Active integrations** — usable right now. APIs are invoked via
+  `http_call(integration_slug=..., endpoint_key=...)`; MCP tools appear as
+  `mcp_<slug>_<tool>` in your tool list.
+- **Catalog** — integrations the client can activate on the Integrations page.
+
+### How to use this in the creation flow
+
+1. When the client describes what they want ("skill para medir produtividade do
+   time"), map the request to the systems that could power it (Jira for tickets,
+   GitHub for PRs, Grafana for dashboards…).
+2. If the needed system is already active, design the skill to call those
+   specific endpoints or MCP tools. Reference the concrete tool/endpoint names
+   in the SKILL.md body so the executing agent knows exactly what to call.
+3. If the needed system is in the catalog but not active, explain the value to
+   the client and offer to help activate it (via the Integrations page). Only
+   proceed to write the skill once you know which integration will be used —
+   otherwise the skill becomes a generic prose guide with no real reach.
+4. If the client wants a skill for a system that is neither active nor in the
+   catalog, discuss adding a custom MCP or a user-defined API before writing
+   the skill.
+
+Do not invent tool names. If unsure, ask the client which integration they
+prefer, or check the active list.
+
 ## Core Principles
 
 ### Concise is Key

@@ -29,6 +29,7 @@ export type View =
   | "capabilities"
   | "skills-catalog"
   | "api-connections"
+  | "integrations"
   | "mcp"
   | "dbs"
   | "memory"

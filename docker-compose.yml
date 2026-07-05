@@ -14,7 +14,7 @@ services:
     shm_size: '512m'
     ports:
       - 18790:18790
-      - 6080:6080
+      - 7080:6080
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:18790/api/health"]
       interval: 30s
