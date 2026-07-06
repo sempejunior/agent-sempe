@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import traceback
 import uuid
-import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -697,35 +697,100 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         _invalidate_agent_context(user["user_id"])
         return {"ok": True}
 
+    def _normalize_mcp_servers(raw: Any) -> list[dict[str, Any]]:
+        if isinstance(raw, dict):
+            normalized: list[dict[str, Any]] = []
+            for name, cfg in raw.items():
+                if not isinstance(cfg, dict):
+                    continue
+                normalized.append({"name": name, **{k: v for k, v in cfg.items() if k != "name"}})
+            return normalized
+        if isinstance(raw, list):
+            return [entry for entry in raw if isinstance(entry, dict) and entry.get("name")]
+        return []
+
+    def _mask_mcp_servers(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        masked: list[dict[str, Any]] = []
+        for entry in servers:
+            copy = dict(entry)
+            for key in ("auth_token", "auth_password"):
+                value = copy.get(key)
+                if isinstance(value, str) and value:
+                    copy[key] = _mask_secret(value)
+            masked.append(copy)
+        return masked
+
     @app.get("/api/config/mcp")
     async def get_mcp_config(request: Request):
         user = await _require_user(request)
         user_cfg = user.get("agent_config", {}) or {}
-        return {"mcpServers": user_cfg.get("mcp_servers", [])}
+        servers = _normalize_mcp_servers(user_cfg.get("mcp_servers"))
+        return {"mcpServers": _mask_mcp_servers(servers)}
 
     @app.put("/api/config/mcp")
     async def update_mcp_config(request: Request):
+        from nanobot.config.schema import MCPServerConfig
+
         user = await _require_user(request)
-        body = await request.json()
-        new_servers = body.get("mcpServers", [])
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(422, "Invalid JSON body")
+
+        if not isinstance(body, dict) or "mcpServers" not in body:
+            raise HTTPException(422, "Body must be an object with a 'mcpServers' field")
+
+        raw_servers = body["mcpServers"]
+        if not isinstance(raw_servers, list):
+            raise HTTPException(
+                422, "mcpServers must be a list of {name, ...config} entries"
+            )
 
         user_cfg = user.get("agent_config", {}) or {}
+        current_servers = _normalize_mcp_servers(user_cfg.get("mcp_servers"))
+        current_by_name = {entry["name"]: entry for entry in current_servers}
+
+        new_servers: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for idx, entry in enumerate(raw_servers):
+            if not isinstance(entry, dict):
+                raise HTTPException(422, f"mcpServers[{idx}] must be an object")
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise HTTPException(422, f"mcpServers[{idx}].name is required")
+            name = name.strip()
+            if name in seen_names:
+                raise HTTPException(422, f"Duplicate MCP server name: {name}")
+            seen_names.add(name)
+
+            merged = {k: v for k, v in entry.items() if k != "name"}
+            previous = current_by_name.get(name, {})
+            for secret_key in ("auth_token", "auth_password"):
+                incoming = merged.get(secret_key)
+                if isinstance(incoming, str) and _is_masked_secret(incoming):
+                    merged[secret_key] = previous.get(secret_key, "")
+                elif isinstance(incoming, str) and _is_unresolved_secret_ref(incoming):
+                    raise HTTPException(
+                        400,
+                        f"MCP server '{name}' credential placeholder is not supported. Paste the real secret.",
+                    )
+            try:
+                MCPServerConfig.model_validate(merged)
+            except Exception as exc:
+                raise HTTPException(422, f"Invalid config for MCP server '{name}': {exc}")
+            new_servers.append({"name": name, **merged})
+
         user_cfg["mcp_servers"] = new_servers
         await app.state.repos.users.update(user["user_id"], {"agent_config": user_cfg})
         _invalidate_agent_context(user["user_id"])
 
         try:
-            from nanobot.config.schema import MCPServerConfig
-            parsed = {}
-            for entry in new_servers:
-                if not isinstance(entry, dict):
-                    continue
-                name = entry.get("name")
-                if not name:
-                    continue
-                parsed[name] = MCPServerConfig.model_validate(
+            parsed = {
+                entry["name"]: MCPServerConfig.model_validate(
                     {k: v for k, v in entry.items() if k != "name"}
                 )
+                for entry in new_servers
+            }
             await app.state.agent.reload_mcp(parsed)
         except Exception as e:
             logger.warning("MCP reload failed (config saved anyway): {}", e)
@@ -1175,34 +1240,71 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
         all_user_cfgs = _get_user_channel_configs(user)
         current = dict(all_user_cfgs.get(channel_name, {}))
-        all_agent_cfgs = _get_agent_channel_configs(agent)
-        current_agent_cfg = dict(all_agent_cfgs.get(channel_name, {}))
 
         for key, value in body.items():
             if key == "enabled":
-                current_agent_cfg["enabled"] = bool(value)
                 continue
-            if key in secret_keys and isinstance(value, str) and "*" in value:
-                continue
-            if key in secret_keys and isinstance(value, str) and "•" in value:
+            if key in secret_keys and isinstance(value, str) and _is_masked_secret(value):
                 continue
             if key in secret_keys and isinstance(value, str) and _is_unresolved_secret_ref(value):
                 raise HTTPException(400, f"{meta.get('label', channel_name)} credential placeholder is not supported. Paste the real secret.")
             current[key] = value
 
         all_user_cfgs[channel_name] = current
-        if current_agent_cfg.get("enabled"):
-            all_agent_cfgs[channel_name] = current_agent_cfg
-        else:
-            all_agent_cfgs.pop(channel_name, None)
         await app.state.repos.users.update(uid, {"channel_configs": all_user_cfgs})
-        await app.state.repos.agents.update_agent(uid, agent["agent_id"], {"channel_configs": all_agent_cfgs})
         channels_mgr = getattr(app.state, "channels", None)
         owner_key = channels_mgr._owner_key(uid, agent["agent_id"]) if channels_mgr else uid
         existing = channels_mgr.user_channels.get(owner_key, {}).get(channel_name) if channels_mgr else None
         if existing:
             existing._last_error = None
         return {"ok": True}
+
+    def _classify_channel_error(exc: BaseException, channel: str) -> tuple[int, dict[str, Any]]:
+        from nanobot.channels.registry import CHANNEL_META
+
+        label = CHANNEL_META.get(channel, {}).get("label", channel)
+        exc_type = type(exc).__name__.lower()
+        raw_msg = str(exc)
+        lower = raw_msg.lower()
+        auth_signals = ("invalidtoken", "unauthorized", "invalid token", "token was rejected", "401", "authentication")
+        if any(sig in exc_type for sig in ("invalidtoken", "unauthorized", "forbidden")) or any(
+            sig in lower for sig in auth_signals
+        ):
+            return 400, {
+                "error": "invalid_credential",
+                "channel": channel,
+                "message": f"{label} rejeitou a credencial. Verifique se o token/senha está correto.",
+                "detail_code": "AUTH_INVALID_CREDENTIAL",
+            }
+        if any(sig in exc_type for sig in ("timeout", "connection")) or any(
+            sig in lower for sig in ("timeout", "connection refused", "unreachable", "network")
+        ):
+            return 503, {
+                "error": "channel_unreachable",
+                "channel": channel,
+                "message": f"Não foi possível conectar em {label}. Tente novamente em instantes.",
+                "detail_code": "CHANNEL_UNREACHABLE",
+            }
+        return 400, {
+            "error": "channel_start_failed",
+            "channel": channel,
+            "message": f"Falha ao iniciar {label}. Confira a configuração.",
+            "detail_code": "CHANNEL_START_FAILED",
+        }
+
+    async def _set_agent_channel_enabled(
+        uid: str, agent: dict[str, Any], channel_name: str, enabled: bool,
+    ) -> None:
+        all_agent_cfgs = dict(_get_agent_channel_configs(agent))
+        entry = dict(all_agent_cfgs.get(channel_name, {}))
+        if enabled:
+            entry["enabled"] = True
+            all_agent_cfgs[channel_name] = entry
+        else:
+            all_agent_cfgs.pop(channel_name, None)
+        await app.state.repos.agents.update_agent(
+            uid, agent["agent_id"], {"channel_configs": all_agent_cfgs},
+        )
 
     @app.post("/api/channels/{channel_name}/start")
     async def start_channel(request: Request, channel_name: str):
@@ -1219,15 +1321,20 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             raise HTTPException(503, "Channel manager not available")
 
         user_cfgs = _get_user_channel_configs(user)
-        agent_cfgs = _get_agent_channel_configs(agent)
         ch_cfg_dict = dict(user_cfgs.get(channel_name, {}))
-        agent_ch_cfg = agent_cfgs.get(channel_name, {})
-        if not agent_ch_cfg.get("enabled"):
-            raise HTTPException(400, f"Channel {channel_name} is not enabled. Save config first.")
+        meta = CHANNEL_META[channel_name]
+        required_fields = [
+            f["key"] for f in meta.get("fields", [])
+            if f.get("required") and f.get("key") != "enabled"
+        ]
+        missing = [k for k in required_fields if not ch_cfg_dict.get(k)]
+        if missing:
+            raise HTTPException(
+                400, f"Channel {channel_name} is missing required fields: {', '.join(missing)}",
+            )
         ch_cfg_dict["enabled"] = True
         secret_keys = {
-            f["key"] for f in CHANNEL_META[channel_name].get("fields", [])
-            if f.get("type") == "password"
+            f["key"] for f in meta.get("fields", []) if f.get("type") == "password"
         }
         ch_cfg_dict = await _resolve_channel_config_secrets(uid, channel_name, ch_cfg_dict, secret_keys)
         bad_refs = [
@@ -1243,7 +1350,8 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         owner_key = channels_mgr._owner_key(uid, agent["agent_id"])
         user_chs = channels_mgr.user_channels.get(owner_key, {})
         existing = user_chs.get(channel_name)
-        if existing and existing.is_running:
+        if existing and getattr(existing, "is_running", False):
+            await _set_agent_channel_enabled(uid, agent, channel_name, True)
             return {"ok": True, "message": "Already running"}
 
         try:
@@ -1263,10 +1371,16 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 raise RuntimeError(last_error)
             if task.done():
                 task.result()
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(500, f"Failed to start {channel_name}: {e}")
+            logger.warning("Channel start failed ({} for {}): {}", channel_name, uid, e)
+            await _set_agent_channel_enabled(uid, agent, channel_name, False)
+            status_code, detail = _classify_channel_error(e, channel_name)
+            raise HTTPException(status_code, detail)
 
         await app.state.repos.channel_bindings.bind(uid, channel_name, uid, agent["agent_id"])
+        await _set_agent_channel_enabled(uid, agent, channel_name, True)
         return {"ok": True, "message": f"{channel_name} starting"}
 
     @app.post("/api/channels/{channel_name}/stop")
@@ -1283,6 +1397,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             raise HTTPException(503, "Channel manager not available")
 
         await channels_mgr.stop_user_channel(uid, channel_name, agent_id=agent["agent_id"])
+        await _set_agent_channel_enabled(uid, agent, channel_name, False)
         return {"ok": True, "message": f"{channel_name} stopped"}
 
     from nanobot.web.routes.clients import router as clients_router
@@ -1336,6 +1451,8 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                         except Exception:
                             pass
 
+                    error_payload: dict[str, Any] | None = None
+                    response: str | None = None
                     try:
                         response = await app.state.agent.process_direct(
                             content,
@@ -1346,16 +1463,43 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                             user_id=uid,
                             agent_id=agent_id,
                         )
+                    except ValueError as e:
+                        msg = str(e)
+                        logger.warning("Chat validation error for {}: {}", uid, msg)
+                        low = msg.lower()
+                        if "agent not found" in low or "no agent available" in low:
+                            code = "agent_not_found"
+                            message = "Agente não encontrado ou sem acesso."
+                        elif "user not found" in low:
+                            code = "user_not_found"
+                            message = "Usuário não encontrado."
+                        else:
+                            code = "invalid_request"
+                            message = msg
+                        error_payload = {
+                            "type": "error",
+                            "code": code,
+                            "content": message,
+                            "session_key": session_key,
+                        }
                     except Exception as e:
                         logger.exception("Chat error for {}", uid)
-                        response = f"Error: {e}"
+                        error_payload = {
+                            "type": "error",
+                            "code": "internal_error",
+                            "content": f"Erro interno: {e}",
+                            "session_key": session_key,
+                        }
 
                     try:
-                        await ws.send_json({
-                            "type": "response",
-                            "content": response,
-                            "session_key": session_key,
-                        })
+                        if error_payload is not None:
+                            await ws.send_json(error_payload)
+                        else:
+                            await ws.send_json({
+                                "type": "response",
+                                "content": response,
+                                "session_key": session_key,
+                            })
                     except Exception:
                         logger.warning("WS closed before response for {}", uid)
                         break

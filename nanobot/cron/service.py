@@ -34,8 +34,9 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
 
     if schedule.kind == "cron" and schedule.expr:
         try:
-            from croniter import croniter
             from zoneinfo import ZoneInfo
+
+            from croniter import croniter
             base_time = now_ms / 1000
             tz = ZoneInfo(schedule.tz) if schedule.tz else datetime.now().astimezone().tzinfo
             base_dt = datetime.fromtimestamp(base_time, tz=tz)
@@ -64,8 +65,9 @@ def compute_next_runs(schedule: CronSchedule, count: int = 3, now_ms: int | None
 
     if schedule.kind == "cron" and schedule.expr:
         try:
-            from croniter import croniter
             from zoneinfo import ZoneInfo
+
+            from croniter import croniter
             tz = ZoneInfo(schedule.tz) if schedule.tz else datetime.now().astimezone().tzinfo
             base_dt = datetime.fromtimestamp(base / 1000, tz=tz)
             it = croniter(schedule.expr, base_dt)

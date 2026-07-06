@@ -11,7 +11,7 @@ from nanobot.agent.tools.base import Tool
 class SaveSkillTool(Tool):
     """
     Tool to save a learned skill as markdown documentation.
-    
+
     This writes a Markdown file with YAML frontmatter containing 'name'
     and 'description', followed by the instructional content.
     """

@@ -23,15 +23,15 @@ class CronTool(Tool):
         self._chat_id = chat_id
         self._user_id = user_id
         self._agent_id = agent_id
-    
+
     @property
     def name(self) -> str:
         return "cron"
-    
+
     @property
     def description(self) -> str:
         return "Schedule reminders and recurring tasks. Actions: add, list, remove."
-    
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -69,7 +69,7 @@ class CronTool(Tool):
             },
             "required": ["action"]
         }
-    
+
     async def execute(
         self,
         action: str,

@@ -1,8 +1,6 @@
 import asyncio
 from unittest.mock import AsyncMock
 
-import pytest
-
 from nanobot.heartbeat.service import HeartbeatService
 
 

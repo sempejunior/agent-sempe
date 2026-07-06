@@ -216,8 +216,8 @@ class ChannelManager:
 
     async def _restore_user_channels(self, repos: Any) -> None:
         """Restore enabled per-user channels from DB on startup."""
-        from nanobot.config.schema import ChannelsConfig
         from nanobot.channels.registry import CHANNEL_META
+        from nanobot.config.schema import ChannelsConfig
         from nanobot.secrets import resolve_channel_secret
 
         try:

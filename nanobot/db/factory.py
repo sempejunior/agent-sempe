@@ -58,8 +58,8 @@ def create_sqlite_factory(db) -> RepositoryFactory:
     Args:
         db: An open ``aiosqlite.Connection``.
     """
-    from nanobot.db.sqlite.audit_repo import SQLiteAuditRepository
     from nanobot.db.sqlite.agent_repo import SQLiteAgentRepository
+    from nanobot.db.sqlite.audit_repo import SQLiteAuditRepository
     from nanobot.db.sqlite.channel_binding_repo import SQLiteChannelBindingRepository
     from nanobot.db.sqlite.client_identity_repo import SQLiteClientIdentityRepository
     from nanobot.db.sqlite.client_memory_repo import SQLiteClientMemoryRepository

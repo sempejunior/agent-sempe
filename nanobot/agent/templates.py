@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 TEMPLATES: list[dict[str, Any]] = [
     {
         "id": "blank",
@@ -131,10 +130,3 @@ TEMPLATES: list[dict[str, Any]] = [
 
 def list_templates() -> list[dict[str, Any]]:
     return TEMPLATES
-
-
-def get_template(template_id: str) -> dict[str, Any] | None:
-    for tpl in TEMPLATES:
-        if tpl["id"] == template_id:
-            return tpl
-    return None

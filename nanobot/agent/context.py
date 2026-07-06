@@ -188,11 +188,7 @@ VNC on port 5900, noVNC on port 6080.
 IMPORTANT: Always use `--no-sandbox` with Chromium (required in container)."""
 
     def _get_identity(self) -> str:
-        """Get the core identity section."""
-        import time as _time
-        from datetime import datetime
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
-        tz = _time.strftime("%Z") or "UTC"
+        """Get the core identity section (static; time/session go into user message)."""
         workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
@@ -202,9 +198,6 @@ IMPORTANT: Always use `--no-sandbox` with Chromium (required in container)."""
             return f"""# nanobot
 
 You are nanobot, a helpful AI assistant.
-
-## Current Time
-{now} ({tz})
 
 ## Runtime
 {runtime}
@@ -231,9 +224,6 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         return f"""# nanobot 🐈
 
 You are nanobot, a helpful AI assistant.
-
-## Current Time
-{now} ({tz})
 
 ## Runtime
 {runtime}
@@ -354,16 +344,28 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         messages = []
 
         system_prompt = await self.build_system_prompt(skill_names)
-        if channel and chat_id:
-            system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})
 
         messages.extend(history)
 
-        user_content = self._build_user_content(current_message, media)
+        runtime_block = self._build_runtime_context(channel, chat_id)
+        prefixed_message = f"{runtime_block}\n\n{current_message}" if runtime_block else current_message
+        user_content = self._build_user_content(prefixed_message, media)
         messages.append({"role": "user", "content": user_content})
 
         return messages
+
+    def _build_runtime_context(self, channel: str | None, chat_id: str | None) -> str:
+        """Volatile context (time, session) prepended to the user message for cache stability."""
+        import time as _time
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
+        tz = _time.strftime("%Z") or "UTC"
+        lines = ["## Runtime Context", f"Current Time: {now} ({tz})"]
+        if channel and chat_id:
+            lines.append(f"Channel: {channel}")
+            lines.append(f"Chat ID: {chat_id}")
+        return "\n".join(lines)
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
         """Build user message content with optional base64-encoded images."""
