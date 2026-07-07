@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import { ChatMessage } from "./ChatMessage";
-import { Bot, Eye, Mic, Paperclip, Send, Sparkles, Terminal } from "lucide-react";
+import { Bot, Eye, Mic, MessageSquarePlus, Paperclip, Send, Sparkles, Terminal } from "lucide-react";
+import { getIcon, ICON_CATALOG } from "@/lib/iconCatalog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -19,8 +20,16 @@ const QUICK_COMMANDS = [
 ];
 
 export function ChatArea() {
-  const { agents, activeAgentId, messages, sending, sendMessage, updateAgent, selectAgent } =
-    useStore();
+  const {
+    agents,
+    activeAgentId,
+    messages,
+    sending,
+    sendMessage,
+    updateAgent,
+    selectAgent,
+    newChat,
+  } = useStore();
   const [input, setInput] = useState("");
   const [terminalOpen, setTerminalOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -73,15 +82,27 @@ export function ChatArea() {
               </Select>
             </div>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setTerminalOpen((v) => !v)}
-          >
-            <Terminal />
-            {terminalOpen ? "Ocultar Terminal" : "Mostrar Terminal"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => newChat()}
+              title="Começar uma nova conversa (limpa o histórico atual)"
+            >
+              <MessageSquarePlus />
+              Nova conversa
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setTerminalOpen((v) => !v)}
+            >
+              <Terminal />
+              {terminalOpen ? "Ocultar Terminal" : "Mostrar Terminal"}
+            </Button>
+          </div>
         </div>
 
         {(currentAgent as { status?: string }).status === "draft" && (
@@ -115,7 +136,16 @@ export function ChatArea() {
             {messages.length === 0 && !sending ? (
               <div className="flex items-start gap-3">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-purple-muted text-sm font-bold text-purple">
-                  {(currentAgent.avatar || currentAgent.name[0] || "A").slice(0, 2)}
+                  {(() => {
+                    const isSlug =
+                      currentAgent.avatar &&
+                      ICON_CATALOG.some((i) => i.slug === currentAgent.avatar);
+                    if (isSlug) {
+                      const Icon = getIcon(currentAgent.avatar);
+                      return <Icon className="w-4 h-4" />;
+                    }
+                    return (currentAgent.avatar || currentAgent.name[0] || "A").slice(0, 2);
+                  })()}
                 </div>
                 <div className="max-w-[min(960px,78%)]">
                   <div className="rounded-2xl bg-surface-alt px-5 py-4 text-sm font-medium leading-7 text-text-primary shadow-sm">

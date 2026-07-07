@@ -137,6 +137,10 @@ async def build_user_context(
     tools_enabled: list[str] = agent_doc.get("tools_enabled", [])
     limits: dict[str, Any] = user_doc.get("limits", {})
 
+    user_web_search = (agent_config.get("web_search") or {}).get("api_key")
+    if user_web_search:
+        brave_api_key = user_web_search
+
     from nanobot.agent.retriever import RetrieverStore
     memory = MemoryStore(memory_repo=repos.memories, user_id=user_id, agent_id=agent_id)
     rag_config = agent_config.get("rag", {})

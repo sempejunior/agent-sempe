@@ -38,6 +38,9 @@ class SQLiteSkillRepository:
 
     async def save_skill(self, user_id: str, skill: dict[str, Any]) -> None:
         now = datetime.now().isoformat()
+        origin = skill.get("origin", "user")
+        if origin not in ("user", "solides"):
+            origin = "user"
         values = (
             user_id,
             skill["name"],
@@ -45,12 +48,13 @@ class SQLiteSkillRepository:
             skill.get("description", ""),
             1 if skill.get("always_active") else 0,
             1 if skill.get("enabled", True) else 0,
+            origin,
             now,
             now,
         )
         await self._db.execute(
-            """INSERT INTO skills (user_id, name, content, description, always_active, enabled, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO skills (user_id, name, content, description, always_active, enabled, origin, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(user_id, name)
                DO UPDATE SET
                    content = excluded.content,

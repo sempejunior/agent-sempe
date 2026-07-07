@@ -77,7 +77,9 @@ export function AgentCard({
   const ragEnabled = Boolean(
     (agent.agent_config as { rag?: { enabled?: boolean } } | undefined)?.rag?.enabled,
   );
-  const channelCount = Object.keys(agent.channel_configs ?? {}).length;
+  const channelCount = Object.values(agent.channel_configs ?? {}).filter(
+    (cfg) => (cfg as { enabled?: boolean } | undefined)?.enabled,
+  ).length;
   const tools = agent.tools_enabled ?? [];
   const visibleTools = tools.slice(0, 3);
   const extraTools = tools.length - visibleTools.length;

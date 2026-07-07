@@ -14,8 +14,11 @@ export function HubShell({ children }: Props) {
   const logout = useStore((s) => s.logout);
   const activeAgentId = useStore((s) => s.activeAgentId);
   const agents = useStore((s) => s.agents);
+  const systemAgents = useStore((s) => s.systemAgents);
   const setActiveView = useStore((s) => s.setActiveView);
-  const activeAgent = agents.find((a) => a.agent_id === activeAgentId);
+  const activeAgent =
+    agents.find((a) => a.agent_id === activeAgentId) ??
+    systemAgents.find((a) => a.agent_id === activeAgentId);
 
   return (
     <div className="flex h-full w-full bg-background">

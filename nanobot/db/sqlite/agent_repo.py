@@ -159,6 +159,20 @@ class SQLiteAgentRepository:
         }
         return await self.create_agent(user_id, clone)
 
+    async def find_by_embed_token(self, token: str) -> dict[str, Any] | None:
+        if not token:
+            return None
+        cursor = await self._db.execute(
+            "SELECT * FROM agents WHERE status != 'deleted' AND metadata LIKE ?",
+            (f'%"embed_token": "{token}"%',),
+        )
+        for row in await cursor.fetchall():
+            agent = _row_to_dict(row)
+            meta = agent.get("metadata") or {}
+            if meta.get("embed_token") == token and meta.get("embed_enabled"):
+                return agent
+        return None
+
     async def get_agent_metrics(self, user_id: str, agent_id: str) -> dict[str, Any]:
         cursor = await self._db.execute(
             """SELECT COUNT(*) FROM messages
@@ -178,12 +192,20 @@ class SQLiteAgentRepository:
         last_activity = row[0] if row and row[0] else None
 
         cursor = await self._db.execute(
-            """SELECT COUNT(*) FROM channel_bindings
-               WHERE user_id = ? AND agent_id = ?""",
+            "SELECT channel_configs FROM agents WHERE user_id = ? AND agent_id = ?",
             (user_id, agent_id),
         )
         row = await cursor.fetchone()
-        active_channels = row[0] if row else 0
+        active_channels = 0
+        if row and row[0]:
+            try:
+                cfgs = json.loads(row[0])
+                active_channels = sum(
+                    1 for cfg in cfgs.values()
+                    if isinstance(cfg, dict) and cfg.get("enabled")
+                )
+            except (json.JSONDecodeError, AttributeError):
+                active_channels = 0
 
         return {
             "messages_last_24h": messages_24h,

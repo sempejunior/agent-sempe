@@ -110,19 +110,54 @@ export async function duplicateAgent(agentId: string): Promise<Agent> {
   return request(`/agents/${encodeURIComponent(agentId)}/duplicate`, { method: "POST" });
 }
 
+export interface AgentEmbedState {
+  enabled: boolean;
+  token: string;
+  url: string;
+  snippet: string;
+}
+
+export async function getAgentEmbed(agentId: string): Promise<AgentEmbedState> {
+  return request(`/agents/${encodeURIComponent(agentId)}/embed`);
+}
+
+export async function enableAgentEmbed(agentId: string): Promise<AgentEmbedState> {
+  return request(`/agents/${encodeURIComponent(agentId)}/embed`, { method: "POST" });
+}
+
+export async function disableAgentEmbed(agentId: string): Promise<AgentEmbedState> {
+  return request(`/agents/${encodeURIComponent(agentId)}/embed`, { method: "DELETE" });
+}
+
 export interface AgentTemplate {
   id: string;
   name: string;
   role: string;
   description: string;
+  category: string;
+  tags: string[];
   icon: string;
   system_prompt: string;
+  guardrails: string;
   tools: string[];
   rag_enabled: boolean;
+  starter_prompts: string[];
+  model_recommended: string | null;
+  skills_count: number;
+  knowledge_count: number;
+}
+
+export interface AgentTemplateDetail extends AgentTemplate {
+  skills: { name: string; description: string; always_active: boolean }[];
+  knowledge_sources: { source: string }[];
 }
 
 export async function getAgentTemplates(): Promise<AgentTemplate[]> {
   return request("/agents/templates");
+}
+
+export async function getAgentTemplateDetail(id: string): Promise<AgentTemplateDetail> {
+  return request(`/agents/templates/${encodeURIComponent(id)}`);
 }
 
 export interface AgentMetrics {
@@ -296,6 +331,8 @@ export interface BuiltinSkill {
   available: boolean;
   always: boolean;
   content: string;
+  category?: string;
+  template_id?: string;
 }
 
 export async function getBuiltinSkills(): Promise<BuiltinSkill[]> {
@@ -308,6 +345,7 @@ export interface CustomSkill {
   content: string;
   always_active: number;
   enabled: number;
+  origin?: "user" | "solides";
 }
 
 // MCP Configuration
@@ -488,6 +526,22 @@ export async function updateRagConfig(data: RAGConfig): Promise<{ ok: boolean }>
   return request("/config/rag", { method: "PUT", body: JSON.stringify(data) });
 }
 
+export interface WebSearchConfig {
+  provider: string;
+  api_key: string;
+  max_results: number;
+}
+
+export async function getWebSearchConfig(): Promise<WebSearchConfig> {
+  return request("/config/websearch");
+}
+
+export async function updateWebSearchConfig(
+  data: WebSearchConfig,
+): Promise<{ ok: boolean }> {
+  return request("/config/websearch", { method: "PUT", body: JSON.stringify(data) });
+}
+
 // Clients
 export interface Client {
   client_id: string;
@@ -524,6 +578,8 @@ export interface ClientSession {
   session_key: string;
   message_count: number;
   updated_at: string;
+  agent_id?: string | null;
+  channel?: string | null;
 }
 
 export async function listClients(params?: {
@@ -622,6 +678,7 @@ export interface RecentMessage {
   content: string;
   timestamp: string;
   session_key: string;
+  agent_id?: string | null;
 }
 
 export async function getClientRecentMessages(clientId: string, limit = 50): Promise<RecentMessage[]> {

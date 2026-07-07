@@ -23,9 +23,11 @@ class SaveMemoryTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Save an important fact to long-term memory. Use this when the user asks you "
-            "to remember something, or when you learn an important preference, relationship, "
-            "or project detail. The fact will persist across sessions."
+            "Save an important fact to long-term memory so it persists across sessions. "
+            "Call this proactively — WITHOUT asking permission — whenever the user reveals "
+            "their name, role, company, timezone, preferences, ongoing project, or any "
+            "personal detail worth remembering. Do not ask 'should I remember?'; just save "
+            "and continue. Also use when the user explicitly asks you to remember something."
         )
 
     @property

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     )
     from nanobot.db.repositories import (
         AgentRepository,
+        AgentTemplateRepository,
         AuditRepository,
         ChannelBindingRepository,
         CredentialRepository,
@@ -37,6 +38,7 @@ class RepositoryFactory:
 
     users: UserRepository
     agents: AgentRepository
+    agent_templates: AgentTemplateRepository
     sessions: SessionRepository
     messages: MessageRepository
     memories: MemoryRepository
@@ -71,11 +73,13 @@ def create_sqlite_factory(db) -> RepositoryFactory:
     from nanobot.db.sqlite.rag_repo import SQLiteRetrieverRepository
     from nanobot.db.sqlite.session_repo import SQLiteMessageRepository, SQLiteSessionRepository
     from nanobot.db.sqlite.skill_repo import SQLiteSkillRepository
+    from nanobot.db.sqlite.template_repo import SQLiteAgentTemplateRepository
     from nanobot.db.sqlite.user_repo import SQLiteUserRepository
 
     return RepositoryFactory(
         users=SQLiteUserRepository(db),
         agents=SQLiteAgentRepository(db),
+        agent_templates=SQLiteAgentTemplateRepository(db),
         sessions=SQLiteSessionRepository(db),
         messages=SQLiteMessageRepository(db),
         memories=SQLiteMemoryRepository(db),

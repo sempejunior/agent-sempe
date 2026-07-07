@@ -12,9 +12,17 @@ import {
   Plug,
   Zap,
   ExternalLink,
+  Search,
+  X,
+  ChevronDown,
+  Globe,
+  Copy,
+  Check,
 } from "lucide-react";
 import { useStore, type WizardStep } from "@/lib/store";
 import { PageHeader } from "../PageHeader";
+import { IconPicker } from "@/components/IconPicker";
+import { getIcon } from "@/lib/iconCatalog";
 import { Stepper } from "./Stepper";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,11 +34,18 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import {
+  getAgentTemplateDetail,
+  getBuiltinSkills,
   getCustomSkills,
   getMcpConfig,
+  getAgentEmbed,
+  enableAgentEmbed,
+  disableAgentEmbed,
   type Agent,
   type AgentConfig,
+  type AgentEmbedState,
   type AgentTemplate,
+  type BuiltinSkill,
   type CustomSkill,
   type MCPServer,
 } from "@/lib/api";
@@ -71,12 +86,13 @@ const CHANNELS = [
 const STEPS = [
   { key: 1, label: "Template" },
   { key: 2, label: "Identidade" },
-  { key: 3, label: "Personalidade" },
-  { key: 4, label: "Capacidades" },
-  { key: 5, label: "Canais" },
+  { key: 3, label: "Instruções" },
+  { key: 4, label: "Ferramentas" },
+  { key: 5, label: "Skills & Conhecimento" },
+  { key: 6, label: "Canais" },
 ];
 
-const MAX_STEP: WizardStep = 5;
+const MAX_STEP: WizardStep = 6;
 
 export function AgentStudioPage() {
   const templates = useStore((s) => s.templates);
@@ -96,6 +112,7 @@ export function AgentStudioPage() {
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const [customSkills, setCustomSkills] = useState<CustomSkill[]>([]);
+  const [builtinSkills, setBuiltinSkills] = useState<BuiltinSkill[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
 
   useEffect(() => {
@@ -106,6 +123,9 @@ export function AgentStudioPage() {
     getCustomSkills()
       .then(setCustomSkills)
       .catch(() => setCustomSkills([]));
+    getBuiltinSkills()
+      .then(setBuiltinSkills)
+      .catch(() => setBuiltinSkills([]));
     getMcpConfig()
       .then((d) => setMcpServers(d.mcpServers ?? []))
       .catch(() => setMcpServers([]));
@@ -145,11 +165,8 @@ export function AgentStudioPage() {
 
   useEffect(() => {
     if (editingAgentId) return;
-    updateWizardDraft({
-      skills: customSkills.map((s) => s.name),
-      mcps: mcpServers.map((s) => s.name),
-    });
-  }, [customSkills, mcpServers, editingAgentId, updateWizardDraft]);
+    updateWizardDraft({ mcps: mcpServers.map((s) => s.name) });
+  }, [mcpServers, editingAgentId, updateWizardDraft]);
 
   const editingAgent = useMemo(
     () => (editingAgentId ? agents.find((a) => a.agent_id === editingAgentId) : null),
@@ -159,7 +176,7 @@ export function AgentStudioPage() {
   const headerTitle = editingAgent ? `Editar ${editingAgent.name}` : "Novo agente";
   const headerSubtitle = editingAgent
     ? "Ajuste identidade, personalidade, capacidades e canais deste agente."
-    : "5 passos: escolher template, definir identidade, personalidade, capacidades e onde ele atua.";
+    : "6 passos: escolher template, definir identidade, personalidade, ferramentas, skills e onde ele atua.";
 
   const canGoNext = (() => {
     if (wizardStep === 1) return Boolean(wizardDraft.template_id);
@@ -167,7 +184,7 @@ export function AgentStudioPage() {
     return true;
   })();
 
-  function handleSelectTemplate(t: AgentTemplate | null) {
+  async function handleSelectTemplate(t: AgentTemplate | null) {
     if (t) {
       updateWizardDraft({
         template_id: t.id,
@@ -175,11 +192,18 @@ export function AgentStudioPage() {
         role: t.role,
         description: t.description,
         avatar: t.icon,
-        persona: "",
-        guidelines: t.system_prompt,
+        persona: t.system_prompt,
+        guidelines: t.guardrails || "",
         tools: t.tools,
         rag_enabled: t.rag_enabled,
+        starter_prompts: t.starter_prompts,
       });
+      try {
+        const detail = await getAgentTemplateDetail(t.id);
+        updateWizardDraft({ skills: detail.skills.map((s) => s.name) });
+      } catch {
+        // detail is a hint; keep skills from customSkills sync effect
+      }
     } else {
       updateWizardDraft({
         template_id: "blank",
@@ -192,6 +216,7 @@ export function AgentStudioPage() {
         tools: [],
         skills: [],
         rag_enabled: false,
+        starter_prompts: [],
       });
     }
     setWizardStep(2);
@@ -282,7 +307,7 @@ export function AgentStudioPage() {
       name: wizardDraft.name.trim(),
       role: wizardDraft.role,
       description: wizardDraft.description,
-      avatar: wizardDraft.avatar || wizardDraft.name.trim().slice(0, 1),
+      avatar: wizardDraft.avatar || "sparkles",
       tools_enabled: wizardDraft.tools,
       agent_config: nextConfig,
       bootstrap,
@@ -292,7 +317,16 @@ export function AgentStudioPage() {
       if (editingAgentId) {
         await updateAgent(editingAgentId, payload);
       } else {
-        await createAgent({ ...payload, status: "active" });
+        const templateId = wizardDraft.template_id ?? "custom";
+        const createPayload: Partial<Agent> = {
+          ...payload,
+          status: "active",
+          metadata: {
+            ...(payload.metadata ?? {}),
+            template: templateId === "existing" ? "custom" : templateId,
+          },
+        };
+        await createAgent(createPayload);
       }
       resetWizard();
       setEditingAgentId(null);
@@ -343,14 +377,20 @@ export function AgentStudioPage() {
           )}
 
           {wizardStep === 4 && (
-            <StepCapabilities
+            <StepTools
               tools={wizardDraft.tools}
+              onToggleTool={toggleTool}
+            />
+          )}
+
+          {wizardStep === 5 && (
+            <StepKnowledge
               skills={wizardDraft.skills}
               mcps={wizardDraft.mcps}
               customSkills={customSkills}
+              builtinSkills={builtinSkills}
               mcpServers={mcpServers}
               ragEnabled={wizardDraft.rag_enabled}
-              onToggleTool={toggleTool}
               onToggleSkill={toggleSkill}
               onToggleMcp={toggleMcp}
               onToggleRag={(v) => updateWizardDraft({ rag_enabled: v })}
@@ -359,10 +399,11 @@ export function AgentStudioPage() {
             />
           )}
 
-          {wizardStep === 5 && (
+          {wizardStep === 6 && (
             <StepChannels
               selected={wizardDraft.channels}
               onToggle={toggleChannel}
+              agentId={editingAgentId}
             />
           )}
         </CardContent>
@@ -466,12 +507,14 @@ function StepTemplate({ templates, selectedId, onSelect }: StepTemplateProps) {
           description="Comece sem template e configure cada detalhe manualmente."
         />
 
-        {templates.map((t) => (
+        {templates.filter((t) => t.id !== "blank").map((t) => {
+          const TplIcon = getIcon(t.icon);
+          return (
           <TemplateCard
             key={t.id}
             active={selectedId === t.id}
             onClick={() => onSelect(t)}
-            icon={<Sparkles className="w-6 h-6 text-purple" />}
+            icon={<TplIcon className="w-6 h-6 text-purple" />}
             title={t.name}
             role={t.role}
             description={t.description}
@@ -493,7 +536,8 @@ function StepTemplate({ templates, selectedId, onSelect }: StepTemplateProps) {
               </>
             }
           />
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -505,6 +549,7 @@ interface StepIdentityProps {
     role: string;
     description: string;
     avatar: string;
+    starter_prompts: string[];
   };
   onChange: (
     patch: Partial<{ name: string; role: string; description: string; avatar: string }>,
@@ -521,7 +566,7 @@ function StepIdentity({ draft, onChange, nameError }: StepIdentityProps) {
         </h2>
         <p className="text-sm text-text-muted mt-1">
           Nome, papel e uma descrição curta — o que aparece no card e no cabeçalho do
-          chat. Personalidade e regras vêm no próximo passo.
+          chat. As instruções que definem o comportamento vêm no próximo passo.
         </p>
       </div>
 
@@ -549,26 +594,44 @@ function StepIdentity({ draft, onChange, nameError }: StepIdentityProps) {
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-[8rem_1fr]">
-        <div className="space-y-1.5">
-          <Label>Avatar</Label>
-          <Input
-            value={draft.avatar}
-            onChange={(e) => onChange({ avatar: e.target.value })}
-            placeholder="S"
-            maxLength={2}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label>Descrição</Label>
-          <Textarea
-            value={draft.description}
-            onChange={(e) => onChange({ description: e.target.value })}
-            rows={2}
-            placeholder="Resuma em 1-2 linhas o que este agente faz."
-          />
-        </div>
+      <div className="space-y-1.5">
+        <Label>Descrição</Label>
+        <Textarea
+          value={draft.description}
+          onChange={(e) => onChange({ description: e.target.value })}
+          rows={2}
+          placeholder="Resuma em 1-2 linhas o que este agente faz."
+        />
       </div>
+
+      <div className="space-y-1.5">
+        <Label>Ícone</Label>
+        <IconPicker
+          value={draft.avatar}
+          onChange={(slug) => onChange({ avatar: slug })}
+        />
+      </div>
+
+      {draft.starter_prompts.length > 0 && (
+        <div className="space-y-2 rounded-2xl border border-border bg-surface p-4">
+          <div>
+            <Label className="text-xs text-text-muted">Prompts sugeridos</Label>
+            <p className="text-xs text-text-muted mt-0.5">
+              Aparecerão como atalhos no chat inicial para orientar o cliente.
+            </p>
+          </div>
+          <ul className="space-y-1.5">
+            {draft.starter_prompts.map((p, i) => (
+              <li
+                key={i}
+                className="text-sm text-text-secondary bg-surface-muted rounded-lg px-3 py-2 border border-border"
+              >
+                {p}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -581,31 +644,57 @@ interface StepPersonalityProps {
 
 function StepPersonality({ persona, guidelines, onChange }: StepPersonalityProps) {
   const [showGuidelines, setShowGuidelines] = useState(guidelines.trim().length > 0);
+  const [personaExpanded, setPersonaExpanded] = useState(false);
+  const [guidelinesExpanded, setGuidelinesExpanded] = useState(false);
+
+  const personaChars = persona.length;
+  const guidelinesChars = guidelines.length;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <div>
         <h2 className="font-display font-bold text-lg text-text-primary">
-          Personalidade
+          Instruções do agente
         </h2>
         <p className="text-sm text-text-muted mt-1">
-          Como o agente se comunica e o que ele deve evitar. Você pode refinar depois
-          conversando com ele.
+          Como o agente age, o que priorizar e o que nunca fazer. Se você escolheu
+          um template, já veio um rascunho pronto — ajuste conforme sua realidade.
         </p>
       </div>
 
-      <div className="space-y-1.5">
-        <Label>Como este agente se comunica</Label>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label className="text-sm font-semibold">
+            Instruções principais <span className="text-purple">*</span>
+          </Label>
+          <div className="flex items-center gap-3 text-[11px] text-text-muted">
+            <span>{personaChars.toLocaleString("pt-BR")} caracteres</span>
+            <button
+              type="button"
+              onClick={() => setPersonaExpanded((v) => !v)}
+              className="text-purple hover:text-purple-hover font-semibold"
+            >
+              {personaExpanded ? "Recolher" : "Expandir"}
+            </button>
+          </div>
+        </div>
+        <p className="text-xs text-text-muted">
+          Papel, objetivo, tom de voz, como se apresentar, o que priorizar.
+          Equivale ao prompt do sistema.
+        </p>
         <Textarea
+          variant="code"
           value={persona}
           onChange={(e) => onChange({ persona: e.target.value })}
-          rows={6}
-          placeholder="Ex.: Cordial, direta ao ponto, usa emojis com moderação. Trata quem chega como colega, evita jargão técnico e sempre confirma antes de agir em ações irreversíveis."
+          rows={personaExpanded ? 32 : 16}
+          className="leading-relaxed text-[13px] p-4"
+          placeholder={`Ex.: Você é a Ana, assistente de DP da empresa.
+
+- Ajuda colaboradores com dúvidas sobre folha, férias e benefícios.
+- Responde de forma cordial e direta, sempre em português do Brasil.
+- Cita a política interna quando aplicável.
+- Escalona para o RH humano quando o pedido envolve exceção.`}
         />
-        <p className="text-[11px] text-text-muted">
-          Tom, estilo, jeito de falar. Somado à personalidade padrão do Sólides
-          Orquestrador.
-        </p>
       </div>
 
       {!showGuidelines ? (
@@ -614,55 +703,261 @@ function StepPersonality({ persona, guidelines, onChange }: StepPersonalityProps
           onClick={() => setShowGuidelines(true)}
           className="text-sm font-semibold text-purple hover:text-purple-hover"
         >
-          + Adicionar regras específicas (opcional)
+          + Adicionar regras e limites (opcional)
         </button>
       ) : (
-        <div className="space-y-1.5">
-          <Label>Regras e limites específicos</Label>
+        <div className="space-y-2 border-t border-border pt-5">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm font-semibold">
+              Regras e limites{" "}
+              <span className="text-text-muted font-normal">(opcional)</span>
+            </Label>
+            <div className="flex items-center gap-3 text-[11px] text-text-muted">
+              <span>{guidelinesChars.toLocaleString("pt-BR")} caracteres</span>
+              <button
+                type="button"
+                onClick={() => setGuidelinesExpanded((v) => !v)}
+                className="text-purple hover:text-purple-hover font-semibold"
+              >
+                {guidelinesExpanded ? "Recolher" : "Expandir"}
+              </button>
+            </div>
+          </div>
+          <p className="text-xs text-text-muted">
+            Restrições rígidas — o que nunca fazer, quando escalonar. Fica em
+            bloco separado para receber peso extra.
+          </p>
           <Textarea
+            variant="code"
             value={guidelines}
             onChange={(e) => onChange({ guidelines: e.target.value })}
-            rows={5}
-            placeholder="Ex.: Nunca prometa prazos sem confirmar com o gestor. Escalona para humano quando o cliente pede reembolso. Não discute concorrentes."
+            rows={guidelinesExpanded ? 24 : 10}
+            className="leading-relaxed text-[13px] p-4"
+            placeholder={`Ex.:
+- Nunca prometa prazo sem confirmar com o gestor.
+- Escalonar para humano quando pedir reembolso.
+- Não discutir concorrentes.`}
           />
-          <p className="text-[11px] text-text-muted">
-            Regras rígidas de comportamento — quando escalona, o que evita, políticas.
-          </p>
         </div>
       )}
     </div>
   );
 }
 
-interface StepCapabilitiesProps {
-  tools: string[];
-  skills: string[];
-  mcps: string[];
-  customSkills: CustomSkill[];
-  mcpServers: MCPServer[];
-  ragEnabled: boolean;
-  onToggleTool: (id: string) => void;
-  onToggleSkill: (name: string) => void;
-  onToggleMcp: (name: string) => void;
-  onToggleRag: (v: boolean) => void;
-  onOpenSkills: () => void;
-  onOpenMcps: () => void;
+interface SkillEntry {
+  name: string;
+  description: string;
+  category: string;
+  always: boolean;
+  origin: "system" | "user";
 }
 
-function StepCapabilities({
-  tools,
+interface SkillsPickerProps {
+  skills: string[];
+  customSkills: CustomSkill[];
+  builtinSkills: BuiltinSkill[];
+  onToggleSkill: (name: string) => void;
+  onOpenSkills: () => void;
+}
+
+function SkillsPicker({
   skills,
-  mcps,
   customSkills,
-  mcpServers,
-  ragEnabled,
-  onToggleTool,
+  builtinSkills,
   onToggleSkill,
-  onToggleMcp,
-  onToggleRag,
   onOpenSkills,
-  onOpenMcps,
-}: StepCapabilitiesProps) {
+}: SkillsPickerProps) {
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<string>("all");
+
+  const allSkills = useMemo<SkillEntry[]>(() => {
+    const customNames = new Set(customSkills.map((s) => s.name));
+    const system: SkillEntry[] = builtinSkills
+      .filter((s) => !customNames.has(s.name))
+      .filter((s) => (s.category || "").toLowerCase() !== "sistema")
+      .map((s) => ({
+        name: s.name,
+        description: s.description ?? "",
+        category: s.category || "Geral",
+        always: !!s.always,
+        origin: "system" as const,
+      }));
+    const user: SkillEntry[] = customSkills.map((s) => ({
+      name: s.name,
+      description: s.description ?? "",
+      category: "Suas skills",
+      always: s.always_active === 1,
+      origin: "user" as const,
+    }));
+    return [...system, ...user];
+  }, [builtinSkills, customSkills]);
+
+  const byName = useMemo(() => {
+    const map = new Map<string, SkillEntry>();
+    for (const s of allSkills) map.set(s.name, s);
+    return map;
+  }, [allSkills]);
+
+  const categoryOrder = [
+    "Comportamental", "R&S", "T&D", "Ponto", "DP", "Jurídico",
+    "Engajamento", "Onboarding", "Geral", "Suas skills",
+  ];
+  const categories = useMemo(() => {
+    const set = new Set(allSkills.map((s) => s.category));
+    return Array.from(set).sort(
+      (a, b) => categoryOrder.indexOf(a) - categoryOrder.indexOf(b),
+    );
+  }, [allSkills]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return allSkills
+      .filter((s) => (category === "all" ? true : s.category === category))
+      .filter((s) =>
+        q.length === 0
+          ? true
+          : s.name.toLowerCase().includes(q) ||
+            s.description.toLowerCase().includes(q),
+      )
+      .sort((a, b) => {
+        const catDiff =
+          categoryOrder.indexOf(a.category) - categoryOrder.indexOf(b.category);
+        if (catDiff !== 0) return catDiff;
+        return a.name.localeCompare(b.name);
+      });
+  }, [allSkills, query, category]);
+
+  const enabled = skills
+    .map((n) => byName.get(n))
+    .filter((s): s is SkillEntry => !!s);
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl border border-border bg-surface p-3">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[11px] font-bold text-text-muted uppercase tracking-wider">
+            Habilitadas neste agente ({enabled.length})
+          </p>
+          {enabled.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => enabled.forEach((s) => onToggleSkill(s.name))}
+            >
+              Limpar tudo
+            </Button>
+          )}
+        </div>
+        {enabled.length === 0 ? (
+          <p className="text-xs text-text-muted">
+            Nenhuma skill habilitada. Busque abaixo para adicionar.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {enabled.map((s) => (
+              <button
+                key={s.name}
+                type="button"
+                onClick={() => onToggleSkill(s.name)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-muted text-purple hover:bg-purple/20 transition-colors"
+                title={s.description}
+              >
+                <span className="truncate max-w-[200px]">{s.name}</span>
+                <span className="text-[10px] opacity-70">· {s.category}</span>
+                <X className="w-3 h-3" />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 text-text-muted absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar skill por nome ou descrição"
+            className="pl-9"
+          />
+        </div>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="h-10 rounded-xl border border-border bg-surface px-3 text-sm text-text-primary focus:outline-none focus:border-purple sm:w-56"
+        >
+          <option value="all">Todas as categorias</option>
+          {categories.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        <Button variant="ghost" size="sm" onClick={onOpenSkills}>
+          <Zap className="w-4 h-4" /> Nova skill
+        </Button>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-surface-alt max-h-[420px] overflow-y-auto">
+        {filtered.length === 0 ? (
+          <div className="p-6 text-center">
+            <p className="text-sm text-text-muted">
+              Nenhuma skill encontrada.
+            </p>
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {filtered.map((s) => {
+              const checked = skills.includes(s.name);
+              return (
+                <li key={s.name}>
+                  <label
+                    className={cn(
+                      "flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-surface transition-colors",
+                      checked && "bg-purple-muted/40",
+                    )}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={() => onToggleSkill(s.name)}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-text-primary truncate">
+                          {s.name}
+                        </p>
+                        <Badge variant="muted" className="shrink-0 text-[10px]">
+                          {s.category}
+                        </Badge>
+                        {s.always && (
+                          <Badge variant="muted" className="shrink-0 text-[10px]">
+                            Sempre ativa
+                          </Badge>
+                        )}
+                      </div>
+                      {s.description && (
+                        <p className="text-[11px] text-text-muted truncate mt-0.5">
+                          {s.description}
+                        </p>
+                      )}
+                    </div>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface StepToolsProps {
+  tools: string[];
+  onToggleTool: (id: string) => void;
+}
+
+function StepTools({ tools, onToggleTool }: StepToolsProps) {
   const grouped = BUILTIN_TOOLS.reduce<Record<string, BuiltinTool[]>>(
     (acc, tool) => {
       (acc[tool.cat] ??= []).push(tool);
@@ -670,21 +965,155 @@ function StepCapabilities({
     },
     {},
   );
+  const cats = Object.keys(grouped);
+  const [open, setOpen] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(cats.map((c) => [c, true])),
+  );
 
-  const activeToolsCount = tools.length;
-  const activeSkillsCount = skills.length;
+  const toggleCat = (c: string) => setOpen((prev) => ({ ...prev, [c]: !prev[c] }));
+  const allOpen = cats.every((c) => open[c]);
+  const setAll = (v: boolean) =>
+    setOpen(Object.fromEntries(cats.map((c) => [c, v])));
 
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="font-display font-bold text-lg text-text-primary">
+          Ferramentas
+        </h2>
+        <p className="text-sm text-text-muted mt-1">
+          Ações brutas que o agente pode executar: clicar, ler arquivo, buscar na
+          web, salvar memória. No próximo passo você amarra essas ações em{" "}
+          <span className="font-semibold text-text-primary">skills</span>{" "}
+          (procedimentos) que orientam quando e como usá-las.
+        </p>
+        <p className="text-sm text-text-muted mt-2">
+          <span className="font-semibold text-text-primary">{tools.length}</span>{" "}
+          ferramentas ativas de {BUILTIN_TOOLS.length}
+        </p>
+      </div>
+
+      <div className="flex items-center justify-end">
+        <Button variant="ghost" size="sm" onClick={() => setAll(!allOpen)}>
+          {allOpen ? "Recolher tudo" : "Expandir tudo"}
+        </Button>
+      </div>
+
+      <div className="space-y-3">
+        {cats.map((cat) => {
+          const catTools = grouped[cat];
+          const activeCount = catTools.filter((t) => tools.includes(t.id)).length;
+          const isOpen = open[cat];
+          return (
+            <div
+              key={cat}
+              className="rounded-2xl border border-border bg-surface overflow-hidden"
+            >
+              <button
+                type="button"
+                onClick={() => toggleCat(cat)}
+                className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface-alt transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <ChevronDown
+                    className={cn(
+                      "w-4 h-4 text-text-muted transition-transform",
+                      !isOpen && "-rotate-90",
+                    )}
+                  />
+                  <span className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                    {cat}
+                  </span>
+                  <Badge variant="muted" className="text-[10px]">
+                    {activeCount}/{catTools.length}
+                  </Badge>
+                </div>
+              </button>
+              {isOpen && (
+                <div className="px-4 pb-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                  {catTools.map((tool) => {
+                    const checked = tools.includes(tool.id);
+                    return (
+                      <label
+                        key={tool.id}
+                        className={cn(
+                          "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
+                          checked
+                            ? "border-purple bg-purple-muted"
+                            : "border-border bg-surface-alt hover:border-purple/40",
+                        )}
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={() => onToggleTool(tool.id)}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-text-primary truncate">
+                            {tool.name}
+                          </p>
+                          <p className="text-[11px] text-text-muted font-mono truncate">
+                            {tool.id}
+                          </p>
+                        </div>
+                        {tool.warn && (
+                          <AlertTriangle
+                            className="w-4 h-4 text-yellow shrink-0"
+                            aria-label="Use com cuidado"
+                          />
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+interface StepKnowledgeProps {
+  skills: string[];
+  mcps: string[];
+  customSkills: CustomSkill[];
+  builtinSkills: BuiltinSkill[];
+  mcpServers: MCPServer[];
+  ragEnabled: boolean;
+  onToggleSkill: (name: string) => void;
+  onToggleMcp: (name: string) => void;
+  onToggleRag: (v: boolean) => void;
+  onOpenSkills: () => void;
+  onOpenMcps: () => void;
+}
+
+function StepKnowledge({
+  skills,
+  mcps,
+  customSkills,
+  builtinSkills,
+  mcpServers,
+  ragEnabled,
+  onToggleSkill,
+  onToggleMcp,
+  onToggleRag,
+  onOpenSkills,
+  onOpenMcps,
+}: StepKnowledgeProps) {
   return (
     <div className="space-y-8">
       <div>
         <h2 className="font-display font-bold text-lg text-text-primary">
-          O que este agente sabe fazer
+          Skills & Conhecimento
         </h2>
         <p className="text-sm text-text-muted mt-1">
-          <span className="font-semibold text-text-primary">{activeToolsCount}</span>{" "}
-          ferramentas ·{" "}
-          <span className="font-semibold text-text-primary">{activeSkillsCount}</span>{" "}
-          skills ativas
+          <span className="font-semibold text-text-primary">Skills</span> são
+          procedimentos em markdown que ensinam o agente a executar rotinas
+          (ex.: "aprovar ponto", "triar currículo") usando as ferramentas do
+          passo anterior. A <span className="font-semibold text-text-primary">base RAG</span>{" "}
+          consulta seus documentos ao responder. <span className="font-semibold text-text-primary">MCPs</span>{" "}
+          conectam APIs externas como novas ferramentas.
         </p>
       </div>
 
@@ -707,63 +1136,6 @@ function StepCapabilities({
       </div>
 
       <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-xs font-bold text-text-muted uppercase tracking-wider">
-              Ferramentas
-            </h3>
-            <p className="text-[11px] text-text-muted">
-              Capacidades nativas do sistema.
-            </p>
-          </div>
-        </div>
-        <div className="space-y-5">
-          {Object.entries(grouped).map(([cat, catTools]) => (
-            <div key={cat}>
-              <p className="text-[11px] font-bold text-text-muted uppercase tracking-wider mb-2">
-                {cat}
-              </p>
-              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                {catTools.map((tool) => {
-                  const checked = tools.includes(tool.id);
-                  return (
-                    <label
-                      key={tool.id}
-                      className={cn(
-                        "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
-                        checked
-                          ? "border-purple bg-purple-muted"
-                          : "border-border bg-surface hover:border-purple/40",
-                      )}
-                    >
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={() => onToggleTool(tool.id)}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-text-primary truncate">
-                          {tool.name}
-                        </p>
-                        <p className="text-[11px] text-text-muted font-mono truncate">
-                          {tool.id}
-                        </p>
-                      </div>
-                      {tool.warn && (
-                        <AlertTriangle
-                          className="w-4 h-4 text-yellow shrink-0"
-                          aria-label="Use com cuidado"
-                        />
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h3 className="text-xs font-bold text-text-muted uppercase tracking-wider">
@@ -780,64 +1152,13 @@ function StepCapabilities({
           </Button>
         </div>
 
-        {customSkills.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-border bg-surface-alt p-6 text-center">
-            <p className="text-sm text-text-secondary">
-              Você ainda não tem skills customizadas.
-            </p>
-            <p className="text-xs text-text-muted mt-1">
-              Crie skills conversando com o agente ou pela página{" "}
-              <span className="font-semibold">Minhas Skills</span> — elas podem usar
-              APIs conectadas (MCPs) para automatizar tarefas específicas.
-            </p>
-            <div className="flex items-center justify-center gap-2 mt-4">
-              <Button size="sm" variant="subtle" onClick={onOpenSkills}>
-                <Zap className="w-4 h-4" /> Criar skill
-              </Button>
-              <Button size="sm" variant="ghost" onClick={onOpenMcps}>
-                <Plug className="w-4 h-4" /> Conectar API (MCP)
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="grid gap-2 md:grid-cols-2">
-            {customSkills.map((s) => {
-              const checked = skills.includes(s.name);
-              return (
-                <label
-                  key={s.name}
-                  className={cn(
-                    "flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
-                    checked
-                      ? "border-purple bg-purple-muted"
-                      : "border-border bg-surface hover:border-purple/40",
-                  )}
-                >
-                  <Checkbox
-                    checked={checked}
-                    onCheckedChange={() => onToggleSkill(s.name)}
-                    className="mt-0.5"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-text-primary truncate">
-                      {s.name}
-                    </p>
-                    {s.description && (
-                      <p className="text-[11px] text-text-muted line-clamp-2 mt-0.5">
-                        {s.description}
-                      </p>
-                    )}
-                    {s.always_active === 1 && (
-                      <Badge variant="muted" className="mt-1.5">
-                        Sempre ativa
-                      </Badge>
-                    )}
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-        )}
+        <SkillsPicker
+          skills={skills}
+          customSkills={customSkills}
+          builtinSkills={builtinSkills}
+          onToggleSkill={onToggleSkill}
+          onOpenSkills={onOpenSkills}
+        />
       </section>
 
       <section className="space-y-4">
@@ -920,9 +1241,10 @@ function StepCapabilities({
 interface StepChannelsProps {
   selected: string[];
   onToggle: (id: string) => void;
+  agentId: string | null;
 }
 
-function StepChannels({ selected, onToggle }: StepChannelsProps) {
+function StepChannels({ selected, onToggle, agentId }: StepChannelsProps) {
   return (
     <div className="space-y-5">
       <div>
@@ -931,7 +1253,7 @@ function StepChannels({ selected, onToggle }: StepChannelsProps) {
         </h2>
         <p className="text-sm text-text-muted mt-1">
           Marque os canais onde o agente pode receber mensagens. Tokens e webhooks
-          são configurados em <span className="font-semibold">WhatsApp / Canais</span>{" "}
+          são configurados em <span className="font-semibold">Canais de Comunicação</span>{" "}
           depois.
         </p>
       </div>
@@ -961,11 +1283,167 @@ function StepChannels({ selected, onToggle }: StepChannelsProps) {
         })}
       </div>
 
+      <EmbedWidgetSection agentId={agentId} />
+
       <div className="rounded-2xl border border-border bg-surface-alt p-4 text-xs text-text-secondary">
         Ao salvar, o agente é criado com status ativo. Modelo LLM, temperatura e
         janelas de memória ficam em{" "}
         <span className="font-semibold">Configurações do agente</span> após criar.
       </div>
+    </div>
+  );
+}
+
+interface EmbedWidgetSectionProps {
+  agentId: string | null;
+}
+
+function EmbedWidgetSection({ agentId }: EmbedWidgetSectionProps) {
+  const [state, setState] = useState<AgentEmbedState | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!agentId) {
+      setState(null);
+      return;
+    }
+    let alive = true;
+    setLoading(true);
+    getAgentEmbed(agentId)
+      .then((s) => {
+        if (alive) setState(s);
+      })
+      .catch((e) => {
+        if (alive) setError(e?.message || "Falha ao carregar");
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [agentId]);
+
+  if (!agentId) {
+    return (
+      <div className="rounded-2xl border border-dashed border-border bg-surface-alt p-4 text-xs text-text-secondary">
+        <div className="flex items-center gap-2 font-semibold text-text-primary text-sm">
+          <Globe className="w-4 h-4" />
+          Publicar como widget no seu site
+        </div>
+        <p className="mt-1">
+          Salve o agente primeiro para gerar o código de incorporação (iframe).
+        </p>
+      </div>
+    );
+  }
+
+  const enabled = !!state?.enabled;
+
+  const handleToggle = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const next = enabled
+        ? await disableAgentEmbed(agentId)
+        : await enableAgentEmbed(agentId);
+      setState(next);
+    } catch (e) {
+      setError((e as Error)?.message || "Falha ao atualizar");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCopy = async () => {
+    if (!state?.snippet) return;
+    try {
+      await navigator.clipboard.writeText(state.snippet);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setError("Não foi possível copiar. Copie manualmente.");
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-4 space-y-3">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 font-semibold text-text-primary text-sm">
+            <Globe className="w-4 h-4" />
+            Publicar como widget no seu site
+          </div>
+          <p className="text-xs text-text-muted mt-1">
+            Gera um link público e um trecho{" "}
+            <code className="font-mono">&lt;iframe&gt;</code> para incorporar o
+            chat deste agente em qualquer página.
+          </p>
+        </div>
+        <Switch
+          checked={enabled}
+          onCheckedChange={handleToggle}
+          disabled={loading}
+        />
+      </div>
+
+      {error && (
+        <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      {enabled && state && (
+        <div className="space-y-2">
+          <div>
+            <Label className="text-xs">Link público</Label>
+            <div className="flex gap-2 mt-1">
+              <Input readOnly value={state.url} className="font-mono text-xs" />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => window.open(state.url, "_blank")}
+              >
+                <ExternalLink className="w-4 h-4" />
+                Abrir
+              </Button>
+            </div>
+          </div>
+          <div>
+            <Label className="text-xs">Código para incorporar</Label>
+            <Textarea
+              readOnly
+              value={state.snippet}
+              rows={4}
+              className="font-mono text-xs mt-1"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2"
+              onClick={handleCopy}
+            >
+              {copied ? (
+                <>
+                  <Check className="w-4 h-4" />
+                  Copiado
+                </>
+              ) : (
+                <>
+                  <Copy className="w-4 h-4" />
+                  Copiar snippet
+                </>
+              )}
+            </Button>
+          </div>
+          <p className="text-[11px] text-text-muted">
+            Qualquer pessoa com o link poderá conversar com este agente. Desative
+            para revogar o acesso.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

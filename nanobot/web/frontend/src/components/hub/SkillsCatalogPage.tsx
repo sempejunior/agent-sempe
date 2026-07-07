@@ -7,7 +7,8 @@ import {
   Save,
   Trash2,
   Lock,
-  Sparkles,
+  Building2,
+  User,
 } from "lucide-react";
 import { PageHeader } from "./PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -42,6 +43,15 @@ import { toast } from "@/lib/toast";
 type ListItem =
   | { kind: "builtin"; skill: BuiltinSkill }
   | { kind: "custom"; skill: CustomSkill };
+
+type Filter = "all" | "mine" | "solides" | "builtin";
+
+function itemBucket(item: ListItem): "mine" | "solides" | "builtin" {
+  if (item.kind === "builtin") {
+    return item.skill.template_id ? "solides" : "builtin";
+  }
+  return item.skill.origin === "solides" ? "solides" : "mine";
+}
 
 interface DraftState {
   name: string;
@@ -83,7 +93,7 @@ const SKILL_AUTHOR_TEMPLATE_ID = "skill_author";
 
 export function SkillsCatalogPage() {
   const setActiveView = useStore((s) => s.setActiveView);
-  const agents = useStore((s) => s.agents);
+  const systemAgents = useStore((s) => s.systemAgents);
   const templates = useStore((s) => s.templates);
   const selectAgent = useStore((s) => s.selectAgent);
   const createAgent = useStore((s) => s.createAgent);
@@ -101,6 +111,7 @@ export function SkillsCatalogPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
   const [createNameError, setCreateNameError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
 
   useEffect(() => {
     let cancelled = false;
@@ -120,12 +131,25 @@ export function SkillsCatalogPage() {
     };
   }, []);
 
-  const items = useMemo<ListItem[]>(
-    () => [
+  const items = useMemo<ListItem[]>(() => {
+    const customNames = new Set(custom.map((s) => s.name));
+    return [
       ...custom.map<ListItem>((s) => ({ kind: "custom", skill: s })),
-      ...builtin.map<ListItem>((s) => ({ kind: "builtin", skill: s })),
-    ],
-    [builtin, custom],
+      ...builtin
+        .filter((s) => !customNames.has(s.name))
+        .map<ListItem>((s) => ({ kind: "builtin", skill: s })),
+    ];
+  }, [builtin, custom]);
+
+  const counts = useMemo(() => {
+    const c = { all: items.length, mine: 0, solides: 0, builtin: 0 };
+    for (const it of items) c[itemBucket(it)]++;
+    return c;
+  }, [items]);
+
+  const visibleItems = useMemo(
+    () => (filter === "all" ? items : items.filter((it) => itemBucket(it) === filter)),
+    [items, filter],
   );
 
   function selectItem(item: ListItem) {
@@ -191,12 +215,15 @@ export function SkillsCatalogPage() {
         always_active: draft.always_active ? 1 : 0,
         enabled: draft.enabled ? 1 : 0,
       });
+      const previousOrigin =
+        selected?.kind === "custom" ? selected.skill.origin : undefined;
       const saved: CustomSkill = {
         name: draft.name,
         description: draft.description,
         content: draft.content,
         always_active: draft.always_active ? 1 : 0,
         enabled: draft.enabled ? 1 : 0,
+        origin: previousOrigin,
       };
       setCustom((prev) => {
         const idx = prev.findIndex((s) => s.name === draft.originalName);
@@ -227,7 +254,7 @@ export function SkillsCatalogPage() {
     if (startingChat) return;
     setStartingChat(true);
     try {
-      const existing = agents.find(
+      const existing = systemAgents.find(
         (a) =>
           (a.metadata as { template_id?: string } | undefined)?.template_id ===
           SKILL_AUTHOR_TEMPLATE_ID,
@@ -258,7 +285,7 @@ export function SkillsCatalogPage() {
         tools_enabled: tpl.tools,
         bootstrap: { "AGENTS.md": tpl.system_prompt },
         agent_config: { rag: { enabled: tpl.rag_enabled } },
-        metadata: { template_id: SKILL_AUTHOR_TEMPLATE_ID },
+        metadata: { template_id: SKILL_AUTHOR_TEMPLATE_ID, system: true },
         status: "active",
       });
       if (!created) {
@@ -313,6 +340,7 @@ export function SkillsCatalogPage() {
         <div className="grid gap-5 lg:grid-cols-[320px_1fr]">
           <Card className="h-fit">
             <CardContent className="p-3 pt-3">
+              <FilterChips filter={filter} setFilter={setFilter} counts={counts} />
               {items.length === 0 ? (
                 <div className="text-center py-8 px-2">
                   <div className="w-12 h-12 rounded-2xl bg-surface-alt border border-border flex items-center justify-center mx-auto mb-3">
@@ -325,16 +353,29 @@ export function SkillsCatalogPage() {
                     Crie a primeira ou peça pro agente montar.
                   </p>
                 </div>
+              ) : visibleItems.length === 0 ? (
+                <div className="text-center py-8 px-2 text-xs text-text-muted">
+                  Nenhuma skill neste filtro.
+                </div>
               ) : (
                 <ul className="space-y-1">
-                  {items.map((item) => {
+                  {visibleItems.map((item) => {
                     const isActive =
                       selected?.kind === item.kind &&
                       selected.skill.name === item.skill.name;
-                    const isBuiltin = item.kind === "builtin";
-                    const enabled = isBuiltin
+                    const bucket = itemBucket(item);
+                    const isCustom = item.kind === "custom";
+                    const enabled = !isCustom
                       ? (item.skill as BuiltinSkill).available
                       : (item.skill as CustomSkill).enabled === 1;
+                    const Icon =
+                      bucket === "builtin" ? Lock : bucket === "solides" ? Building2 : User;
+                    const badgeLabel =
+                      bucket === "builtin"
+                        ? "Built-in"
+                        : bucket === "solides"
+                          ? "Sólides"
+                          : "Minha";
                     return (
                       <li key={`${item.kind}:${item.skill.name}`}>
                         <button
@@ -350,16 +391,14 @@ export function SkillsCatalogPage() {
                           <div
                             className={cn(
                               "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
-                              isBuiltin
+                              bucket === "builtin"
                                 ? "bg-surface-alt text-text-muted"
-                                : "bg-purple-muted text-purple",
+                                : bucket === "solides"
+                                  ? "bg-blue-muted text-blue"
+                                  : "bg-purple-muted text-purple",
                             )}
                           >
-                            {isBuiltin ? (
-                              <Lock className="w-4 h-4" />
-                            ) : (
-                              <Sparkles className="w-4 h-4" />
-                            )}
+                            <Icon className="w-4 h-4" />
                           </div>
                           <div className="min-w-0 flex-1">
                             <p className="text-sm font-semibold text-text-primary truncate">
@@ -369,10 +408,10 @@ export function SkillsCatalogPage() {
                               {item.skill.description || "Sem descrição."}
                             </p>
                             <div className="flex items-center gap-1 mt-1.5">
-                              <Badge variant={isBuiltin ? "muted" : "default"}>
-                                {isBuiltin ? "Built-in" : "Custom"}
+                              <Badge variant={bucket === "builtin" ? "muted" : "default"}>
+                                {badgeLabel}
                               </Badge>
-                              {enabled && !isBuiltin && (
+                              {enabled && isCustom && (
                                 <Badge variant="success">Ativa</Badge>
                               )}
                             </div>
@@ -482,6 +521,44 @@ export function SkillsCatalogPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+interface FilterChipsProps {
+  filter: Filter;
+  setFilter: (f: Filter) => void;
+  counts: { all: number; mine: number; solides: number; builtin: number };
+}
+
+function FilterChips({ filter, setFilter, counts }: FilterChipsProps) {
+  const chips: { id: Filter; label: string }[] = [
+    { id: "all", label: "Todas" },
+    { id: "mine", label: "Minhas" },
+    { id: "solides", label: "Sólides" },
+    { id: "builtin", label: "Ferramenta" },
+  ];
+  return (
+    <div className="flex items-center gap-1 mb-2 p-0.5 rounded-lg bg-surface-alt">
+      {chips.map((c) => {
+        const active = filter === c.id;
+        return (
+          <button
+            key={c.id}
+            type="button"
+            onClick={() => setFilter(c.id)}
+            className={cn(
+              "flex-1 px-1.5 py-1 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap text-center",
+              active
+                ? "bg-surface text-text-primary shadow-sm"
+                : "text-text-muted hover:text-text-primary",
+            )}
+          >
+            {c.label}
+            <span className="ml-1 opacity-60">{counts[c.id]}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
+import sqlite3
 from pathlib import Path
 
 import aiosqlite
@@ -18,9 +18,11 @@ def _ensure_writable(path: Path) -> None:
 
     On FUSE mounts (SSHFS, NFS) the database may have been created by a
     previous container running as a different uid.  The current process can
-    read but not write to it.  Fix by replacing the file with a copy — the
-    copy inherits the current process's effective uid and is therefore
-    writable.  All data is preserved.
+    read but not write to it.  Fix by rewriting the file via SQLite's backup
+    API — the copy inherits the current process's effective uid.  The backup
+    API is used instead of a raw file copy so that pending writes still in
+    the -wal file are folded into the snapshot; a raw copy plus a WAL delete
+    would lose recent transactions.
     """
     if not path.exists():
         return
@@ -29,7 +31,19 @@ def _ensure_writable(path: Path) -> None:
 
     logger.warning("Database {} is read-only, recreating with correct ownership", path.name)
     tmp = path.with_suffix(".tmp")
-    shutil.copy2(str(path), str(tmp))
+    if tmp.exists():
+        tmp.unlink()
+
+    src = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        dst = sqlite3.connect(str(tmp))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+
     os.replace(str(tmp), str(path))
 
     for suffix in ("-wal", "-shm"):
@@ -53,16 +67,48 @@ async def create_database(db_path: str | Path) -> aiosqlite.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     _ensure_writable(path)
+    _checkpoint_and_drop_wal(path)
 
     db = await aiosqlite.connect(str(path))
     db.row_factory = aiosqlite.Row
 
-    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA journal_mode=DELETE")
+    await db.execute("PRAGMA synchronous=FULL")
     await db.execute("PRAGMA foreign_keys=ON")
     await db.execute("PRAGMA busy_timeout=5000")
 
     await apply_migrations(db)
     return db
+
+
+def _checkpoint_and_drop_wal(path: Path) -> None:
+    """Fold any pending WAL contents into the main DB and drop the -wal/-shm files.
+
+    Legacy DBs left over from the previous WAL-mode configuration may have a
+    non-empty -wal file when we boot into DELETE mode. Opening straight into
+    DELETE mode without checkpointing would discard those pending writes, so
+    we run a synchronous WAL checkpoint here before switching modes.
+    """
+    if not path.exists():
+        return
+    wal = path.with_name(path.name + "-wal")
+    if not wal.exists() or wal.stat().st_size == 0:
+        return
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.commit()
+    finally:
+        conn.close()
+    for suffix in ("-wal", "-shm"):
+        stale = path.with_name(path.name + suffix)
+        if stale.exists():
+            try:
+                stale.unlink()
+            except OSError:
+                pass
 
 
 class DatabasePool:

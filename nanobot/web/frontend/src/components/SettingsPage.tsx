@@ -14,8 +14,15 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { getConfig, updateConfig, getProviderConfig, updateProviderConfig } from "@/lib/api";
-import type { AgentConfig, ProviderConfig } from "@/lib/api";
+import {
+  getConfig,
+  updateConfig,
+  getProviderConfig,
+  updateProviderConfig,
+  getWebSearchConfig,
+  updateWebSearchConfig,
+} from "@/lib/api";
+import type { AgentConfig, ProviderConfig, WebSearchConfig } from "@/lib/api";
 import { toast } from "@/lib/toast";
 import { useStore } from "@/lib/store";
 import {
@@ -28,6 +35,7 @@ import {
   SlidersHorizontal,
   Loader2,
   Settings,
+  Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -44,11 +52,12 @@ const LANGUAGES = [
   { value: "한국어", label: "한국어" },
 ];
 
-type Tab = "general" | "model" | "advanced";
+type Tab = "general" | "model" | "tools" | "advanced";
 
 const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: "general", label: "Geral", icon: MessageSquareText },
   { id: "model", label: "Modelo", icon: Cpu },
+  { id: "tools", label: "Ferramentas", icon: Search },
   { id: "advanced", label: "Avançado", icon: SlidersHorizontal },
 ];
 
@@ -244,6 +253,102 @@ function TabModel({
   );
 }
 
+function TabTools({
+  webSearch,
+  webSearchDirty,
+  showWebSearchKey,
+  setWebSearch,
+  setWebSearchDirty,
+  setShowWebSearchKey,
+}: {
+  webSearch: WebSearchConfig;
+  webSearchDirty: boolean;
+  showWebSearchKey: boolean;
+  setWebSearch: React.Dispatch<React.SetStateAction<WebSearchConfig>>;
+  setWebSearchDirty: (v: boolean) => void;
+  setShowWebSearchKey: (v: boolean | ((prev: boolean) => boolean)) => void;
+}) {
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="font-display font-bold text-base text-text-primary">
+          Web Search (Brave)
+        </h3>
+        <p className="text-sm text-text-muted mt-1">
+          Chave para o agente pesquisar na web via <span className="font-semibold">Brave Search API</span>.
+          Sem chave, a ferramenta <code>web_search</code> retorna erro. Crie uma em{" "}
+          <a
+            href="https://brave.com/search/api/"
+            target="_blank"
+            rel="noreferrer"
+            className="text-purple hover:underline"
+          >
+            brave.com/search/api
+          </a>.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <Field label="Brave Search API Key" htmlFor="braveKey">
+          <div className="relative">
+            <Input
+              id="braveKey"
+              type={showWebSearchKey ? "text" : "password"}
+              value={webSearch.api_key}
+              onChange={(e) => {
+                setWebSearch((prev) => ({ ...prev, api_key: e.target.value }));
+                setWebSearchDirty(true);
+              }}
+              onFocus={() => {
+                if (!webSearchDirty && webSearch.api_key.includes("*")) {
+                  setWebSearch((prev) => ({ ...prev, api_key: "" }));
+                  setWebSearchDirty(true);
+                }
+              }}
+              placeholder="BSA..."
+              className="pr-10"
+            />
+            <button
+              type="button"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary transition-colors cursor-pointer p-1"
+              onClick={() => setShowWebSearchKey((v) => !v)}
+            >
+              {showWebSearchKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+          {!webSearchDirty && webSearch.api_key && (
+            <p className="text-xs text-text-muted">
+              Chave mascarada. Clique no campo para inserir uma nova.
+            </p>
+          )}
+        </Field>
+
+        <Field
+          label="Máximo de resultados"
+          hint="Quantos resultados o agente considera por busca (1–10)"
+          htmlFor="wsMaxResults"
+        >
+          <Input
+            id="wsMaxResults"
+            type="number"
+            min="1"
+            max="10"
+            step="1"
+            value={webSearch.max_results}
+            onChange={(e) => {
+              setWebSearch((prev) => ({
+                ...prev,
+                max_results: parseInt(e.target.value, 10) || 5,
+              }));
+              setWebSearchDirty(true);
+            }}
+          />
+        </Field>
+      </div>
+    </div>
+  );
+}
+
 function TabAdvanced({
   config,
   onChange,
@@ -324,6 +429,13 @@ export function SettingsPage() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
+  const [webSearch, setWebSearch] = useState<WebSearchConfig>({
+    provider: "brave",
+    api_key: "",
+    max_results: 5,
+  });
+  const [webSearchDirty, setWebSearchDirty] = useState(false);
+  const [showWebSearchKey, setShowWebSearchKey] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -331,13 +443,24 @@ export function SettingsPage() {
   const loadConfig = async () => {
     setLoading(true);
     try {
-      const [res, provRes] = await Promise.all([getConfig(), getProviderConfig()]);
+      const [res, provRes, wsRes] = await Promise.all([
+        getConfig(),
+        getProviderConfig(),
+        getWebSearchConfig(),
+      ]);
       setConfig(res || {});
       const prov = provRes || { name: "", api_key: "", api_base: "" };
       setProviderConfig(prov);
       setApiKeyInput(prov.api_key || "");
       setShowApiKey(false);
       setApiKeyDirty(false);
+      setWebSearch({
+        provider: wsRes?.provider || "brave",
+        api_key: wsRes?.api_key || "",
+        max_results: wsRes?.max_results ?? 5,
+      });
+      setWebSearchDirty(false);
+      setShowWebSearchKey(false);
     } catch (e) {
       toast("error", `Falha ao carregar: ${(e as Error).message}`);
     }
@@ -362,9 +485,15 @@ export function SettingsPage() {
         provPayload.api_key = apiKeyInput;
       }
       await updateProviderConfig(provPayload);
+      const wsPayload: WebSearchConfig = { ...webSearch };
+      if (!webSearchDirty) {
+        wsPayload.api_key = webSearch.api_key;
+      }
+      await updateWebSearchConfig(wsPayload);
       setSaved(true);
       toast("success", "Configurações salvas");
       setApiKeyDirty(false);
+      setWebSearchDirty(false);
       setTimeout(() => setSaved(false), 2500);
     } catch (e) {
       toast("error", `Falha ao salvar: ${(e as Error).message}`);
@@ -424,6 +553,16 @@ export function SettingsPage() {
                 setApiKeyInput={setApiKeyInput}
                 setApiKeyDirty={setApiKeyDirty}
                 setShowApiKey={setShowApiKey}
+              />
+            )}
+            {tab === "tools" && (
+              <TabTools
+                webSearch={webSearch}
+                webSearchDirty={webSearchDirty}
+                showWebSearchKey={showWebSearchKey}
+                setWebSearch={setWebSearch}
+                setWebSearchDirty={setWebSearchDirty}
+                setShowWebSearchKey={setShowWebSearchKey}
               />
             )}
             {tab === "advanced" && <TabAdvanced config={config} onChange={handleChange} />}

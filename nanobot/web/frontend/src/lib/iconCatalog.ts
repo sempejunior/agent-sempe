@@ -1,0 +1,163 @@
+import type { LucideIcon } from "lucide-react";
+import {
+  Sparkles,
+  Brain,
+  Clock,
+  FileText,
+  Scale,
+  UserSearch,
+  GraduationCap,
+  Smile,
+  Users,
+  UsersRound,
+  Briefcase,
+  Building2,
+  Headphones,
+  MessageCircle,
+  MessageSquare,
+  Handshake,
+  HeartHandshake,
+  Heart,
+  Target,
+  TrendingUp,
+  BarChart3,
+  PieChart,
+  Award,
+  Trophy,
+  BookOpen,
+  Book,
+  Lightbulb,
+  Rocket,
+  Zap,
+  Flame,
+  Bot,
+  Cpu,
+  Database,
+  Search,
+  Filter,
+  ClipboardList,
+  ClipboardCheck,
+  CheckSquare,
+  Calendar,
+  CalendarDays,
+  Bell,
+  ShieldCheck,
+  Shield,
+  Lock,
+  Gavel,
+  Landmark,
+  Wallet,
+  Coins,
+  DollarSign,
+  Receipt,
+  Calculator,
+  Mail,
+  Phone,
+  Compass,
+  Map,
+  Flag,
+  Globe,
+  Home,
+  Store,
+  Wrench,
+  Cog,
+  Settings,
+  Wand2,
+  Palette,
+  Camera,
+} from "lucide-react";
+
+export interface IconOption {
+  slug: string;
+  label: string;
+  Component: LucideIcon;
+  tags: string[];
+}
+
+export const ICON_CATALOG: IconOption[] = [
+  { slug: "sparkles", label: "Sparkles", Component: Sparkles, tags: ["generico", "assistente"] },
+  { slug: "brain", label: "Brain", Component: Brain, tags: ["comportamental", "profiler", "psico"] },
+  { slug: "clock", label: "Clock", Component: Clock, tags: ["ponto", "tempo", "hora"] },
+  { slug: "file-text", label: "File Text", Component: FileText, tags: ["dp", "documento", "folha"] },
+  { slug: "scale", label: "Scale", Component: Scale, tags: ["juridico", "clt", "lei"] },
+  { slug: "gavel", label: "Gavel", Component: Gavel, tags: ["juridico", "clt"] },
+  { slug: "landmark", label: "Landmark", Component: Landmark, tags: ["juridico", "governo"] },
+  { slug: "user-search", label: "User Search", Component: UserSearch, tags: ["rs", "recrutamento", "triagem"] },
+  { slug: "users", label: "Users", Component: Users, tags: ["time", "colaboradores"] },
+  { slug: "users-round", label: "Users Round", Component: UsersRound, tags: ["time", "gente"] },
+  { slug: "graduation-cap", label: "Graduation Cap", Component: GraduationCap, tags: ["td", "treinamento", "pdi"] },
+  { slug: "smile", label: "Smile", Component: Smile, tags: ["clima", "engajamento", "feliz"] },
+  { slug: "heart-handshake", label: "Heart Handshake", Component: HeartHandshake, tags: ["engajamento", "parceria"] },
+  { slug: "heart", label: "Heart", Component: Heart, tags: ["engajamento", "clima"] },
+  { slug: "handshake", label: "Handshake", Component: Handshake, tags: ["parceria", "acordo"] },
+  { slug: "briefcase", label: "Briefcase", Component: Briefcase, tags: ["dp", "trabalho"] },
+  { slug: "building-2", label: "Building", Component: Building2, tags: ["empresa", "escritorio"] },
+  { slug: "headphones", label: "Headphones", Component: Headphones, tags: ["suporte", "atendimento"] },
+  { slug: "message-circle", label: "Message Circle", Component: MessageCircle, tags: ["chat", "conversa"] },
+  { slug: "message-square", label: "Message Square", Component: MessageSquare, tags: ["chat"] },
+  { slug: "target", label: "Target", Component: Target, tags: ["meta", "objetivo"] },
+  { slug: "trending-up", label: "Trending Up", Component: TrendingUp, tags: ["crescimento", "resultado"] },
+  { slug: "bar-chart-3", label: "Bar Chart", Component: BarChart3, tags: ["analise", "kpi"] },
+  { slug: "pie-chart", label: "Pie Chart", Component: PieChart, tags: ["analise", "dados"] },
+  { slug: "award", label: "Award", Component: Award, tags: ["premio", "reconhecimento"] },
+  { slug: "trophy", label: "Trophy", Component: Trophy, tags: ["premio", "reconhecimento"] },
+  { slug: "book-open", label: "Book Open", Component: BookOpen, tags: ["conhecimento", "manual"] },
+  { slug: "book", label: "Book", Component: Book, tags: ["conhecimento", "manual"] },
+  { slug: "lightbulb", label: "Lightbulb", Component: Lightbulb, tags: ["ideia", "inovacao"] },
+  { slug: "rocket", label: "Rocket", Component: Rocket, tags: ["lancamento", "produtividade"] },
+  { slug: "zap", label: "Zap", Component: Zap, tags: ["rapido", "energia"] },
+  { slug: "flame", label: "Flame", Component: Flame, tags: ["hot", "trending"] },
+  { slug: "bot", label: "Bot", Component: Bot, tags: ["ia", "automacao"] },
+  { slug: "cpu", label: "Cpu", Component: Cpu, tags: ["ia", "tech"] },
+  { slug: "database", label: "Database", Component: Database, tags: ["dados", "conhecimento"] },
+  { slug: "search", label: "Search", Component: Search, tags: ["busca", "triagem"] },
+  { slug: "filter", label: "Filter", Component: Filter, tags: ["triagem", "filtro"] },
+  { slug: "clipboard-list", label: "Clipboard List", Component: ClipboardList, tags: ["checklist", "processo"] },
+  { slug: "clipboard-check", label: "Clipboard Check", Component: ClipboardCheck, tags: ["aprovacao", "checklist"] },
+  { slug: "check-square", label: "Check Square", Component: CheckSquare, tags: ["aprovacao", "tarefa"] },
+  { slug: "calendar", label: "Calendar", Component: Calendar, tags: ["agenda", "ponto"] },
+  { slug: "calendar-days", label: "Calendar Days", Component: CalendarDays, tags: ["agenda", "ponto"] },
+  { slug: "bell", label: "Bell", Component: Bell, tags: ["alerta", "notificacao"] },
+  { slug: "shield-check", label: "Shield Check", Component: ShieldCheck, tags: ["seguranca", "compliance"] },
+  { slug: "shield", label: "Shield", Component: Shield, tags: ["seguranca"] },
+  { slug: "lock", label: "Lock", Component: Lock, tags: ["seguranca", "privacidade"] },
+  { slug: "wallet", label: "Wallet", Component: Wallet, tags: ["financeiro", "beneficio"] },
+  { slug: "coins", label: "Coins", Component: Coins, tags: ["financeiro", "salario"] },
+  { slug: "dollar-sign", label: "Dollar Sign", Component: DollarSign, tags: ["financeiro"] },
+  { slug: "receipt", label: "Receipt", Component: Receipt, tags: ["financeiro", "folha"] },
+  { slug: "calculator", label: "Calculator", Component: Calculator, tags: ["financeiro", "calculo"] },
+  { slug: "mail", label: "Mail", Component: Mail, tags: ["email", "comunicacao"] },
+  { slug: "phone", label: "Phone", Component: Phone, tags: ["contato"] },
+  { slug: "compass", label: "Compass", Component: Compass, tags: ["direcao", "carreira"] },
+  { slug: "map", label: "Map", Component: Map, tags: ["jornada", "trilha"] },
+  { slug: "flag", label: "Flag", Component: Flag, tags: ["meta", "marco"] },
+  { slug: "globe", label: "Globe", Component: Globe, tags: ["global"] },
+  { slug: "home", label: "Home", Component: Home, tags: ["casa", "inicio"] },
+  { slug: "store", label: "Store", Component: Store, tags: ["loja", "hub"] },
+  { slug: "wrench", label: "Wrench", Component: Wrench, tags: ["ferramenta"] },
+  { slug: "cog", label: "Cog", Component: Cog, tags: ["config"] },
+  { slug: "settings", label: "Settings", Component: Settings, tags: ["config"] },
+  { slug: "wand-2", label: "Wand", Component: Wand2, tags: ["magico", "auto"] },
+  { slug: "palette", label: "Palette", Component: Palette, tags: ["design"] },
+  { slug: "camera", label: "Camera", Component: Camera, tags: ["visual"] },
+];
+
+const ICON_MAP: Record<string, IconOption> = Object.fromEntries(
+  ICON_CATALOG.map((i) => [i.slug, i]),
+);
+
+export function getIcon(slug: string | null | undefined): LucideIcon {
+  if (!slug) return Sparkles;
+  return ICON_MAP[slug]?.Component ?? Sparkles;
+}
+
+export function findIcons(query: string): IconOption[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return ICON_CATALOG;
+  return ICON_CATALOG.filter(
+    (i) =>
+      i.slug.includes(q) ||
+      i.label.toLowerCase().includes(q) ||
+      i.tags.some((t) => t.includes(q)),
+  );
+}

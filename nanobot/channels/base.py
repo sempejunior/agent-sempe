@@ -80,7 +80,7 @@ class BaseChannel(ABC):
         if allow_list is None:
             return True
         if isinstance(allow_list, list) and not allow_list:
-            return False
+            return True
         if "*" in allow_list:
             return True
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import secrets
 from collections.abc import Awaitable, Callable
 
 from loguru import logger
@@ -125,6 +126,7 @@ class TelegramChannel(BaseChannel):
         BotCommand("start", "Start the bot"),
         BotCommand("new", "Start a new conversation"),
         BotCommand("help", "Show available commands"),
+        BotCommand("pairing", "Approve a pending pairing code (owner only)"),
     ]
 
     def __init__(
@@ -142,6 +144,8 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._pending_pairings: dict[str, tuple[str, int]] = {}  # code -> (sender_numeric_id, chat_id)
+        self._pairing_by_sender: dict[str, str] = {}  # sender_numeric_id -> code
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -171,6 +175,7 @@ class TelegramChannel(BaseChannel):
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("new", self._forward_command))
         self._app.add_handler(CommandHandler("help", self._on_help))
+        self._app.add_handler(CommandHandler("pairing", self._on_pairing))
 
         # Add message handler for text, photos, voice, documents
         self._app.add_handler(
@@ -349,33 +354,61 @@ class TelegramChannel(BaseChannel):
         sid = str(user.id)
         return f"{sid}|{user.username}" if user.username else sid
 
-    async def _maybe_verify_allow_code(self, message, sender_numeric_id: str) -> bool:
-        """Convert a pending allow_from code into the sender's Telegram user id."""
-        if not message.text:
-            return False
-        code = message.text.strip()
+    def _generate_pairing_code(self, sender_numeric_id: str, chat_id: int) -> str:
+        """Return a pairing code for a sender, reusing an existing one if pending."""
+        existing = self._pairing_by_sender.get(sender_numeric_id)
+        if existing and existing in self._pending_pairings:
+            self._pending_pairings[existing] = (sender_numeric_id, chat_id)
+            return existing
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        while True:
+            code = f"{''.join(secrets.choice(alphabet) for _ in range(4))}-{''.join(secrets.choice(alphabet) for _ in range(4))}"
+            if code not in self._pending_pairings:
+                break
+        self._pending_pairings[code] = (sender_numeric_id, chat_id)
+        self._pairing_by_sender[sender_numeric_id] = code
+        return code
+
+    async def _persist_allow_from(self, sender_numeric_id: str) -> None:
         allow_from = list(getattr(self.config, "allow_from", []) or [])
-        if not code or code not in allow_from:
-            return False
-
-        next_allow_from: list[str] = []
-        for item in allow_from:
-            if item == code:
-                if sender_numeric_id not in next_allow_from:
-                    next_allow_from.append(sender_numeric_id)
-            elif item and item not in next_allow_from:
-                next_allow_from.append(item)
-        self.config.allow_from = next_allow_from
-
+        if sender_numeric_id not in allow_from:
+            allow_from.append(sender_numeric_id)
+        self.config.allow_from = allow_from
         if self._on_allow_from_verified:
             try:
-                await self._on_allow_from_verified(code, sender_numeric_id)
+                await self._on_allow_from_verified("", sender_numeric_id)
             except Exception as exc:
-                logger.warning("Failed to persist Telegram allow code confirmation: {}", exc)
+                logger.warning("Failed to persist Telegram pairing: {}", exc)
 
-        await message.reply_text("Telegram autorizado para este agente.")
-        logger.info("Telegram allow code confirmed for sender {}", sender_numeric_id)
-        return True
+    async def _on_pairing(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Approve a pending pairing code. Usage: /pairing approve <code>"""
+        if not update.message or not update.effective_user:
+            return
+        sender_id = self._sender_id(update.effective_user)
+        if not self.is_allowed(sender_id):
+            await update.message.reply_text("Apenas usuários autorizados podem aprovar pareamentos.")
+            return
+        args = (context.args or [])
+        if len(args) < 2 or args[0].lower() != "approve":
+            await update.message.reply_text("Uso: /pairing approve <código>")
+            return
+        code = args[1].strip().upper()
+        pending = self._pending_pairings.pop(code, None)
+        if not pending:
+            await update.message.reply_text(f"Código {code} não encontrado ou já aprovado.")
+            return
+        sender_numeric_id, pending_chat_id = pending
+        self._pairing_by_sender.pop(sender_numeric_id, None)
+        await self._persist_allow_from(sender_numeric_id)
+        await update.message.reply_text(f"Usuário {sender_numeric_id} aprovado.")
+        try:
+            await self._app.bot.send_message(
+                chat_id=pending_chat_id,
+                text="Você foi aprovado. Pode conversar comigo normalmente agora.",
+            )
+        except Exception as exc:
+            logger.debug("Failed to notify paired user {}: {}", pending_chat_id, exc)
+        logger.info("Telegram pairing approved for sender {}", sender_numeric_id)
 
     async def _forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward slash commands to the bus for unified handling in AgentLoop."""
@@ -398,7 +431,14 @@ class TelegramChannel(BaseChannel):
         sender_id = self._sender_id(user)
         sender_numeric_id = str(user.id)
 
-        if not self.is_allowed(sender_id) and await self._maybe_verify_allow_code(message, sender_numeric_id):
+        if not self.is_allowed(sender_id):
+            code = self._generate_pairing_code(sender_numeric_id, chat_id)
+            await message.reply_text(
+                "Olá! Este assistente só responde a usuários aprovados.\n\n"
+                f"Seu código de pareamento é: {code}\n\n"
+                "Para obter acesso, peça ao responsável para aprovar este código:\n"
+                f"• Neste chat, o responsável envia: /pairing approve {code}"
+            )
             return
 
         # Store chat_id for replies
@@ -471,8 +511,8 @@ class TelegramChannel(BaseChannel):
 
         str_chat_id = str(chat_id)
 
-        # Start typing indicator before processing
-        self._start_typing(str_chat_id)
+        if self.is_allowed(sender_id):
+            self._start_typing(str_chat_id)
 
         sender_name = user.full_name or (
             f"{user.first_name or ''} {user.last_name or ''}".strip()

@@ -63,9 +63,10 @@ interface WizardDraft {
   skills: string[];
   mcps: string[];
   channels: string[];
+  starter_prompts: string[];
 }
 
-export type WizardStep = 1 | 2 | 3 | 4 | 5;
+export type WizardStep = 1 | 2 | 3 | 4 | 5 | 6;
 
 interface AppState {
   // Auth
@@ -76,6 +77,7 @@ interface AppState {
 
   // Sessions
   agents: Agent[];
+  systemAgents: Agent[];
   activeAgentId: string | null;
   sessions: Session[];
   activeSessionKey: string | null;
@@ -143,6 +145,7 @@ const EMPTY_WIZARD: WizardDraft = {
   skills: [],
   mcps: [],
   channels: [],
+  starter_prompts: [],
 };
 
 let msgCounter = 0;
@@ -159,6 +162,7 @@ export const useStore = create<AppState>((set, get) => ({
   authError: null,
 
   agents: [],
+  systemAgents: [],
   activeAgentId: localStorage.getItem("nanobot_agent_id"),
   sessions: [],
   activeSessionKey: null,
@@ -243,13 +247,18 @@ export const useStore = create<AppState>((set, get) => ({
 
   async loadAgents() {
     try {
-      const agents = await listAgents();
+      const all = await listAgents();
+      const isSystem = (a: Agent) =>
+        Boolean((a.metadata as { system?: boolean; template_id?: string } | undefined)?.system) ||
+        (a.metadata as { template_id?: string } | undefined)?.template_id === "skill_author";
+      const systemAgents = all.filter(isSystem);
+      const agents = all.filter((a) => !isSystem(a));
       const current = get().activeAgentId;
       const active = agents.find((agent) => agent.agent_id === current)
         ?? agents.find((agent) => agent.is_default)
         ?? agents[0]
         ?? null;
-      set({ agents, activeAgentId: active?.agent_id ?? null });
+      set({ agents, systemAgents, activeAgentId: active?.agent_id ?? null });
       setActiveAgentId(active?.agent_id ?? null);
     } catch (e) {
       toast("error", `Failed to load agents: ${(e as Error).message}`);

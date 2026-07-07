@@ -146,7 +146,7 @@ function ClientList() {
 
   return (
     <div className="container-app">
-      <PageHeader icon={Users} title="Colaboradores" subtitle={subtitle} />
+      <PageHeader icon={Users} title="Pessoas" subtitle={subtitle} />
 
       <Card className="mb-5">
         <CardContent className="p-4 pt-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">

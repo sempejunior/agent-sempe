@@ -12,11 +12,7 @@ import {
   BookOpen,
   UserCog,
   ClipboardList,
-  BrainCircuit,
   Settings,
-  ScrollText,
-  BookMarked,
-  Radio,
 } from "lucide-react";
 import { useStore } from "@/lib/store";
 import type { View } from "@/lib/store";
@@ -41,8 +37,8 @@ function useSections(): SidebarSection[] {
 
   return [
     {
-      label: "Canais de Interação",
-      items: [{ key: "chat", label: "Conversar", icon: MessageSquare }],
+      label: "Conversar",
+      items: [{ key: "chat", label: "Chat", icon: MessageSquare }],
     },
     {
       label: "Força de Trabalho Digital",
@@ -61,31 +57,24 @@ function useSections(): SidebarSection[] {
       ],
     },
     {
-      label: "Integrações Ativas",
+      label: "Integrações",
       items: [
-        { key: "channels", label: "WhatsApp / Canais", icon: Send },
+        { key: "channels", label: "Canais de Comunicação", icon: Send },
         { key: "integrations", label: "MCPs & APIs", icon: Plug },
-        { key: "mcp", label: "MCPs (legado)", icon: Plug },
+        { key: "rag-manager", label: "Bases de Conhecimento", icon: BookOpen },
         { key: "dbs", label: "Bancos de Dados", icon: Database, soon: true },
-        { key: "rag-manager", label: "Bases RAG / FAQ", icon: BookOpen },
       ],
     },
     {
-      label: "Agente Ativo",
+      label: "Pessoas",
       items: [
-        { key: "prompts", label: "Prompts", icon: ScrollText },
-        { key: "memory", label: "Memória", icon: BrainCircuit },
-        { key: "rag", label: "RAG (config)", icon: BookMarked },
-        { key: "cron", label: "Cron", icon: Radio },
-        { key: "settings", label: "Configurações", icon: Settings },
-      ],
-    },
-    {
-      label: "Módulos Tradicionais",
-      items: [
-        { key: "clients", label: "Colaboradores", icon: UserCog },
+        { key: "clients", label: "Pessoas", icon: UserCog },
         { key: "capabilities", label: "Admissões", icon: ClipboardList, soon: true },
       ],
+    },
+    {
+      label: "Sistema",
+      items: [{ key: "settings", label: "Configurações", icon: Settings }],
     },
   ];
 }
@@ -111,13 +100,15 @@ export function HubSidebar() {
   return (
     <aside className="w-60 h-full bg-[#fafafb] border-r border-border flex flex-col shrink-0">
       <div className="px-5 py-4 border-b border-border">
-        <div className="flex items-center gap-2">
-          <div className="w-9 h-9 rounded-xl bg-purple flex items-center justify-center shadow-md shadow-purple/20">
-            <Store className="w-4 h-4 text-white" />
-          </div>
-          <div className="leading-tight">
-            <div className="font-display font-bold text-sm text-text-primary">
-              Sólides Agent Hub
+        <div className="flex items-center gap-3 min-w-0">
+          <img
+            src="/solides-logo.webp"
+            alt="Sólides"
+            className="h-6 max-w-[110px] w-auto object-contain shrink-0"
+          />
+          <div className="leading-tight border-l border-border pl-3 min-w-0">
+            <div className="font-display font-bold text-[13px] text-text-primary truncate">
+              Agent Hub
             </div>
             <div className="text-[10px] text-text-muted font-medium">v2.5</div>
           </div>

@@ -14,6 +14,23 @@ from fastapi import APIRouter, HTTPException, Request
 router = APIRouter(prefix="/api/clients", tags=["clients"])
 
 
+def _extract_agent_id(session_key: str) -> str | None:
+    parts = session_key.split(":")
+    if len(parts) >= 2 and parts[0] == "agent":
+        return parts[1]
+    return None
+
+
+def _extract_channel(session_key: str, client_id: str) -> str | None:
+    marker = f"client:{client_id}:"
+    idx = session_key.find(marker)
+    if idx < 0:
+        return None
+    tail = session_key[idx + len(marker):]
+    channel = tail.split(":", 1)[0]
+    return channel or None
+
+
 async def _require_user(request: Request) -> dict[str, Any]:
     auth = request.headers.get("authorization", "")
     if not auth.startswith("Bearer "):
@@ -247,9 +264,9 @@ async def list_client_recent_messages(
     limit = min(limit, 200)
 
     all_sessions = await repos.sessions.list_sessions(owner_id)
-    prefix = f"client:{client_id}:"
+    marker = f"client:{client_id}:"
     client_sessions = [
-        s for s in all_sessions if s.get("session_key", "").startswith(prefix)
+        s for s in all_sessions if marker in s.get("session_key", "")
     ]
 
     messages: list[dict[str, Any]] = []
@@ -257,6 +274,7 @@ async def list_client_recent_messages(
         session = await repos.sessions.get(owner_id, s["session_key"])
         if not session:
             continue
+        agent_id = _extract_agent_id(s["session_key"])
         msgs = await repos.messages.get_messages(session["id"], limit=200)
         for m in msgs:
             role = m.get("role", "")
@@ -270,6 +288,7 @@ async def list_client_recent_messages(
                 "content": content,
                 "timestamp": m.get("timestamp", m.get("created_at", "")),
                 "session_key": s["session_key"],
+                "agent_id": agent_id,
             })
 
     messages.sort(key=lambda m: m.get("timestamp", ""))
@@ -284,15 +303,19 @@ async def list_client_sessions(request: Request, client_id: str):
     client = await _get_owned_client(request, client_id)
     repos = request.app.state.repos
     all_sessions = await repos.sessions.list_sessions(client["owner_id"])
-    prefix = f"client:{client_id}:"
+    marker = f"client:{client_id}:"
     result = []
     for s in all_sessions:
-        if s.get("session_key", "").startswith(prefix):
+        key = s.get("session_key", "")
+        if marker in key:
             result.append({
-                "session_key": s["session_key"],
+                "session_key": key,
                 "message_count": s.get("message_count", 0),
                 "updated_at": s.get("updated_at", ""),
+                "agent_id": _extract_agent_id(key),
+                "channel": _extract_channel(key, client_id),
             })
+    result.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
     return result
 
 
@@ -302,7 +325,7 @@ async def get_client_session_messages(
 ):
     client = await _get_owned_client(request, client_id)
     repos = request.app.state.repos
-    if not session_key.startswith(f"client:{client_id}:"):
+    if f"client:{client_id}:" not in session_key:
         raise HTTPException(404, "Session not found for this client")
     session = await repos.sessions.get(client["owner_id"], session_key)
     if not session:
@@ -323,7 +346,7 @@ async def delete_client_session(
     request: Request, client_id: str, session_key: str,
 ):
     client = await _get_owned_client(request, client_id)
-    if not session_key.startswith(f"client:{client_id}:"):
+    if f"client:{client_id}:" not in session_key:
         raise HTTPException(404, "Session not found for this client")
     ok = await request.app.state.repos.sessions.delete(
         client["owner_id"], session_key,

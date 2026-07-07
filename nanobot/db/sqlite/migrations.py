@@ -553,6 +553,55 @@ CREATE TABLE IF NOT EXISTS user_integrations (
 CREATE INDEX IF NOT EXISTS idx_user_integrations_user ON user_integrations(user_id, enabled);
 CREATE INDEX IF NOT EXISTS idx_user_integrations_user_kind ON user_integrations(user_id, kind);
 """),
+
+    (9, """
+-- ===================== v9: agent templates catalog =====================
+
+CREATE TABLE IF NOT EXISTS agent_templates (
+    id                TEXT PRIMARY KEY,
+    name              TEXT NOT NULL,
+    role              TEXT NOT NULL DEFAULT '',
+    description       TEXT NOT NULL DEFAULT '',
+    category          TEXT NOT NULL DEFAULT 'Geral',
+    tags              TEXT NOT NULL DEFAULT '[]',
+    icon              TEXT NOT NULL DEFAULT 'sparkles',
+    system_prompt     TEXT NOT NULL DEFAULT '',
+    tools             TEXT NOT NULL DEFAULT '[]',
+    rag_enabled       INTEGER NOT NULL DEFAULT 0,
+    starter_prompts   TEXT NOT NULL DEFAULT '[]',
+    model_recommended TEXT,
+    display_order     INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_template_skills (
+    template_id   TEXT NOT NULL REFERENCES agent_templates(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    description   TEXT NOT NULL DEFAULT '',
+    content       TEXT NOT NULL,
+    always_active INTEGER NOT NULL DEFAULT 0,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (template_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS agent_template_knowledge (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id   TEXT NOT NULL REFERENCES agent_templates(id) ON DELETE CASCADE,
+    source        TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    display_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_template_skills_tpl ON agent_template_skills(template_id);
+CREATE INDEX IF NOT EXISTS idx_template_knowledge_tpl ON agent_template_knowledge(template_id);
+"""),
+
+    (10, """
+-- ===================== v10: template guardrails column =====================
+-- Column added via _safe_add_column in the post-migration fixup below to be
+-- idempotent across divergent DBs.
+SELECT 1;
+"""),
 ]
 
 async def _safe_add_column(db: "aiosqlite.Connection", table: str, column: str, definition: str) -> None:
@@ -699,3 +748,202 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
     await _ensure_agents_table(db)
     await _fixup_v6_add_columns(db)
     await _fixup_v6_cron(db)
+    await _fixup_v10_template_guardrails(db)
+    await _fixup_v11_skill_origin(db)
+    await _seed_agent_templates_if_empty(db)
+    await _backfill_template_guardrails(db)
+    await _backfill_missing_templates(db)
+
+
+async def _fixup_v11_skill_origin(db: "aiosqlite.Connection") -> None:
+    """Track skill origin (user vs solides template) so the UI can filter."""
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='skills'"
+    )
+    if not await cursor.fetchone():
+        return
+    await _safe_add_column(
+        db, "skills", "origin", "TEXT NOT NULL DEFAULT 'user'"
+    )
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='agent_template_skills'"
+    )
+    if await cursor.fetchone():
+        await db.execute(
+            "UPDATE skills SET origin = 'solides' "
+            "WHERE origin = 'user' AND name IN ("
+            "  SELECT DISTINCT name FROM agent_template_skills"
+            ")"
+        )
+    await db.commit()
+
+
+async def _fixup_v10_template_guardrails(db: "aiosqlite.Connection") -> None:
+    """Ensure agent_templates has a guardrails column."""
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_templates'"
+    )
+    if not await cursor.fetchone():
+        return
+    await _safe_add_column(
+        db, "agent_templates", "guardrails", "TEXT NOT NULL DEFAULT ''"
+    )
+    await db.commit()
+
+
+async def _backfill_missing_templates(db: "aiosqlite.Connection") -> None:
+    """Insert any seed template that is missing from an already-seeded DB.
+
+    The initial seed only runs on empty tables. When we add a new template to
+    ``SOLIDES_TEMPLATES`` after the first startup, existing installs would
+    never see it. This backfill inserts any template whose ``id`` is not
+    present yet, preserving user-edited rows untouched.
+    """
+    import json
+
+    from nanobot.db.sqlite.seed.agent_templates_solides import SOLIDES_TEMPLATES
+
+    cursor = await db.execute("SELECT id FROM agent_templates")
+    existing = {row[0] for row in await cursor.fetchall()}
+
+    cursor = await db.execute("SELECT COALESCE(MAX(display_order), -1) FROM agent_templates")
+    row = await cursor.fetchone()
+    next_order = (row[0] if row else -1) + 1
+
+    for tpl in SOLIDES_TEMPLATES:
+        if tpl["id"] in existing:
+            continue
+        await db.execute(
+            """INSERT INTO agent_templates (
+                id, name, role, description, category, tags, icon,
+                system_prompt, guardrails, tools, rag_enabled, starter_prompts,
+                model_recommended, display_order
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                tpl["id"],
+                tpl["name"],
+                tpl.get("role", ""),
+                tpl.get("description", ""),
+                tpl.get("category", "Geral"),
+                json.dumps(tpl.get("tags", []), ensure_ascii=False),
+                tpl.get("icon", "sparkles"),
+                tpl.get("system_prompt", ""),
+                tpl.get("guardrails", ""),
+                json.dumps(tpl.get("tools", []), ensure_ascii=False),
+                1 if tpl.get("rag_enabled") else 0,
+                json.dumps(tpl.get("starter_prompts", []), ensure_ascii=False),
+                tpl.get("model_recommended"),
+                next_order,
+            ),
+        )
+        next_order += 1
+        for skill_order, skill in enumerate(tpl.get("skills", [])):
+            await db.execute(
+                """INSERT INTO agent_template_skills (
+                    template_id, name, description, content,
+                    always_active, display_order
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    tpl["id"],
+                    skill["name"],
+                    skill.get("description", ""),
+                    skill["content"],
+                    1 if skill.get("always_active") else 0,
+                    skill_order,
+                ),
+            )
+        for knowledge_order, doc in enumerate(tpl.get("knowledge", [])):
+            await db.execute(
+                """INSERT INTO agent_template_knowledge (
+                    template_id, source, content, display_order
+                ) VALUES (?, ?, ?, ?)""",
+                (tpl["id"], doc["source"], doc["content"], knowledge_order),
+            )
+    await db.commit()
+
+
+async def _backfill_template_guardrails(db: "aiosqlite.Connection") -> None:
+    """Populate guardrails on catalog templates that ship with the seed.
+
+    Templates already in the DB from a previous seed have empty guardrails
+    after v10. This backfills them from the seed source without touching
+    user-edited templates (only rows whose guardrails is still empty).
+    """
+    from nanobot.db.sqlite.seed.agent_templates_solides import SOLIDES_TEMPLATES
+
+    for tpl in SOLIDES_TEMPLATES:
+        guardrails = tpl.get("guardrails", "")
+        if not guardrails:
+            continue
+        await db.execute(
+            "UPDATE agent_templates SET guardrails = ? "
+            "WHERE id = ? AND (guardrails IS NULL OR guardrails = '')",
+            (guardrails, tpl["id"]),
+        )
+    await db.commit()
+
+
+async def _seed_agent_templates_if_empty(db: "aiosqlite.Connection") -> None:
+    """Populate the Sólides agent templates catalog if the table is empty.
+
+    The seed is idempotent by design: it only runs when agent_templates has
+    zero rows. Admins editing templates via UI/API in the future will not be
+    overwritten on next startup.
+    """
+    cursor = await db.execute("SELECT COUNT(*) FROM agent_templates")
+    row = await cursor.fetchone()
+    if row and row[0] > 0:
+        return
+
+    import json
+
+    from nanobot.db.sqlite.seed.agent_templates_solides import SOLIDES_TEMPLATES
+
+    for order, tpl in enumerate(SOLIDES_TEMPLATES):
+        await db.execute(
+            """INSERT INTO agent_templates (
+                id, name, role, description, category, tags, icon,
+                system_prompt, guardrails, tools, rag_enabled, starter_prompts,
+                model_recommended, display_order
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                tpl["id"],
+                tpl["name"],
+                tpl.get("role", ""),
+                tpl.get("description", ""),
+                tpl.get("category", "Geral"),
+                json.dumps(tpl.get("tags", []), ensure_ascii=False),
+                tpl.get("icon", "sparkles"),
+                tpl.get("system_prompt", ""),
+                tpl.get("guardrails", ""),
+                json.dumps(tpl.get("tools", []), ensure_ascii=False),
+                1 if tpl.get("rag_enabled") else 0,
+                json.dumps(tpl.get("starter_prompts", []), ensure_ascii=False),
+                tpl.get("model_recommended"),
+                order,
+            ),
+        )
+        for skill_order, skill in enumerate(tpl.get("skills", [])):
+            await db.execute(
+                """INSERT INTO agent_template_skills (
+                    template_id, name, description, content,
+                    always_active, display_order
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    tpl["id"],
+                    skill["name"],
+                    skill.get("description", ""),
+                    skill["content"],
+                    1 if skill.get("always_active") else 0,
+                    skill_order,
+                ),
+            )
+        for knowledge_order, doc in enumerate(tpl.get("knowledge", [])):
+            await db.execute(
+                """INSERT INTO agent_template_knowledge (
+                    template_id, source, content, display_order
+                ) VALUES (?, ?, ?, ?)""",
+                (tpl["id"], doc["source"], doc["content"], knowledge_order),
+            )
+    await db.commit()

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import html as htmllib
 import json
+import secrets as pysecrets
 import traceback
 import uuid
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
@@ -355,8 +357,26 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
     @app.get("/api/agents/templates")
     async def list_agent_templates(request: Request):
         await _require_user(request)
-        from nanobot.agent.templates import list_templates
-        return list_templates()
+        return await app.state.repos.agent_templates.list_templates()
+
+    @app.get("/api/agents/templates/{template_id}")
+    async def get_agent_template(request: Request, template_id: str):
+        await _require_user(request)
+        tpl = await app.state.repos.agent_templates.get_template(template_id)
+        if not tpl:
+            raise HTTPException(status_code=404, detail="Template não encontrado")
+        skills = await app.state.repos.agent_templates.list_skills(template_id)
+        knowledge = await app.state.repos.agent_templates.list_knowledge(template_id)
+        tpl["skills"] = [
+            {
+                "name": s["name"],
+                "description": s["description"],
+                "always_active": s["always_active"],
+            }
+            for s in skills
+        ]
+        tpl["knowledge_sources"] = [{"source": k["source"]} for k in knowledge]
+        return tpl
 
     @app.post("/api/agents")
     async def create_agent(request: Request):
@@ -371,20 +391,82 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             raise HTTPException(status_code=422, detail=f"Campos obrigatórios ausentes: {', '.join(missing)}")
 
         base = await _ensure_default_agent(user)
+
+        raw_metadata = body.get("metadata")
+        metadata: dict[str, Any] = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+        template_id = (
+            metadata.get("template")
+            or body.get("template")
+            or "custom"
+        )
+        metadata.setdefault("template", template_id)
+
+        tpl_skill_names: list[str] = []
+        tpl: dict[str, Any] | None = None
+        if template_id and template_id not in ("custom", "blank"):
+            tpl = await app.state.repos.agent_templates.get_template(template_id)
+            if tpl:
+                tpl_skills = await app.state.repos.agent_templates.list_skills(template_id)
+                for skill in tpl_skills:
+                    await app.state.repos.skills.save_skill(user["user_id"], {
+                        "name": skill["name"],
+                        "content": skill["content"],
+                        "description": skill.get("description", ""),
+                        "always_active": skill.get("always_active", False),
+                        "enabled": True,
+                        "origin": "solides",
+                    })
+                    tpl_skill_names.append(skill["name"])
+                if tpl.get("rag_enabled"):
+                    tpl_knowledge = await app.state.repos.agent_templates.list_knowledge(template_id)
+                    for doc in tpl_knowledge:
+                        await app.state.repos.retriever.ingest(
+                            user["user_id"],
+                            doc["content"],
+                            metadata={
+                                "source": doc["source"],
+                                "template": template_id,
+                            },
+                        )
+
+        agent_config: dict[str, Any] = {
+            **(user.get("agent_config", {}) or {}),
+            **(base.get("agent_config", {}) or {}),
+            **(body.get("agent_config", {}) or {}),
+        }
+        if tpl:
+            existing_skills = list(agent_config.get("skills_enabled") or [])
+            merged_skills = list(dict.fromkeys([*existing_skills, *tpl_skill_names]))
+            agent_config["skills_enabled"] = merged_skills
+            if tpl.get("rag_enabled"):
+                rag_cfg = dict(agent_config.get("rag", {}) or {})
+                rag_cfg["enabled"] = True
+                agent_config["rag"] = rag_cfg
+            if tpl.get("model_recommended") and not agent_config.get("model"):
+                agent_config["model"] = tpl["model_recommended"]
+
+        bootstrap = body.get("bootstrap") or {}
+        if tpl and tpl.get("system_prompt") and not bootstrap.get("AGENTS.md"):
+            bootstrap = {**bootstrap, "AGENTS.md": tpl["system_prompt"]}
+
+        tools_enabled = body.get("tools_enabled")
+        if tools_enabled is None:
+            tools_enabled = tpl.get("tools") if tpl else base.get("tools_enabled", [])
+
+        avatar = body.get("avatar")
+        if not avatar:
+            avatar = (tpl.get("icon") if tpl else None) or name[:1].upper()
+
         agent_id = await app.state.repos.agents.create_agent(user["user_id"], {
             "name": name,
             "role": role,
             "description": description,
-            "avatar": body.get("avatar", name[:1].upper()),
-            "agent_config": {
-                **(user.get("agent_config", {}) or {}),
-                **(base.get("agent_config", {}) or {}),
-                **(body.get("agent_config", {}) or {}),
-            },
-            "bootstrap": body.get("bootstrap", {}),
-            "tools_enabled": body.get("tools_enabled", base.get("tools_enabled", [])),
+            "avatar": avatar,
+            "agent_config": agent_config,
+            "bootstrap": bootstrap,
+            "tools_enabled": tools_enabled,
             "channel_configs": body.get("channel_configs", {}),
-            "metadata": body.get("metadata", {"template": body.get("template", "custom")}),
+            "metadata": metadata,
             "status": body.get("status", "active"),
         })
         agent = await app.state.repos.agents.get_agent(user["user_id"], agent_id)
@@ -457,6 +539,196 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         ok = await app.state.repos.agents.delete_agent(user["user_id"], agent_id)
         _invalidate_agent_context(user["user_id"], agent_id)
         return {"ok": ok}
+
+    def _embed_public_url(request: Request, token: str) -> str:
+        base = str(request.base_url).rstrip("/")
+        return f"{base}/embed/{token}"
+
+    def _embed_snippet(url: str, agent_name: str) -> str:
+        safe_name = htmllib.escape(agent_name or "Agente")
+        return (
+            f'<iframe src="{url}" title="{safe_name}" '
+            'style="width:100%;max-width:420px;height:600px;border:0;'
+            'border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,0.12);" '
+            'allow="clipboard-write"></iframe>'
+        )
+
+    def _embed_state(request: Request, agent: dict[str, Any]) -> dict[str, Any]:
+        meta = agent.get("metadata") or {}
+        enabled = bool(meta.get("embed_enabled"))
+        token = meta.get("embed_token") or ""
+        if not enabled or not token:
+            return {"enabled": False, "token": "", "url": "", "snippet": ""}
+        url = _embed_public_url(request, token)
+        return {
+            "enabled": True,
+            "token": token,
+            "url": url,
+            "snippet": _embed_snippet(url, agent.get("name", "")),
+        }
+
+    @app.get("/api/agents/{agent_id}/embed")
+    async def get_embed_config(request: Request, agent_id: str):
+        _user, agent = await _require_agent(request, agent_id)
+        return _embed_state(request, agent)
+
+    @app.post("/api/agents/{agent_id}/embed")
+    async def enable_embed(request: Request, agent_id: str):
+        user, agent = await _require_agent(request, agent_id)
+        meta = dict(agent.get("metadata") or {})
+        token = meta.get("embed_token") or pysecrets.token_urlsafe(24)
+        meta["embed_enabled"] = True
+        meta["embed_token"] = token
+        await app.state.repos.agents.update_agent(
+            user["user_id"], agent_id, {"metadata": meta},
+        )
+        agent = await app.state.repos.agents.get_agent(user["user_id"], agent_id)
+        return _embed_state(request, agent)
+
+    @app.delete("/api/agents/{agent_id}/embed")
+    async def disable_embed(request: Request, agent_id: str):
+        user, agent = await _require_agent(request, agent_id)
+        meta = dict(agent.get("metadata") or {})
+        meta["embed_enabled"] = False
+        await app.state.repos.agents.update_agent(
+            user["user_id"], agent_id, {"metadata": meta},
+        )
+        return {"enabled": False, "token": "", "url": "", "snippet": ""}
+
+    async def _resolve_embed(token: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        agent = await app.state.repos.agents.find_by_embed_token(token)
+        if not agent:
+            raise HTTPException(404, "Embed not found or disabled")
+        owner = await app.state.repos.users.get_by_id(agent["user_id"])
+        if not owner:
+            raise HTTPException(404, "Embed owner not found")
+        return owner, agent
+
+    @app.get("/embed/{token}")
+    async def embed_page(token: str):
+        try:
+            _owner, agent = await _resolve_embed(token)
+        except HTTPException:
+            return JSONResponse({"error": "not_found"}, status_code=404)
+        name = htmllib.escape(agent.get("name", "Agente"))
+        role = htmllib.escape(agent.get("role", ""))
+        avatar = htmllib.escape((agent.get("avatar") or name[:1] or "A").upper())
+        safe_token = htmllib.escape(token)
+        html = f"""<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>{name}</title>
+<style>
+:root {{ color-scheme: light; }}
+*,*::before,*::after {{ box-sizing: border-box; }}
+body {{ margin:0; font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+       background:#f5f5f7; color:#111; height:100vh; display:flex; flex-direction:column; }}
+header {{ padding:14px 16px; background:#fff; border-bottom:1px solid #eee;
+         display:flex; align-items:center; gap:12px; }}
+.avatar {{ width:36px; height:36px; border-radius:50%; background:#7c3aed;
+          color:#fff; display:flex; align-items:center; justify-content:center;
+          font-weight:700; }}
+.name {{ font-weight:700; font-size:14px; }}
+.role {{ font-size:12px; color:#666; }}
+#log {{ flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }}
+.msg {{ max-width:85%; padding:10px 14px; border-radius:16px; font-size:14px;
+       line-height:1.45; white-space:pre-wrap; word-wrap:break-word; }}
+.user {{ align-self:flex-end; background:#7c3aed; color:#fff; border-bottom-right-radius:4px; }}
+.bot {{ align-self:flex-start; background:#fff; color:#111; border:1px solid #eee;
+       border-bottom-left-radius:4px; }}
+.typing {{ color:#888; font-style:italic; }}
+form {{ display:flex; gap:8px; padding:12px; background:#fff; border-top:1px solid #eee; }}
+input {{ flex:1; padding:10px 14px; border:1px solid #ddd; border-radius:20px;
+        font-size:14px; outline:none; }}
+input:focus {{ border-color:#7c3aed; }}
+button {{ padding:10px 18px; background:#7c3aed; color:#fff; border:0;
+         border-radius:20px; font-weight:600; cursor:pointer; }}
+button:disabled {{ opacity:.5; cursor:not-allowed; }}
+</style></head><body>
+<header>
+  <div class="avatar">{avatar}</div>
+  <div><div class="name">{name}</div><div class="role">{role}</div></div>
+</header>
+<div id="log"></div>
+<form id="f"><input id="i" placeholder="Digite sua mensagem…" autocomplete="off" required/>
+<button id="s" type="submit">Enviar</button></form>
+<script>
+const TOKEN = "{safe_token}";
+const KEY = "nanobot_embed_session_" + TOKEN;
+let sessionKey = localStorage.getItem(KEY);
+if (!sessionKey) {{
+  sessionKey = "embed:" + Math.random().toString(36).slice(2,14);
+  localStorage.setItem(KEY, sessionKey);
+}}
+const log = document.getElementById("log");
+const form = document.getElementById("f");
+const input = document.getElementById("i");
+const send = document.getElementById("s");
+function add(text, cls) {{
+  const d = document.createElement("div");
+  d.className = "msg " + cls; d.textContent = text; log.appendChild(d);
+  log.scrollTop = log.scrollHeight; return d;
+}}
+form.addEventListener("submit", async (e) => {{
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  add(text, "user"); input.value = "";
+  send.disabled = true;
+  const typing = add("digitando…", "bot typing");
+  try {{
+    const r = await fetch("/embed/" + TOKEN + "/message", {{
+      method:"POST", headers:{{"Content-Type":"application/json"}},
+      body: JSON.stringify({{ content: text, session_key: sessionKey }}),
+    }});
+    const data = await r.json();
+    typing.remove();
+    if (data.error) add("Erro: " + data.error, "bot");
+    else add(data.reply || "(sem resposta)", "bot");
+  }} catch (err) {{
+    typing.remove(); add("Falha de conexão.", "bot");
+  }} finally {{ send.disabled = false; input.focus(); }}
+}});
+</script></body></html>"""
+        return HTMLResponse(html)
+
+    @app.post("/embed/{token}/message")
+    async def embed_message(token: str, request: Request):
+        try:
+            owner, agent = await _resolve_embed(token)
+        except HTTPException as exc:
+            return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid_json"}, status_code=400)
+
+        content = (payload.get("content") or "").strip()
+        if not content:
+            return JSONResponse({"error": "empty_message"}, status_code=400)
+
+        raw_key = (payload.get("session_key") or "").strip()
+        if not raw_key:
+            raw_key = f"embed:{uuid.uuid4().hex[:12]}"
+        session_key = f"embed:{token}:{raw_key}"
+
+        try:
+            reply = await app.state.agent.process_direct(
+                content,
+                session_key=session_key,
+                channel="embed",
+                chat_id=session_key,
+                user_id=owner["user_id"],
+                agent_id=agent["agent_id"],
+            )
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception as e:
+            logger.exception("Embed message error for token {}", token)
+            return JSONResponse({"error": f"internal: {e}"}, status_code=500)
+
+        return {"reply": reply or "", "session_key": raw_key}
 
     @app.get("/api/sessions")
     async def list_sessions(request: Request):
@@ -803,6 +1075,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         loader = SkillsLoader(workspace=config.workspace_path)
         all_skills = loader._list_skills_fs(filter_unavailable=False)
         result = []
+        seen: set[str] = set()
         for s in all_skills:
             if s.get("source") != "builtin":
                 continue
@@ -815,7 +1088,26 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 "available": loader._check_requirements(nanobot_meta),
                 "always": nanobot_meta.get("always", False) or meta_raw.get("always") == "true",
                 "content": content,
+                "category": "sistema",
             })
+            seen.add(s["name"])
+
+        templates = await app.state.repos.agent_templates.list_templates()
+        for tpl in templates:
+            tpl_skills = await app.state.repos.agent_templates.list_skills(tpl["id"])
+            for skill in tpl_skills:
+                if skill["name"] in seen:
+                    continue
+                seen.add(skill["name"])
+                result.append({
+                    "name": skill["name"],
+                    "description": skill.get("description", ""),
+                    "available": True,
+                    "always": bool(skill.get("always_active", False)),
+                    "content": skill["content"],
+                    "category": tpl.get("category", "Sólides"),
+                    "template_id": tpl["id"],
+                })
         return result
 
     @app.get("/api/skills")
@@ -938,6 +1230,36 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 b["api_key"] = old.get("api_key", "")
         body["backends"] = new_backends
         user_cfg["rag"] = body
+        await app.state.repos.users.update(user["user_id"], {"agent_config": user_cfg})
+        _invalidate_agent_context(user["user_id"])
+        return {"ok": True}
+
+    @app.get("/api/config/websearch")
+    async def get_websearch_config(request: Request):
+        user = await _require_user(request)
+        user_cfg = user.get("agent_config", {}) or {}
+        ws = dict(user_cfg.get("web_search", {}) or {})
+        key = ws.get("api_key", "")
+        if key:
+            ws["api_key"] = f"{'*' * max(0, len(key) - 4)}{key[-4:]}" if len(key) > 4 else "****"
+        ws.setdefault("provider", "brave")
+        ws.setdefault("max_results", 5)
+        return ws
+
+    @app.put("/api/config/websearch")
+    async def update_websearch_config(request: Request):
+        user = await _require_user(request)
+        body = await request.json()
+        user_cfg = user.get("agent_config", {}) or {}
+        current = user_cfg.get("web_search", {}) or {}
+        new_key = body.get("api_key", "")
+        if "*" in new_key:
+            new_key = current.get("api_key", "")
+        user_cfg["web_search"] = {
+            "provider": body.get("provider", "brave"),
+            "api_key": new_key,
+            "max_results": int(body.get("max_results", 5) or 5),
+        }
         await app.state.repos.users.update(user["user_id"], {"agent_config": user_cfg})
         _invalidate_agent_context(user["user_id"])
         return {"ok": True}
@@ -1252,6 +1574,12 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
         all_user_cfgs[channel_name] = current
         await app.state.repos.users.update(uid, {"channel_configs": all_user_cfgs})
+
+        if "enabled" in body:
+            await _set_agent_channel_enabled(
+                uid, agent, channel_name, bool(body["enabled"]),
+            )
+
         channels_mgr = getattr(app.state, "channels", None)
         owner_key = channels_mgr._owner_key(uid, agent["agent_id"]) if channels_mgr else uid
         existing = channels_mgr.user_channels.get(owner_key, {}).get(channel_name) if channels_mgr else None

@@ -69,13 +69,20 @@ class ContextBuilder:
 
         parts.append(self._get_identity())
 
+        memory = await self.memory.get_memory_context()
+        if memory:
+            parts.append(
+                "# What you already know about the user\n\n"
+                "The facts below are authoritative and always in scope for this "
+                "conversation. Use them naturally (greet by name, respect preferences). "
+                "Do NOT call `search_memory` for anything already listed here, and "
+                "do NOT ask the user to repeat these facts.\n\n"
+                f"{memory}"
+            )
+
         bootstrap = await self._load_bootstrap_files()
         if bootstrap:
             parts.append(bootstrap)
-
-        memory = await self.memory.get_memory_context()
-        if memory:
-            parts.append(f"# Memory\n\n{memory}")
 
         always_skills = await self.skills.get_always_skills()
         if always_skills:
