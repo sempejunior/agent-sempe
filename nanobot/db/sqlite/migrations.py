@@ -793,12 +793,13 @@ async def _fixup_v10_template_guardrails(db: "aiosqlite.Connection") -> None:
 
 
 async def _backfill_missing_templates(db: "aiosqlite.Connection") -> None:
-    """Insert any seed template that is missing from an already-seeded DB.
+    """Insert any missing seed template or its skills/knowledge.
 
-    The initial seed only runs on empty tables. When we add a new template to
-    ``SOLIDES_TEMPLATES`` after the first startup, existing installs would
-    never see it. This backfill inserts any template whose ``id`` is not
-    present yet, preserving user-edited rows untouched.
+    The initial seed only runs on empty tables. This backfill handles two
+    cases: (1) templates added to SOLIDES_TEMPLATES after first startup, and
+    (2) templates already present but whose skill/knowledge rows are empty
+    (e.g. partial seed after an earlier crash). User-edited rows are
+    preserved: skills/knowledge are only inserted when the child count is 0.
     """
     import json
 
@@ -812,54 +813,69 @@ async def _backfill_missing_templates(db: "aiosqlite.Connection") -> None:
     next_order = (row[0] if row else -1) + 1
 
     for tpl in SOLIDES_TEMPLATES:
-        if tpl["id"] in existing:
-            continue
-        await db.execute(
-            """INSERT INTO agent_templates (
-                id, name, role, description, category, tags, icon,
-                system_prompt, guardrails, tools, rag_enabled, starter_prompts,
-                model_recommended, display_order
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                tpl["id"],
-                tpl["name"],
-                tpl.get("role", ""),
-                tpl.get("description", ""),
-                tpl.get("category", "Geral"),
-                json.dumps(tpl.get("tags", []), ensure_ascii=False),
-                tpl.get("icon", "sparkles"),
-                tpl.get("system_prompt", ""),
-                tpl.get("guardrails", ""),
-                json.dumps(tpl.get("tools", []), ensure_ascii=False),
-                1 if tpl.get("rag_enabled") else 0,
-                json.dumps(tpl.get("starter_prompts", []), ensure_ascii=False),
-                tpl.get("model_recommended"),
-                next_order,
-            ),
-        )
-        next_order += 1
-        for skill_order, skill in enumerate(tpl.get("skills", [])):
+        if tpl["id"] not in existing:
             await db.execute(
-                """INSERT INTO agent_template_skills (
-                    template_id, name, description, content,
-                    always_active, display_order
-                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO agent_templates (
+                    id, name, role, description, category, tags, icon,
+                    system_prompt, guardrails, tools, rag_enabled, starter_prompts,
+                    model_recommended, display_order
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     tpl["id"],
-                    skill["name"],
-                    skill.get("description", ""),
-                    skill["content"],
-                    1 if skill.get("always_active") else 0,
-                    skill_order,
+                    tpl["name"],
+                    tpl.get("role", ""),
+                    tpl.get("description", ""),
+                    tpl.get("category", "Geral"),
+                    json.dumps(tpl.get("tags", []), ensure_ascii=False),
+                    tpl.get("icon", "sparkles"),
+                    tpl.get("system_prompt", ""),
+                    tpl.get("guardrails", ""),
+                    json.dumps(tpl.get("tools", []), ensure_ascii=False),
+                    1 if tpl.get("rag_enabled") else 0,
+                    json.dumps(tpl.get("starter_prompts", []), ensure_ascii=False),
+                    tpl.get("model_recommended"),
+                    next_order,
                 ),
             )
-        for knowledge_order, doc in enumerate(tpl.get("knowledge", [])):
-            await db.execute(
-                """INSERT INTO agent_template_knowledge (
-                    template_id, source, content, display_order
-                ) VALUES (?, ?, ?, ?)""",
-                (tpl["id"], doc["source"], doc["content"], knowledge_order),
-            )
+            next_order += 1
+
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM agent_template_skills WHERE template_id = ?",
+            (tpl["id"],),
+        )
+        row = await cursor.fetchone()
+        skills_count = row[0] if row else 0
+        if skills_count == 0:
+            for skill_order, skill in enumerate(tpl.get("skills", [])):
+                await db.execute(
+                    """INSERT INTO agent_template_skills (
+                        template_id, name, description, content,
+                        always_active, display_order
+                    ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        tpl["id"],
+                        skill["name"],
+                        skill.get("description", ""),
+                        skill["content"],
+                        1 if skill.get("always_active") else 0,
+                        skill_order,
+                    ),
+                )
+
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM agent_template_knowledge WHERE template_id = ?",
+            (tpl["id"],),
+        )
+        row = await cursor.fetchone()
+        knowledge_count = row[0] if row else 0
+        if knowledge_count == 0:
+            for knowledge_order, doc in enumerate(tpl.get("knowledge", [])):
+                await db.execute(
+                    """INSERT INTO agent_template_knowledge (
+                        template_id, source, content, display_order
+                    ) VALUES (?, ?, ?, ?)""",
+                    (tpl["id"], doc["source"], doc["content"], knowledge_order),
+                )
     await db.commit()
 
 
