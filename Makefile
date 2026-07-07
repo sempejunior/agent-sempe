@@ -19,6 +19,7 @@ define open_browsers
 endef
 
 up:
+	@mkdir -p $$HOME/.nanobot
 	docker compose up -d
 	$(call open_browsers)
 
@@ -33,6 +34,7 @@ rebuild:
 	$(call open_browsers)
 
 dev:
+	@mkdir -p $$HOME/.nanobot
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml down
 	docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 	@echo ""

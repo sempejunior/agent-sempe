@@ -216,8 +216,12 @@ def _create_workspace_templates(workspace: Path):
     (workspace / "skills").mkdir(exist_ok=True)
 
 
-def _make_provider(config: Config):
-    """Create the appropriate LLM provider from config."""
+def _make_provider(config: Config, strict: bool = True):
+    """Create the appropriate LLM provider from config.
+
+    When strict=False, missing API key is tolerated: the provider is built as a
+    stub that will only fail if actually invoked without a per-user override.
+    """
     from nanobot.providers.custom_provider import CustomProvider
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
@@ -239,9 +243,14 @@ def _make_provider(config: Config):
     from nanobot.providers.registry import find_by_name
     spec = find_by_name(provider_name)
     if not model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):
-        console.print("[red]Error: No API key configured.[/red]")
-        console.print("Set one in ~/.nanobot/config.json under providers section")
-        raise typer.Exit(1)
+        if strict:
+            console.print("[red]Error: No API key configured.[/red]")
+            console.print("Set one in ~/.nanobot/config.json under providers section")
+            raise typer.Exit(1)
+        console.print(
+            "[yellow]No global API key configured. "
+            "Users must set their own provider in Settings.[/yellow]"
+        )
 
     return LiteLLMProvider(
         api_key=p.api_key if p else None,
@@ -286,7 +295,7 @@ def gateway(
 
     config = load_config()
     bus = MessageBus()
-    provider = _make_provider(config)
+    provider = _make_provider(config, strict=not multiuser)
     data_dir = get_data_dir()
 
     async def _setup_and_run():
