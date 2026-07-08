@@ -1,4 +1,4 @@
-.PHONY: up down dev build rebuild logs shell open
+.PHONY: setup up down dev build rebuild logs shell open
 
 FRONTEND_URL := http://localhost:5173
 VNC_URL      := http://localhost:7080/vnc.html?autoconnect=1&resize=scale
@@ -17,6 +17,9 @@ define open_browsers
 	@sleep 1
 	@$(OPENER) "$(VNC_URL)" >/dev/null 2>&1 &
 endef
+
+setup:
+	@./setup.sh
 
 up:
 	@mkdir -p $$HOME/.nanobot
