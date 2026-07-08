@@ -753,6 +753,7 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
     await _seed_agent_templates_if_empty(db)
     await _backfill_template_guardrails(db)
     await _backfill_missing_templates(db)
+    await _refresh_skill_author_prompt(db)
 
 
 async def _fixup_v11_skill_origin(db: "aiosqlite.Connection") -> None:
@@ -962,4 +963,64 @@ async def _seed_agent_templates_if_empty(db: "aiosqlite.Connection") -> None:
                 ) VALUES (?, ?, ?, ?)""",
                 (tpl["id"], doc["source"], doc["content"], knowledge_order),
             )
+    await db.commit()
+
+
+_SKILL_AUTHOR_LEGACY_MARKER = "Rascunhe a estrutura da skill em Markdown"
+
+
+async def _refresh_skill_author_prompt(db: "aiosqlite.Connection") -> None:
+    """Replace the legacy interview-style skill_author prompt with the seed.
+
+    The first skill_author prompt drove an interview flow (option menus, long
+    checklists) that misbehaved on smaller models. This updates both the
+    catalog template and any agent already instantiated from it, but only
+    while they still carry the exact legacy prompt — admin-edited rows never
+    match the marker, so they are left untouched. The update is idempotent:
+    the new prompt lacks the marker, so it runs at most once per row.
+    """
+    import json
+
+    from nanobot.db.sqlite.seed.agent_templates_solides import SOLIDES_TEMPLATES
+
+    tpl = next((t for t in SOLIDES_TEMPLATES if t["id"] == "skill_author"), None)
+    if not tpl:
+        return
+    new_prompt = tpl.get("system_prompt", "")
+    if not new_prompt or _SKILL_AUTHOR_LEGACY_MARKER in new_prompt:
+        return
+
+    marker_like = f"%{_SKILL_AUTHOR_LEGACY_MARKER}%"
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_templates'"
+    )
+    if await cursor.fetchone():
+        await db.execute(
+            "UPDATE agent_templates SET system_prompt = ?, guardrails = ? "
+            "WHERE id = 'skill_author' AND system_prompt LIKE ?",
+            (new_prompt, tpl.get("guardrails", ""), marker_like),
+        )
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'"
+    )
+    if await cursor.fetchone():
+        cursor = await db.execute(
+            "SELECT agent_id, bootstrap FROM agents WHERE bootstrap LIKE ?",
+            (marker_like,),
+        )
+        for agent_id, bootstrap_raw in await cursor.fetchall():
+            try:
+                bootstrap = json.loads(bootstrap_raw)
+            except (TypeError, ValueError):
+                continue
+            if _SKILL_AUTHOR_LEGACY_MARKER not in bootstrap.get("AGENTS.md", ""):
+                continue
+            bootstrap["AGENTS.md"] = new_prompt
+            await db.execute(
+                "UPDATE agents SET bootstrap = ? WHERE agent_id = ?",
+                (json.dumps(bootstrap, ensure_ascii=False), agent_id),
+            )
+
     await db.commit()
