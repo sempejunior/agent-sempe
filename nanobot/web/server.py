@@ -446,8 +446,14 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
                 agent_config["model"] = tpl["model_recommended"]
 
         bootstrap = body.get("bootstrap") or {}
-        if tpl and tpl.get("system_prompt") and not bootstrap.get("AGENTS.md"):
-            bootstrap = {**bootstrap, "AGENTS.md": tpl["system_prompt"]}
+        if tpl and not bootstrap.get("AGENTS.md"):
+            tpl_sections = []
+            if tpl.get("system_prompt"):
+                tpl_sections.append(tpl["system_prompt"])
+            if tpl.get("guardrails"):
+                tpl_sections.append(f"## Guardrails\n{tpl['guardrails']}")
+            if tpl_sections:
+                bootstrap = {**bootstrap, "AGENTS.md": "\n\n".join(tpl_sections)}
 
         tools_enabled = body.get("tools_enabled")
         if tools_enabled is None:

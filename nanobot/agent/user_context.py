@@ -186,6 +186,7 @@ async def build_user_context(
         custom_instructions=agent_config.get("custom_instructions", ""),
         rag_enabled=retriever is not None,
         integration_repo=repos.integrations,
+        agent_bootstrap=agent_doc.get("bootstrap", {}) or {},
     )
     tools = build_tool_registry(
         tools_enabled=tools_enabled,

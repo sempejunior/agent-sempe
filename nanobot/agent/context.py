@@ -43,6 +43,7 @@ class ContextBuilder:
         custom_instructions: str = "",
         rag_enabled: bool = False,
         integration_repo: "IntegrationRepository | None" = None,
+        agent_bootstrap: dict[str, str] | None = None,
     ):
         self.workspace = workspace
         self.memory = memory_store or MemoryStore(workspace)
@@ -53,6 +54,7 @@ class ContextBuilder:
         self._custom_instructions = custom_instructions
         self._rag_enabled = rag_enabled
         self._integration_repo = integration_repo
+        self._agent_bootstrap = agent_bootstrap or {}
         self._mode: str = "db" if user_repo is not None and user_id is not None else "fs"
 
     async def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
@@ -295,6 +297,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                 ws_content = file_path.read_text(encoding="utf-8").strip()
 
             extension = (user_extensions.get(filename) or "").strip()
+            agent_ext = (self._agent_bootstrap.get(filename) or "").strip()
 
             if filename in PROMPT_FILES:
                 sections = []
@@ -304,10 +307,12 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                     sections.append(ws_content)
                 if extension:
                     sections.append(extension)
+                if agent_ext:
+                    sections.append(agent_ext)
                 if sections:
                     parts.append(f"## {filename}\n\n" + "\n\n".join(sections))
             else:
-                content = extension or ws_content or base
+                content = agent_ext or extension or ws_content or base
                 if content:
                     parts.append(f"## {filename}\n\n{content}")
 

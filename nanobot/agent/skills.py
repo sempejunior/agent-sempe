@@ -120,6 +120,11 @@ class SkillsLoader:
         """Get skills marked as always=true that meet requirements."""
         result = []
         for s in await self.list_skills(filter_unavailable=True):
+            if self._mode == "db":
+                row = getattr(self, "_db_by_name", {}).get(s["name"])
+                if row and row.get("always_active"):
+                    result.append(s["name"])
+                    continue
             meta = await self.get_skill_metadata(s["name"]) or {}
             skill_meta = self._parse_nanobot_metadata(meta.get("metadata", ""))
             if skill_meta.get("always") or meta.get("always"):
@@ -154,7 +159,9 @@ class SkillsLoader:
                 "name": s["name"],
                 "source": "user",
                 "content": s.get("content", ""),
+                "description": s.get("description", "") or "",
             })
+        self._db_by_name = db_by_name
 
         user_names = {s["name"] for s in skills}
         if self.builtin_skills and self.builtin_skills.exists():
@@ -246,7 +253,11 @@ class SkillsLoader:
         return ", ".join(missing)
 
     async def _get_skill_description(self, name: str) -> str:
-        """Get the description of a skill from its frontmatter."""
+        """Get the description of a skill from DB column or frontmatter."""
+        if self._mode == "db":
+            row = getattr(self, "_db_by_name", {}).get(name)
+            if row and row.get("description"):
+                return row["description"]
         meta = await self.get_skill_metadata(name)
         if meta and meta.get("description"):
             return meta["description"]
