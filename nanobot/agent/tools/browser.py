@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 from typing import Any
@@ -17,9 +18,13 @@ _CDP_URL = f"http://{_CDP_HOST}:{_CDP_PORT}"
 _MAX_RETRIES = 5
 _RETRY_DELAY = 2.0
 
+_CHROME_PROFILE = "/tmp/nanobot-chrome"
+_CHROME_LOG = "/tmp/nanobot-chrome.log"
+
 _CHROME_FLAGS = [
-    "--no-sandbox", "--no-first-run", "--no-default-browser-check",
+    "--no-sandbox", "--no-default-browser-check",
     "--disable-gpu", "--disable-software-rasterizer", "--disable-dev-shm-usage",
+    f"--user-data-dir={_CHROME_PROFILE}",
     f"--remote-debugging-port={_CDP_PORT}",
     "--window-size=1200,650", "--window-position=80,30",
     "--disable-blink-features=AutomationControlled",
@@ -120,26 +125,58 @@ def cdp_available() -> bool:
         return False
 
 
+def _clear_profile_locks() -> None:
+    """Remove stale singleton lock files left by a crashed Chromium instance.
+
+    Chromium refuses to start when its profile still holds a Singleton lock from
+    a previous process that died without cleaning up, which would otherwise block
+    every relaunch attempt.
+    """
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        try:
+            os.unlink(os.path.join(_CHROME_PROFILE, name))
+        except OSError:
+            pass
+
+
 def _launch_chromium() -> bool:
     """Try to launch Chromium in the background. Returns True if started."""
-    import os
     display = os.environ.get("DISPLAY")
     if not display:
         return False
     chrome_bin = shutil.which("chromium") or shutil.which("chromium-browser")
     if not chrome_bin:
         return False
+    _clear_profile_locks()
     try:
+        log_file = open(_CHROME_LOG, "w")  # noqa: SIM115 — kept open for the child's lifetime
         subprocess.Popen(
             [chrome_bin, f"--display={display}"] + _CHROME_FLAGS,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
         )
         logger.info("Launched Chromium (CDP port {})", _CDP_PORT)
         return True
     except OSError as e:
         logger.warning("Failed to launch Chromium: {}", e)
         return False
+
+
+def _launch_error_tail(max_lines: int = 8) -> str:
+    """Return the last meaningful lines of the Chromium log, for diagnostics.
+
+    Filters out the harmless dbus/verbose noise so the agent receives the real
+    failure reason (e.g. a GPU crash) and can react to it.
+    """
+    try:
+        with open(_CHROME_LOG, encoding="utf-8", errors="replace") as f:
+            lines = [
+                ln.rstrip() for ln in f
+                if ln.strip() and "dbus" not in ln and "VERBOSE" not in ln
+            ]
+    except OSError:
+        return ""
+    return "\n".join(lines[-max_lines:])
 
 
 async def _ensure_cdp(retries: int = _MAX_RETRIES, delay: float = _RETRY_DELAY) -> bool:
@@ -217,9 +254,12 @@ class BrowserTool(Tool):
         wait: float = float(kwargs.get("wait", 1))
 
         if not await _ensure_cdp():
+            detail = _launch_error_tail()
+            hint = f"\nChromium output:\n{detail}" if detail else ""
             return (
                 f"Error: Chromium browser is not running and could not be started. "
                 f"CDP port {_CDP_PORT} is unreachable after {_MAX_RETRIES} attempts."
+                f"{hint}"
             )
 
         try:

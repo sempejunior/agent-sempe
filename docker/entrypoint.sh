@@ -31,7 +31,7 @@ xterm -display :99 -geometry 100x30+50+50 -fa 'Monospace' -fs 11 \
 # --no-sandbox is required when running as root inside a container
 # Anti-detection flags make the browser appear as a regular user browser
 _CHROME_UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-chromium --display=:99 --no-sandbox --no-first-run --no-default-browser-check \
+chromium --display=:99 --no-sandbox --no-default-browser-check \
   --disable-gpu --disable-software-rasterizer --disable-dev-shm-usage \
   --remote-debugging-port=9222 \
   --window-size=1200,650 --window-position=80,30 \
