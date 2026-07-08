@@ -100,7 +100,7 @@ export function AlertsPage() {
       await addCronJob({
         name: form.name.trim(),
         message: form.message.trim(),
-        kind: "interval",
+        kind: "every",
         every_seconds: form.every_seconds,
         deliver: false,
       });
