@@ -18,6 +18,8 @@ from loguru import logger
 
 _STATIC_DIR = Path(__file__).parent / "frontend" / "static"
 
+_WEB_CHAT_TIMEOUT_S = 180
+
 
 async def _ensure_db(app_state: Any, data_dir: Path) -> bool:
     """Check DB health; reconnect if the connection died.
@@ -1788,15 +1790,29 @@ form.addEventListener("submit", async (e) => {{
                     error_payload: dict[str, Any] | None = None
                     response: str | None = None
                     try:
-                        response = await app.state.agent.process_direct(
-                            content,
-                            session_key=session_key,
-                            channel="web",
-                            chat_id=uid,
-                            on_progress=on_progress,
-                            user_id=uid,
-                            agent_id=agent_id,
+                        response = await asyncio.wait_for(
+                            app.state.agent.process_direct(
+                                content,
+                                session_key=session_key,
+                                channel="web",
+                                chat_id=uid,
+                                on_progress=on_progress,
+                                user_id=uid,
+                                agent_id=agent_id,
+                            ),
+                            timeout=_WEB_CHAT_TIMEOUT_S,
                         )
+                    except asyncio.TimeoutError:
+                        logger.warning("Chat timed out for {} after {}s", uid, _WEB_CHAT_TIMEOUT_S)
+                        error_payload = {
+                            "type": "error",
+                            "code": "timeout",
+                            "content": (
+                                "A tarefa demorou demais e foi interrompida. "
+                                "Tente novamente ou reformule o pedido."
+                            ),
+                            "session_key": session_key,
+                        }
                     except ValueError as e:
                         msg = str(e)
                         logger.warning("Chat validation error for {}: {}", uid, msg)

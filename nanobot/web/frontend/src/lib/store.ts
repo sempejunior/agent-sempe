@@ -352,7 +352,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   newChat() {
-    set({ activeSessionKey: null, messages: [], activeView: "chat" });
+    set({ activeSessionKey: null, messages: [], activeView: "chat", sending: false });
   },
 
   async removeSession(key: string) {
@@ -386,6 +386,21 @@ export const useStore = create<AppState>((set, get) => ({
 
     ws.onopen = () => {
       set({ connected: true });
+      const activeKey = get().activeSessionKey;
+      if (activeKey) {
+        getMessages(activeKey)
+          .then((msgs) =>
+            set({
+              messages: msgs.map((m: Message) => ({
+                id: nextId(),
+                role: m.role as "user" | "assistant",
+                content: m.content,
+              })),
+              sending: false,
+            }),
+          )
+          .catch(() => {});
+      }
       const interval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "ping" }));
@@ -464,7 +479,7 @@ export const useStore = create<AppState>((set, get) => ({
     };
 
     ws.onclose = () => {
-      set({ connected: false });
+      set({ connected: false, sending: false });
       if (_reconnectTimer) {
         clearTimeout(_reconnectTimer);
       }
@@ -493,8 +508,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   sendMessage(content: string) {
-    const { ws, activeSessionKey, messages, activeAgentId } = get();
+    const { ws, activeSessionKey, messages, activeAgentId, sending } = get();
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (sending) return;
 
     const sessionKey = activeSessionKey || `web:${crypto.randomUUID().slice(0, 12)}`;
 
