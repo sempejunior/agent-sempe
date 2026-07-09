@@ -2,8 +2,6 @@
 
 from unittest.mock import AsyncMock
 
-import pytest
-
 from nanobot.agent.loop import _COMPLETION_NUDGE, _FINAL_ANSWER_PROMPT, AgentLoop
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry

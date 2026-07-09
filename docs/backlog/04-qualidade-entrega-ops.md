@@ -1,7 +1,14 @@
 # 04 — Qualidade, entrega (CI/CD) e ops
 
-> **Status:** proposto; um item tem **fix imediato** (ver §Ação imediata). **Prioridade:** P1 (sempre-on).
+> **Status:** em andamento (branch `chore/ci-e-qualidade`). **Prioridade:** P1 (sempre-on).
 > **Tipo:** engenharia / entrega. Ver contexto em [00](00-avaliacao-e-roadmap.md).
+>
+> **Feito:** `tests/` versionado (fora do `.gitignore`); ruff limpo em `nanobot`+`tests`
+> (per-file-ignores p/ o módulo compacto `azure_report.py` + params camelCase de tools);
+> CI (`.github/workflows/ci.yml`: ruff + pytest + build do frontend) e `.pre-commit-config.yaml`.
+> **A fazer:** mypy; ativar `E501`; cobrir web/API (TestClient) e repos DB; eslint como gate
+> (hoje advisory — 3 erros pré-existentes no front); tirar assets buildados do git; Dockerfile
+> multi-stage/non-root; versionamento de API.
 
 ## Problema (estado atual)
 
