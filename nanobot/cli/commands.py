@@ -497,6 +497,7 @@ def agent(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        public_url=config.gateway.public_url or None,
     )
 
     def _thinking_ctx():
@@ -959,6 +960,7 @@ def cron_run(
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
+        public_url=config.gateway.public_url or None,
     )
 
     store_path = get_data_dir() / "cron" / "jobs.json"

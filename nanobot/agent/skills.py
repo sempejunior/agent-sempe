@@ -35,6 +35,7 @@ class SkillsLoader:
         user_id: str | None = None,
         builtin_skills_dir: Path | None = None,
         enabled_names: list[str] | None = None,
+        active_integrations: set[str] | None = None,
     ):
         if skill_repo is not None:
             self._mode = "db"
@@ -49,6 +50,7 @@ class SkillsLoader:
 
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
         self._enabled_names = enabled_names
+        self._active_integrations = active_integrations or set()
 
     async def list_skills(self, filter_unavailable: bool = True) -> list[dict[str, str]]:
         """List all available skills."""
@@ -231,7 +233,7 @@ class SkillsLoader:
             return {}
 
     def _check_requirements(self, skill_meta: dict) -> bool:
-        """Check if skill requirements are met (bins, env vars)."""
+        """Check if skill requirements are met (bins, env vars, active integrations)."""
         requires = skill_meta.get("requires", {})
         for b in requires.get("bins", []):
             if not shutil.which(b):
@@ -239,6 +241,9 @@ class SkillsLoader:
         for env in requires.get("env", []):
             if not os.environ.get(env):
                 return False
+        integrations = requires.get("integrations", [])
+        if integrations and not any(i in self._active_integrations for i in integrations):
+            return False
         return True
 
     def _get_missing_requirements(self, skill_meta: dict) -> str:
@@ -250,6 +255,9 @@ class SkillsLoader:
         for env in requires.get("env", []):
             if not os.environ.get(env):
                 missing.append(f"ENV: {env}")
+        integrations = requires.get("integrations", [])
+        if integrations and not any(i in self._active_integrations for i in integrations):
+            missing.append(f"integração ativa: {' ou '.join(integrations)}")
         return ", ".join(missing)
 
     async def _get_skill_description(self, name: str) -> str:

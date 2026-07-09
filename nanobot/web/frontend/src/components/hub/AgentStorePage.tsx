@@ -52,12 +52,28 @@ export function AgentStorePage() {
       });
   }, [templates]);
 
+  const groupedTemplates = useMemo(() => {
+    const GROUP_ORDER = ["Gestão de Pessoas", "Operações & Compliance", "Geral", "Sistema"];
+    const byGroup = new Map<string, AgentTemplate[]>();
+    for (const t of sortedTemplates) {
+      const g = t.group || "Geral";
+      (byGroup.get(g) ?? byGroup.set(g, []).get(g)!).push(t);
+    }
+    return Array.from(byGroup.entries()).sort((a, b) => {
+      const ia = GROUP_ORDER.indexOf(a[0]);
+      const ib = GROUP_ORDER.indexOf(b[0]);
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    });
+  }, [sortedTemplates]);
+
   async function applyTemplate(t: AgentTemplate) {
     resetWizard();
     let skills: string[] = [];
     try {
       const detail = await getAgentTemplateDetail(t.id);
-      skills = detail.skills.map((s) => s.name);
+      skills = Array.from(
+        new Set([...detail.skills.map((s) => s.name), ...(detail.recommended_skills ?? [])]),
+      );
     } catch (e) {
       toast("error", `Não consegui carregar detalhes do template: ${(e as Error).message}`);
     }
@@ -138,8 +154,16 @@ export function AgentStorePage() {
                 {sortedTemplates.length} templates
               </span>
             </div>
+            {groupedTemplates.map(([group, tpls]) => (
+            <div key={group} className="mb-8">
+              <div className="flex items-baseline gap-2 mb-3">
+                <h3 className="font-display font-bold text-sm text-text-primary uppercase tracking-wide">
+                  {group}
+                </h3>
+                <span className="text-xs text-text-muted">{tpls.length}</span>
+              </div>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-              {sortedTemplates.map((t) => {
+              {tpls.map((t) => {
                 const TplIcon = getIcon(t.icon);
                 return (
                 <Card key={t.id} className="flex flex-col">
@@ -189,6 +213,8 @@ export function AgentStorePage() {
                 );
               })}
             </div>
+            </div>
+            ))}
           </section>
         </div>
       )}

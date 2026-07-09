@@ -40,6 +40,10 @@ const MD_COMPONENTS = {
   pre(props: React.ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
     return <CodeBlock {...props} />;
   },
+  a(props: React.ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
+    const { node: _node, ...rest } = props;
+    return <a {...rest} target="_blank" rel="noopener noreferrer" />;
+  },
 };
 
 interface Props {

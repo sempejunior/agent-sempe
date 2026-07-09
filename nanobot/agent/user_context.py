@@ -112,6 +112,7 @@ async def build_user_context(
     cron_service: CronService | None = None,
     builtin_skills_dir: Path | None = None,
     agent_id: str | None = None,
+    public_url: str | None = None,
 ) -> UserContext:
     """Build a UserContext from the user's DB record.
 
@@ -164,11 +165,21 @@ async def build_user_context(
         else:
             retriever = RetrieverStore(retriever_repo=repos.retriever, user_id=user_id)
     skills_enabled = agent_doc.get("agent_config", {}).get("skills_enabled")
+    active_integrations: set[str] = set()
+    if getattr(repos, "integrations", None):
+        try:
+            for it in await repos.integrations.list_integrations(user_id, enabled_only=True):
+                sid = it.get("system_integration_id") or it.get("slug")
+                if sid:
+                    active_integrations.add(sid)
+        except Exception:
+            pass
     skills = SkillsLoader(
         skill_repo=repos.skills,
         user_id=user_id,
         builtin_skills_dir=builtin_skills_dir or BUILTIN_SKILLS_DIR,
         enabled_names=list(skills_enabled) if isinstance(skills_enabled, list) else None,
+        active_integrations=active_integrations,
     )
     sessions = SessionManager(
         session_repo=repos.sessions,
@@ -203,6 +214,7 @@ async def build_user_context(
         retriever_store=retriever,
         integration_repo=repos.integrations,
         credential_repo=repos.credentials,
+        public_url=public_url,
     )
 
     return UserContext(
@@ -239,6 +251,7 @@ def build_tool_registry(
     retriever_store: Any | None = None,
     integration_repo: Any | None = None,
     credential_repo: Any | None = None,
+    public_url: str | None = None,
 ) -> ToolRegistry:
     """Build a ToolRegistry with only the enabled tools."""
     from nanobot.agent.tools.cron import CronTool
@@ -249,6 +262,7 @@ def build_tool_registry(
         WriteFileTool,
     )
     from nanobot.agent.tools.message import MessageTool
+    from nanobot.agent.tools.report_page import PublishPageTool, PublishReportTool
     from nanobot.agent.tools.shell import ExecTool
     from nanobot.agent.tools.skill import ReadSkillTool, SaveSkillTool
     from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
@@ -270,7 +284,9 @@ def build_tool_registry(
         "web_fetch": lambda: WebFetchTool(),
         "message": lambda: MessageTool(send_callback=bus.publish_outbound),
         "save_skill": lambda: SaveSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace),
-        "read_skill": lambda: ReadSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace),
+        "read_skill": lambda: ReadSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace, builtin_dir=BUILTIN_SKILLS_DIR),
+        "publish_page": lambda: PublishPageTool(workspace=workspace, public_url=public_url),
+        "publish_report": lambda: PublishReportTool(workspace=workspace, public_url=public_url),
     }
 
     if user_repo:
@@ -281,11 +297,19 @@ def build_tool_registry(
         )
 
     if integration_repo and credential_repo and user_id:
+        from nanobot.agent.tools.azure_report import AzureReportTool
         from nanobot.agent.tools.http_call import HttpCallTool
         factories["http_call"] = lambda: HttpCallTool(
             user_id=user_id,
             integration_repo=integration_repo,
             credential_repo=credential_repo,
+        )
+        factories["azure_devops_report"] = lambda: AzureReportTool(
+            user_id=user_id,
+            integration_repo=integration_repo,
+            credential_repo=credential_repo,
+            workspace=workspace,
+            public_url=public_url,
         )
 
     if memory_store:
@@ -328,7 +352,21 @@ def build_tool_registry(
             registry.register(RAGIngestTool(retriever_store))
 
     if skill_repo and user_id and not registry.has("read_skill"):
-        registry.register(ReadSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace))
+        registry.register(ReadSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace, builtin_dir=BUILTIN_SKILLS_DIR))
+
+    if not registry.has("publish_page"):
+        registry.register(PublishPageTool(workspace=workspace, public_url=public_url))
+
+    if not registry.has("publish_report"):
+        registry.register(PublishReportTool(workspace=workspace, public_url=public_url))
+
+    if integration_repo and credential_repo and user_id and not registry.has("azure_devops_report"):
+        from nanobot.agent.tools.azure_report import AzureReportTool
+        registry.register(AzureReportTool(
+            user_id=user_id, integration_repo=integration_repo,
+            credential_repo=credential_repo, workspace=workspace,
+            public_url=public_url,
+        ))
 
     if os.environ.get("DISPLAY"):
         from nanobot.agent.tools.screenshot import ScreenshotTool

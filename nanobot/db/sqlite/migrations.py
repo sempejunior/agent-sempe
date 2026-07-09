@@ -754,6 +754,55 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
     await _backfill_template_guardrails(db)
     await _backfill_missing_templates(db)
     await _refresh_skill_author_prompt(db)
+    await _consolidate_pdi_templates(db)
+    await _refresh_pdi_prompt(db)
+    await _enable_analise_desempenho_skill(db)
+
+
+async def _consolidate_pdi_templates(db: "aiosqlite.Connection") -> None:
+    """Merge the two PDI templates: drop legacy `td_pdi` from the catalog and
+    rename `pdi_desenvolvimento` to the consolidated name.
+
+    Idempotent and non-destructive to user data: only the catalog rows are
+    touched. Agents already created from `td_pdi` are independent copies and
+    keep working. Runs only while `td_pdi` still exists (or the name is stale).
+    """
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_templates'"
+    )
+    if not await cursor.fetchone():
+        return
+    cursor = await db.execute("SELECT id FROM agent_templates WHERE id='td_pdi'")
+    if await cursor.fetchone():
+        await db.execute("DELETE FROM agent_template_skills WHERE template_id='td_pdi'")
+        await db.execute("DELETE FROM agent_template_knowledge WHERE template_id='td_pdi'")
+        await db.execute("DELETE FROM agent_templates WHERE id='td_pdi'")
+    await db.execute(
+        "UPDATE agent_templates SET name='PDI & Desenvolvimento' "
+        "WHERE id='pdi_desenvolvimento' AND name='PDI & Desenvolvimento (dados)'"
+    )
+    # Ensure the page/report tools are on the PDI template so they come pre-selected.
+    import json
+    cursor = await db.execute(
+        "SELECT tools FROM agent_templates WHERE id='pdi_desenvolvimento'"
+    )
+    row = await cursor.fetchone()
+    if row:
+        try:
+            tools = json.loads(row[0]) if row[0] else []
+        except (TypeError, ValueError):
+            tools = []
+        changed = False
+        for t in ("publish_page", "publish_report", "azure_devops_report"):
+            if t not in tools:
+                tools.append(t)
+                changed = True
+        if changed:
+            await db.execute(
+                "UPDATE agent_templates SET tools=? WHERE id='pdi_desenvolvimento'",
+                (json.dumps(tools, ensure_ascii=False),),
+            )
+    await db.commit()
 
 
 async def _fixup_v11_skill_origin(db: "aiosqlite.Connection") -> None:
@@ -967,6 +1016,106 @@ async def _seed_agent_templates_if_empty(db: "aiosqlite.Connection") -> None:
 
 
 _SKILL_AUTHOR_LEGACY_MARKER = "Rascunhe a estrutura da skill em Markdown"
+
+
+async def _enable_analise_desempenho_skill(db: "aiosqlite.Connection") -> None:
+    """Enable the builtin analise-desempenho skill on existing PDI-style agents.
+
+    Agents store a closed skills_enabled list in agent_config, so builtin skills
+    added later stay invisible to them. Any agent that already enables montar-pdi
+    or relatorio-time-azure gets analise-desempenho appended. Idempotent.
+    """
+    import json
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'"
+    )
+    if not await cursor.fetchone():
+        return
+    cursor = await db.execute(
+        "SELECT agent_id, agent_config FROM agents WHERE agent_config LIKE ?",
+        ("%skills_enabled%",),
+    )
+    for agent_id, config_raw in await cursor.fetchall():
+        try:
+            config = json.loads(config_raw)
+        except (TypeError, ValueError):
+            continue
+        skills = config.get("skills_enabled")
+        if not isinstance(skills, list) or "analise-desempenho" in skills:
+            continue
+        if "montar-pdi" not in skills and "relatorio-time-azure" not in skills:
+            continue
+        skills.append("analise-desempenho")
+        await db.execute(
+            "UPDATE agents SET agent_config = ? WHERE agent_id = ?",
+            (json.dumps(config, ensure_ascii=False), agent_id),
+        )
+    await db.commit()
+
+
+_PDI_PROMPT_ANCHOR = "parceiro de desenvolvimento de pessoas da Sólides"
+_PDI_PROMPT_MARKER = "Pedidos compostos"
+
+
+async def _refresh_pdi_prompt(db: "aiosqlite.Connection") -> None:
+    """Add the multi-part-request directive to the PDI prompt.
+
+    Updates the `pdi_desenvolvimento` catalog template and any agent already
+    instantiated from it with the seed prompt that carries the "Pedidos
+    compostos" directive. Rows are only touched while they still contain the
+    seed anchor phrase and lack the new marker — admin-rewritten prompts never
+    match the anchor and are left untouched. Idempotent: once the marker is
+    present, nothing matches. The SQL prefilter on agents.bootstrap uses an
+    accent-free substring because the JSON may store escaped unicode; the
+    precise anchor check runs in Python on the parsed text.
+    """
+    import json
+
+    from nanobot.db.sqlite.seed.agent_templates_solides import SOLIDES_TEMPLATES
+
+    tpl = next((t for t in SOLIDES_TEMPLATES if t["id"] == "pdi_desenvolvimento"), None)
+    if not tpl:
+        return
+    new_prompt = tpl.get("system_prompt", "")
+    if _PDI_PROMPT_MARKER not in new_prompt:
+        return
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_templates'"
+    )
+    if await cursor.fetchone():
+        await db.execute(
+            "UPDATE agent_templates SET system_prompt = ? "
+            "WHERE id = 'pdi_desenvolvimento' AND system_prompt LIKE ? "
+            "AND system_prompt NOT LIKE ?",
+            (new_prompt, f"%{_PDI_PROMPT_ANCHOR}%", f"%{_PDI_PROMPT_MARKER}%"),
+        )
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'"
+    )
+    if await cursor.fetchone():
+        cursor = await db.execute(
+            "SELECT agent_id, bootstrap FROM agents WHERE bootstrap LIKE ?",
+            ("%parceiro de desenvolvimento de pessoas%",),
+        )
+        for agent_id, bootstrap_raw in await cursor.fetchall():
+            try:
+                bootstrap = json.loads(bootstrap_raw)
+            except (TypeError, ValueError):
+                continue
+            text = bootstrap.get("AGENTS.md", "")
+            if _PDI_PROMPT_ANCHOR not in text or _PDI_PROMPT_MARKER in text:
+                continue
+            head, sep, tail = text.partition("\n## Guardrails")
+            bootstrap["AGENTS.md"] = new_prompt + sep + tail
+            await db.execute(
+                "UPDATE agents SET bootstrap = ? WHERE agent_id = ?",
+                (json.dumps(bootstrap, ensure_ascii=False), agent_id),
+            )
+
+    await db.commit()
 
 
 async def _refresh_skill_author_prompt(db: "aiosqlite.Connection") -> None:

@@ -7,6 +7,7 @@ import {
   FileText,
   FolderOpen,
   Globe,
+  Link2,
   MessageSquare,
   Monitor,
   MousePointer2,
@@ -87,6 +88,8 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
       { id: "write_file", name: "Criar Arquivo", desc: "Cria documentos e relatórios", icon: FileText },
       { id: "edit_file", name: "Editar Arquivo", desc: "Modifica arquivos existentes", icon: Pencil },
       { id: "list_dir", name: "Listar Pasta", desc: "Navega diretórios", icon: FolderOpen },
+      { id: "publish_page", name: "Publicar Página", desc: "Gera uma página HTML e retorna um link", icon: Link2 },
+      { id: "publish_report", name: "Publicar Relatório", desc: "Renderiza relatório rico (menu, gráficos) a partir de conteúdo estruturado", icon: FileText },
     ],
   },
   {

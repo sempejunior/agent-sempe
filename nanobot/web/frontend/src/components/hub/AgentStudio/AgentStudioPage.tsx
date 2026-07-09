@@ -38,6 +38,7 @@ import {
   getBuiltinSkills,
   getCustomSkills,
   getMcpConfig,
+  listIntegrations,
   getAgentEmbed,
   enableAgentEmbed,
   disableAgentEmbed,
@@ -71,6 +72,9 @@ const BUILTIN_TOOLS: BuiltinTool[] = [
   { id: "write_file", name: "Escrever arquivo", cat: "Arquivos" },
   { id: "edit_file", name: "Editar arquivo", cat: "Arquivos" },
   { id: "list_dir", name: "Listar pasta", cat: "Arquivos" },
+  { id: "publish_page", name: "Gerador de página", cat: "Relatórios & Páginas" },
+  { id: "publish_report", name: "Relatório estruturado", cat: "Relatórios & Páginas" },
+  { id: "azure_devops_report", name: "Relatório Azure DevOps", cat: "Relatórios & Páginas" },
   { id: "exec", name: "Executar shell", cat: "Sistema", warn: true },
   { id: "computer", name: "Controlar desktop", cat: "Sistema", warn: true },
   { id: "browser", name: "Controlar navegador", cat: "Sistema", warn: true },
@@ -114,6 +118,11 @@ export function AgentStudioPage() {
   const [customSkills, setCustomSkills] = useState<CustomSkill[]>([]);
   const [builtinSkills, setBuiltinSkills] = useState<BuiltinSkill[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
+  const [activeIntegrations, setActiveIntegrations] = useState<Set<string>>(new Set());
+  const recommendedSkills = useMemo(
+    () => templates.find((t) => t.id === wizardDraft.template_id)?.recommended_skills ?? [],
+    [templates, wizardDraft.template_id],
+  );
 
   useEffect(() => {
     if (templates.length === 0) loadTemplates();
@@ -129,6 +138,17 @@ export function AgentStudioPage() {
     getMcpConfig()
       .then((d) => setMcpServers(d.mcpServers ?? []))
       .catch(() => setMcpServers([]));
+    listIntegrations()
+      .then((list) =>
+        setActiveIntegrations(
+          new Set(
+            list
+              .filter((i) => i.enabled && i.system_integration_id)
+              .map((i) => i.system_integration_id as string),
+          ),
+        ),
+      )
+      .catch(() => setActiveIntegrations(new Set()));
   }, [editingAgentId]);
 
   useEffect(() => {
@@ -200,7 +220,14 @@ export function AgentStudioPage() {
       });
       try {
         const detail = await getAgentTemplateDetail(t.id);
-        updateWizardDraft({ skills: detail.skills.map((s) => s.name) });
+        updateWizardDraft({
+          skills: Array.from(
+            new Set([
+              ...detail.skills.map((s) => s.name),
+              ...(detail.recommended_skills ?? []),
+            ]),
+          ),
+        });
       } catch {
         // detail is a hint; keep skills from customSkills sync effect
       }
@@ -389,6 +416,8 @@ export function AgentStudioPage() {
               mcps={wizardDraft.mcps}
               customSkills={customSkills}
               builtinSkills={builtinSkills}
+              activeIntegrations={activeIntegrations}
+              recommendedSkills={recommendedSkills}
               mcpServers={mcpServers}
               ragEnabled={wizardDraft.rag_enabled}
               onToggleSkill={toggleSkill}
@@ -750,12 +779,17 @@ interface SkillEntry {
   category: string;
   always: boolean;
   origin: "system" | "user";
+  importance?: "core" | "complementary";
+  provides?: string;
+  requiredIntegrations?: string[];
 }
 
 interface SkillsPickerProps {
   skills: string[];
   customSkills: CustomSkill[];
   builtinSkills: BuiltinSkill[];
+  activeIntegrations: Set<string>;
+  recommendedSkills: string[];
   onToggleSkill: (name: string) => void;
   onOpenSkills: () => void;
 }
@@ -764,11 +798,17 @@ function SkillsPicker({
   skills,
   customSkills,
   builtinSkills,
+  activeIntegrations,
+  recommendedSkills,
   onToggleSkill,
   onOpenSkills,
 }: SkillsPickerProps) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>("all");
+
+  const missingDeps = (s: SkillEntry) =>
+    (s.requiredIntegrations ?? []).length > 0 &&
+    !s.requiredIntegrations!.some((id) => activeIntegrations.has(id));
 
   const allSkills = useMemo<SkillEntry[]>(() => {
     const customNames = new Set(customSkills.map((s) => s.name));
@@ -781,6 +821,9 @@ function SkillsPicker({
         category: s.category || "Geral",
         always: !!s.always,
         origin: "system" as const,
+        importance: s.importance,
+        provides: s.provides,
+        requiredIntegrations: s.required_integrations ?? [],
       }));
     const user: SkillEntry[] = customSkills.map((s) => ({
       name: s.name,
@@ -830,6 +873,68 @@ function SkillsPicker({
   const enabled = skills
     .map((n) => byName.get(n))
     .filter((s): s is SkillEntry => !!s);
+
+  const recommendedSet = useMemo(() => new Set(recommendedSkills), [recommendedSkills]);
+  const recommended = filtered.filter((s) => recommendedSet.has(s.name));
+  const others = filtered.filter((s) => !recommendedSet.has(s.name));
+
+  const renderRow = (s: SkillEntry) => {
+    const checked = skills.includes(s.name);
+    const blocked = missingDeps(s);
+    const isRec = recommendedSet.has(s.name);
+    return (
+      <li key={s.name}>
+        <label
+          className={cn(
+            "flex items-center gap-3 px-3 py-2.5 transition-colors",
+            blocked
+              ? "opacity-60 cursor-not-allowed"
+              : "cursor-pointer hover:bg-surface",
+            checked && !blocked && "bg-purple-muted/40",
+          )}
+        >
+          <Checkbox
+            checked={checked && !blocked}
+            disabled={blocked}
+            onCheckedChange={() => !blocked && onToggleSkill(s.name)}
+          />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="text-sm font-semibold text-text-primary truncate">{s.name}</p>
+              {isRec && (
+                <Badge variant="default" className="shrink-0 text-[10px]">
+                  Recomendada
+                </Badge>
+              )}
+              <Badge variant="muted" className="shrink-0 text-[10px]">
+                {s.category}
+              </Badge>
+              {s.importance === "complementary" && (
+                <Badge variant="muted" className="shrink-0 text-[10px]">
+                  Complementar
+                </Badge>
+              )}
+              {s.always && (
+                <Badge variant="muted" className="shrink-0 text-[10px]">
+                  Sempre ativa
+                </Badge>
+              )}
+              {blocked && (
+                <Badge variant="default" className="shrink-0 text-[10px]">
+                  requer {s.requiredIntegrations!.join(" ou ")} (inativa)
+                </Badge>
+              )}
+            </div>
+            {(s.provides || s.description) && (
+              <p className="text-[11px] text-text-muted truncate mt-0.5">
+                {s.provides ? `Oferece: ${s.provides}` : s.description}
+              </p>
+            )}
+          </div>
+        </label>
+      </li>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -898,54 +1003,42 @@ function SkillsPicker({
         </Button>
       </div>
 
+      {recommended.length > 0 && (
+        <div className="rounded-2xl border border-purple/40 bg-purple-muted/20 overflow-hidden">
+          <div className="px-3 py-2 border-b border-purple/30">
+            <p className="text-[11px] font-bold text-purple uppercase tracking-wider">
+              Recomendadas para este agente ({recommended.length})
+            </p>
+            <p className="text-[11px] text-text-muted mt-0.5">
+              Skills sugeridas para este template — já vêm marcadas.
+            </p>
+          </div>
+          <ul className="divide-y divide-border">{recommended.map(renderRow)}</ul>
+        </div>
+      )}
+
       <div className="rounded-2xl border border-border bg-surface-alt max-h-[420px] overflow-y-auto">
+        {recommended.length > 0 && others.length > 0 && (
+          <div className="px-3 py-2 border-b border-border sticky top-0 bg-surface-alt">
+            <p className="text-[11px] font-bold text-text-muted uppercase tracking-wider">
+              Outras skills
+            </p>
+          </div>
+        )}
         {filtered.length === 0 ? (
           <div className="p-6 text-center">
             <p className="text-sm text-text-muted">
               Nenhuma skill encontrada.
             </p>
           </div>
+        ) : others.length === 0 ? (
+          <div className="p-6 text-center">
+            <p className="text-sm text-text-muted">
+              Nenhuma outra skill nesta busca.
+            </p>
+          </div>
         ) : (
-          <ul className="divide-y divide-border">
-            {filtered.map((s) => {
-              const checked = skills.includes(s.name);
-              return (
-                <li key={s.name}>
-                  <label
-                    className={cn(
-                      "flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-surface transition-colors",
-                      checked && "bg-purple-muted/40",
-                    )}
-                  >
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={() => onToggleSkill(s.name)}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-semibold text-text-primary truncate">
-                          {s.name}
-                        </p>
-                        <Badge variant="muted" className="shrink-0 text-[10px]">
-                          {s.category}
-                        </Badge>
-                        {s.always && (
-                          <Badge variant="muted" className="shrink-0 text-[10px]">
-                            Sempre ativa
-                          </Badge>
-                        )}
-                      </div>
-                      {s.description && (
-                        <p className="text-[11px] text-text-muted truncate mt-0.5">
-                          {s.description}
-                        </p>
-                      )}
-                    </div>
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
+          <ul className="divide-y divide-border">{others.map(renderRow)}</ul>
         )}
       </div>
     </div>
@@ -1079,6 +1172,8 @@ interface StepKnowledgeProps {
   mcps: string[];
   customSkills: CustomSkill[];
   builtinSkills: BuiltinSkill[];
+  activeIntegrations: Set<string>;
+  recommendedSkills: string[];
   mcpServers: MCPServer[];
   ragEnabled: boolean;
   onToggleSkill: (name: string) => void;
@@ -1093,6 +1188,8 @@ function StepKnowledge({
   mcps,
   customSkills,
   builtinSkills,
+  activeIntegrations,
+  recommendedSkills,
   mcpServers,
   ragEnabled,
   onToggleSkill,
@@ -1156,6 +1253,8 @@ function StepKnowledge({
           skills={skills}
           customSkills={customSkills}
           builtinSkills={builtinSkills}
+          activeIntegrations={activeIntegrations}
+          recommendedSkills={recommendedSkills}
           onToggleSkill={onToggleSkill}
           onOpenSkills={onOpenSkills}
         />

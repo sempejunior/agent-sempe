@@ -135,6 +135,7 @@ export interface AgentTemplate {
   role: string;
   description: string;
   category: string;
+  group?: string;
   tags: string[];
   icon: string;
   system_prompt: string;
@@ -145,6 +146,7 @@ export interface AgentTemplate {
   model_recommended: string | null;
   skills_count: number;
   knowledge_count: number;
+  recommended_skills?: string[];
 }
 
 export interface AgentTemplateDetail extends AgentTemplate {
@@ -333,6 +335,9 @@ export interface BuiltinSkill {
   content: string;
   category?: string;
   template_id?: string;
+  importance?: "core" | "complementary";
+  provides?: string;
+  required_integrations?: string[];
 }
 
 export async function getBuiltinSkills(): Promise<BuiltinSkill[]> {
@@ -761,6 +766,7 @@ export interface CatalogEntry {
   description: string;
   category: string;
   docs_url: string;
+  setup_steps?: string[];
   credential_fields: CatalogCredentialField[];
   auth_mode: string;
   api?: CatalogApi;

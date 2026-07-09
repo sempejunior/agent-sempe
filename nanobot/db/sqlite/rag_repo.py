@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -28,26 +29,37 @@ class SQLiteRetrieverRepository:
     async def search(
         self, user_id: str, query: str, *, top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        try:
-            cursor = await self._db.execute(
-                """SELECT c.id, c.content, c.metadata, c.created_at, fts.rank AS relevance
-                   FROM rag_chunks_fts fts
-                   JOIN rag_chunks c ON c.id = fts.rowid
-                   WHERE rag_chunks_fts MATCH ?
-                     AND c.user_id = ?
-                   ORDER BY fts.rank LIMIT ?""",
-                (query, user_id, top_k),
-            )
-            return [dict(r) for r in await cursor.fetchall()]
-        except aiosqlite.OperationalError:
-            pattern = f"%{query}%"
-            cursor = await self._db.execute(
-                """SELECT id, content, metadata, created_at FROM rag_chunks
-                   WHERE user_id = ? AND content LIKE ?
-                   ORDER BY created_at DESC LIMIT ?""",
-                (user_id, pattern, top_k),
-            )
-            return [dict(r) for r in await cursor.fetchall()]
+        # Sanitize into safe FTS5 terms: punctuation like the dot in "lucas.cid"
+        # is not part of a word token, so passing the raw query to MATCH can raise
+        # a syntax error (or match nothing). Quote each word token and OR them for
+        # recall, letting BM25 rank surface the best chunk.
+        terms = re.findall(r"\w+", query, flags=re.UNICODE)
+        if terms:
+            match_query = " OR ".join(f'"{t}"' for t in terms)
+            try:
+                cursor = await self._db.execute(
+                    """SELECT c.id, c.content, c.metadata, c.created_at, fts.rank AS relevance
+                       FROM rag_chunks_fts fts
+                       JOIN rag_chunks c ON c.id = fts.rowid
+                       WHERE rag_chunks_fts MATCH ?
+                         AND c.user_id = ?
+                       ORDER BY fts.rank LIMIT ?""",
+                    (match_query, user_id, top_k),
+                )
+                return [dict(r) for r in await cursor.fetchall()]
+            except aiosqlite.OperationalError:
+                pass
+
+        # Fallback: OR of per-term LIKE (never a whole-string substring match).
+        conds = " OR ".join("content LIKE ?" for _ in terms) if terms else "content LIKE ?"
+        like_params = [f"%{t}%" for t in terms] if terms else [f"%{query}%"]
+        cursor = await self._db.execute(
+            f"""SELECT id, content, metadata, created_at FROM rag_chunks
+               WHERE user_id = ? AND ({conds})
+               ORDER BY created_at DESC LIMIT ?""",
+            (user_id, *like_params, top_k),
+        )
+        return [dict(r) for r in await cursor.fetchall()]
 
     async def delete(self, user_id: str, chunk_id: str) -> bool:
         cursor = await self._db.execute(

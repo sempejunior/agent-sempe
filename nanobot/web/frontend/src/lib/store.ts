@@ -443,6 +443,19 @@ export const useStore = create<AppState>((set, get) => ({
               m.id === last.id ? { ...m, toolHint: data.content || "" } : m
             ),
           });
+        } else {
+          set({
+            messages: [
+              ...messages,
+              {
+                id: nextId(),
+                role: "assistant",
+                content: "",
+                isStreaming: true,
+                toolHint: data.content || "",
+              },
+            ],
+          });
         }
       } else if (data.type === "response") {
         const last = messages[messages.length - 1];

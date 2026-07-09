@@ -31,7 +31,7 @@ services:
         echo 'Waiting for Chromium CDP on port 9222...'
         i=0; while [ $$i -lt 30 ]; do curl -sf http://localhost:9222/json >/dev/null 2>&1 && echo 'Chromium CDP ready' && break; i=$$((i+1)); sleep 1; done
         uv pip install --system 'watchdog[watchmedo]'
-        watchmedo auto-restart --directory=./nanobot --pattern='*.py' --recursive -- nanobot gateway --multiuser
+        watchmedo auto-restart --directory=./nanobot --pattern='*.py' --recursive --debounce-interval 2 --kill-after 10 -- nanobot gateway --multiuser
 
   nanobot-frontend:
     build:

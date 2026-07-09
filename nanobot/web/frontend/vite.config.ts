@@ -16,6 +16,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': process.env.VITE_API_URL || 'http://127.0.0.1:18790',
+      '/r': process.env.VITE_API_URL || 'http://127.0.0.1:18790',
       '/ws': { target: process.env.VITE_API_URL || 'ws://127.0.0.1:18790', ws: true },
       '/novnc': {
         target: process.env.VITE_NOVNC_URL || 'http://nanobot-gateway:6080',

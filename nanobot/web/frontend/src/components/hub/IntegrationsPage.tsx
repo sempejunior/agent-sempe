@@ -657,6 +657,31 @@ function CredentialDialog({
             </select>
           </div>
 
+          {selectedEntry && (!!selectedEntry.setup_steps?.length || !!selectedEntry.docs_url) && (
+            <div className="rounded-md border border-border bg-surface-alt p-3 space-y-2">
+              <p className="text-xs font-semibold text-text-primary">
+                Como obter as credenciais de {selectedEntry.name}
+              </p>
+              {!!selectedEntry.setup_steps?.length && (
+                <ol className="list-decimal list-inside space-y-1 text-xs text-text-muted">
+                  {selectedEntry.setup_steps.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ol>
+              )}
+              {selectedEntry.docs_url && (
+                <a
+                  href={selectedEntry.docs_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-purple hover:underline inline-flex items-center gap-1"
+                >
+                  Documentação oficial <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+            </div>
+          )}
+
           <div>
             <Label htmlFor="cred-name">Nome</Label>
             <Input

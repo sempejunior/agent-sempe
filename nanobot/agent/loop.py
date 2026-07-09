@@ -7,7 +7,7 @@ import json
 import re
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
@@ -32,6 +32,20 @@ if TYPE_CHECKING:
     from nanobot.config.schema import ChannelsConfig, ExecToolConfig, RAGConfig
     from nanobot.cron.service import CronService
     from nanobot.db.factory import RepositoryFactory
+
+_COMPLETION_NUDGE = (
+    "Releia o pedido original do usuário e verifique parte por parte: cada uma "
+    "foi ENTREGUE por completo (não apenas iniciada ou substituída por um resumo)? "
+    "Se algo falta, NÃO explique nem comente — chame imediatamente as ferramentas "
+    "para completar. Se tudo estiver completo, responda apenas: COMPLETO. "
+    "Qualquer outra resposta em texto será descartada."
+)
+
+_FINAL_ANSWER_PROMPT = (
+    "Agora escreva a resposta final ao usuário: o que foi entregue, os números-chave "
+    "e os links markdown de TODAS as páginas publicadas. Não mencione COMPLETO nem "
+    "esta verificação."
+)
 
 
 class AgentLoop:
@@ -70,6 +84,7 @@ class AgentLoop:
         channels_config: ChannelsConfig | None = None,
         repos: RepositoryFactory | None = None,
         rag_config: RAGConfig | None = None,
+        public_url: str | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -85,6 +100,7 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.public_url = public_url
 
         self._repos = repos
         self._rag_config = rag_config
@@ -118,6 +134,8 @@ class AgentLoop:
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
         self._mcp_connecting = False
+        self._dyn_mcp_stack: AsyncExitStack | None = None
+        self._user_mcp_cache: dict[str, tuple[str, dict]] = {}
         self._consolidating: set[str] = set()
         self._consolidation_tasks: set[asyncio.Task] = set()
         self._consolidation_locks: dict[str, asyncio.Lock] = {}
@@ -182,6 +200,38 @@ class AgentLoop:
                 self._mcp_stack = None
         finally:
             self._mcp_connecting = False
+
+    async def _ensure_user_mcp(self, user_id: str, agent_id: str) -> dict[str, Any]:
+        """Connect the user's enabled catalog MCP servers and return their tools.
+
+        Servers are launched from the user's saved integration credentials and
+        kept on a persistent exit stack for the process lifetime. A config
+        signature avoids respawning subprocesses on every context rebuild; a
+        changed signature reconnects (the previous session lingers until close).
+        Failures are logged and swallowed so a bad server never breaks the loop.
+        """
+        if not self._repos:
+            return {}
+        from nanobot.integrations.mcp_launcher import build_user_mcp_servers
+
+        servers, signature = await build_user_mcp_servers(user_id, self._repos)
+        cache_key = f"{user_id}:{agent_id}"
+        cached = self._user_mcp_cache.get(cache_key)
+        if cached and cached[0] == signature:
+            return cached[1]
+        if not servers:
+            self._user_mcp_cache[cache_key] = (signature, {})
+            return {}
+
+        from nanobot.agent.tools.mcp import connect_mcp_servers
+        if self._dyn_mcp_stack is None:
+            self._dyn_mcp_stack = AsyncExitStack()
+            await self._dyn_mcp_stack.__aenter__()
+        temp = ToolRegistry()
+        await connect_mcp_servers(servers, temp, self._dyn_mcp_stack)
+        tools = dict(temp._tools)
+        self._user_mcp_cache[cache_key] = (signature, tools)
+        return tools
 
     def _set_tool_context(
         self, channel: str, chat_id: str, message_id: str | None = None,
@@ -258,6 +308,7 @@ class AgentLoop:
             brave_api_key=self.brave_api_key,
             cron_service=self.cron_service,
             agent_id=agent_id,
+            public_url=self.public_url,
         )
 
         if self._mcp_connected:
@@ -279,6 +330,14 @@ class AgentLoop:
                     if server_name not in mcp_filter:
                         continue
                 uctx.tools.register(tool)
+
+        try:
+            user_mcp_tools = await self._ensure_user_mcp(user_id, uctx.agent_id)
+            for name, tool in user_mcp_tools.items():
+                if not uctx.tools.has(name):
+                    uctx.tools.register(tool)
+        except Exception as e:
+            logger.error("Failed to connect user MCP servers for {}: {}", user_id, e)
 
         self._user_contexts[cache_key] = uctx
         self._user_contexts[f"{user_id}:{uctx.agent_id}"] = uctx
@@ -308,6 +367,10 @@ class AgentLoop:
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        nudged = False
+        post_nudge_tools = False
+        asked_final = False
+        pending_final: str | None = None
 
         while iteration < _max_iter:
             iteration += 1
@@ -321,10 +384,9 @@ class AgentLoop:
             )
 
             if response.has_tool_calls:
+                if nudged:
+                    post_nudge_tools = True
                 if on_progress:
-                    clean = self._strip_think(response.content)
-                    if clean:
-                        await on_progress(clean)
                     await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
 
                 tool_call_dicts = [
@@ -352,7 +414,36 @@ class AgentLoop:
                         messages, tool_call.id, tool_call.name, result
                     )
             else:
-                final_content = self._strip_think(response.content)
+                content = self._strip_think(response.content) or ""
+                is_sentinel = content.strip().upper().startswith("COMPLETO")
+                if tools_used and not nudged:
+                    nudged = True
+                    pending_final = content
+                    messages = self.context.add_assistant_message(
+                        messages, response.content,
+                        reasoning_content=response.reasoning_content,
+                    )
+                    messages.append({"role": "user", "content": _COMPLETION_NUDGE})
+                    continue
+                if nudged and not post_nudge_tools and pending_final:
+                    final_content = pending_final
+                    if not is_sentinel:
+                        logger.debug("Discarding nudge meta-reply: {}", content[:200])
+                    if messages and messages[-1].get("content") == _COMPLETION_NUDGE:
+                        messages.pop()
+                        messages.pop()
+                elif nudged and is_sentinel and not asked_final:
+                    asked_final = True
+                    messages = self.context.add_assistant_message(
+                        messages, response.content,
+                        reasoning_content=response.reasoning_content,
+                    )
+                    messages.append({"role": "user", "content": _FINAL_ANSWER_PROMPT})
+                    continue
+                elif nudged and is_sentinel:
+                    final_content = pending_final or None
+                else:
+                    final_content = content or None
                 break
 
         if final_content is None and iteration >= _max_iter:
@@ -402,6 +493,13 @@ class AgentLoop:
             except (RuntimeError, BaseExceptionGroup):
                 pass  # MCP SDK cancel scope cleanup is noisy but harmless
             self._mcp_stack = None
+        if self._dyn_mcp_stack:
+            try:
+                await self._dyn_mcp_stack.aclose()
+            except (RuntimeError, BaseExceptionGroup):
+                pass
+            self._dyn_mcp_stack = None
+        self._user_mcp_cache.clear()
 
     async def reload_mcp(self, mcp_servers: dict) -> None:
         """Dynamically reload MCP servers."""
@@ -429,6 +527,10 @@ class AgentLoop:
                     for uctx in self._user_contexts.values():
                         if not uctx.tools.has(name):
                             uctx.tools.register(tool)
+
+        # close_mcp() dropped the per-user MCP sessions; evict cached contexts so
+        # they rebuild and reconnect their catalog MCP servers on next message.
+        self._user_contexts.clear()
 
     def stop(self) -> None:
         """Stop the agent loop."""
@@ -642,6 +744,12 @@ class AgentLoop:
         """Save new-turn messages into session, truncating large tool results."""
         from datetime import datetime
         for m in messages[skip:]:
+            content = m.get("content")
+            if not m.get("tool_calls") and isinstance(content, str):
+                if content in (_COMPLETION_NUDGE, _FINAL_ANSWER_PROMPT):
+                    continue
+                if m.get("role") == "assistant" and content.strip().upper() == "COMPLETO":
+                    continue
             entry = {k: v for k, v in m.items() if k != "reasoning_content"}
             if entry.get("role") == "tool":
                 content = entry.get("content")

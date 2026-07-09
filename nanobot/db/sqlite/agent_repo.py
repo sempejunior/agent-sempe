@@ -30,14 +30,15 @@ class SQLiteAgentRepository:
             )
         else:
             cursor = await self._db.execute(
-                "SELECT * FROM agents WHERE user_id = ? ORDER BY created_at ASC",
+                "SELECT * FROM agents WHERE user_id = ? AND status != 'deleted' "
+                "ORDER BY created_at ASC",
                 (user_id,),
             )
         return [_row_to_dict(row) for row in await cursor.fetchall()]
 
     async def get_agent(self, user_id: str, agent_id: str) -> dict[str, Any] | None:
         cursor = await self._db.execute(
-            "SELECT * FROM agents WHERE user_id = ? AND agent_id = ?",
+            "SELECT * FROM agents WHERE user_id = ? AND agent_id = ? AND status != 'deleted'",
             (user_id, agent_id),
         )
         row = await cursor.fetchone()

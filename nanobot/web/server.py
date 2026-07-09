@@ -15,10 +15,48 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from starlette.websockets import WebSocketState
 
 _STATIC_DIR = Path(__file__).parent / "frontend" / "static"
 
 _WEB_CHAT_TIMEOUT_S = 180
+
+# Umbrella families that group the finer template categories in the catalog UI.
+_TEMPLATE_GROUPS = {
+    "Comportamental": "Gestão de Pessoas",
+    "T&D": "Gestão de Pessoas",
+    "R&S": "Gestão de Pessoas",
+    "Engajamento": "Gestão de Pessoas",
+    "Ponto": "Operações & Compliance",
+    "DP": "Operações & Compliance",
+    "Jurídico": "Operações & Compliance",
+    "Sistema": "Sistema",
+}
+
+
+def _template_group(category: str) -> str:
+    return _TEMPLATE_GROUPS.get(category or "", "Geral")
+
+
+# Skills a template recommends and pre-selects — including built-in skills (montar-pdi,
+# criar-paginas, relatorio-time-azure) that the template drives via read_skill but that
+# are not stored as the template's own skill rows. Template config, keyed by template id.
+_TEMPLATE_RECOMMENDED_SKILLS = {
+    "pdi_desenvolvimento": [
+        "montar-pdi", "criar-paginas", "relatorio-time-azure", "analise-desempenho",
+        "pdi_por_perfil", "feedback_estruturado",
+    ],
+    "profiler_consultor": ["interpretar_perfil_profiler", "plano_gestao_por_perfil"],
+    "rs_recrutador": ["fit_comportamental_profiler", "triagem_curriculo"],
+    "clima_engajamento": ["analise_pesquisa_clima", "plano_acao_engajamento"],
+    "ponto_assistente": ["regras_ponto_portaria_671", "calculo_banco_horas"],
+    "dp_analista": ["folha_pagamento_basico", "admissao_rescisao_checklist"],
+    "juridico_trabalhista": ["analise_risco_trabalhista", "redacao_juridica_formal"],
+}
+
+
+def _template_recommended_skills(template_id: str) -> list[str]:
+    return list(_TEMPLATE_RECOMMENDED_SKILLS.get(template_id, []))
 
 
 async def _ensure_db(app_state: Any, data_dir: Path) -> bool:
@@ -60,6 +98,10 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     @app.on_event("startup")
     async def startup():
+        from nanobot.utils.crypto import ensure_master_key
+
+        ensure_master_key(data_dir)
+
         if hasattr(app.state, "agent"):
             logger.info("Using injected dependencies for web server")
             return
@@ -69,9 +111,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         from nanobot.cron.service import CronService
         from nanobot.db.factory import create_sqlite_factory
         from nanobot.db.sqlite.connection import create_database
-        from nanobot.utils.crypto import ensure_master_key
 
-        ensure_master_key(data_dir)
         db_path = data_dir / "nanobot.db"
         db = await create_database(db_path)
         repos = create_sqlite_factory(db)
@@ -94,6 +134,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             mcp_servers=config.tools.mcp_servers,
             channels_config=config.channels,
             repos=repos,
+            public_url=config.gateway.public_url or None,
         )
 
         async def on_cron_job(job):
@@ -359,7 +400,11 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
     @app.get("/api/agents/templates")
     async def list_agent_templates(request: Request):
         await _require_user(request)
-        return await app.state.repos.agent_templates.list_templates()
+        rows = await app.state.repos.agent_templates.list_templates()
+        for r in rows:
+            r["group"] = _template_group(r.get("category", ""))
+            r["recommended_skills"] = _template_recommended_skills(r.get("id", ""))
+        return rows
 
     @app.get("/api/agents/templates/{template_id}")
     async def get_agent_template(request: Request, template_id: str):
@@ -378,6 +423,8 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             for s in skills
         ]
         tpl["knowledge_sources"] = [{"source": k["source"]} for k in knowledge]
+        tpl["group"] = _template_group(tpl.get("category", ""))
+        tpl["recommended_skills"] = _template_recommended_skills(template_id)
         return tpl
 
     @app.post("/api/agents")
@@ -438,7 +485,8 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         }
         if tpl:
             existing_skills = list(agent_config.get("skills_enabled") or [])
-            merged_skills = list(dict.fromkeys([*existing_skills, *tpl_skill_names]))
+            recommended = _template_recommended_skills(template_id)
+            merged_skills = list(dict.fromkeys([*existing_skills, *tpl_skill_names, *recommended]))
             agent_config["skills_enabled"] = merged_skills
             if tpl.get("rag_enabled"):
                 rag_cfg = dict(agent_config.get("rag", {}) or {})
@@ -1090,13 +1138,22 @@ form.addEventListener("submit", async (e) => {{
             meta_raw = await loader.get_skill_metadata(s["name"]) or {}
             nanobot_meta = loader._parse_nanobot_metadata(meta_raw.get("metadata", ""))
             content = await loader.load_skill(s["name"]) or ""
+            # This endpoint has no per-user context, so availability here reflects only
+            # host requirements (bins/env). Integration-gating is user-specific and is
+            # computed on the client from `required_integrations` + the active integrations.
+            _meta_no_integ = {**nanobot_meta,
+                              "requires": {k: v for k, v in nanobot_meta.get("requires", {}).items()
+                                           if k != "integrations"}}
             result.append({
                 "name": s["name"],
                 "description": meta_raw.get("description", s["name"]),
-                "available": loader._check_requirements(nanobot_meta),
+                "available": loader._check_requirements(_meta_no_integ),
                 "always": nanobot_meta.get("always", False) or meta_raw.get("always") == "true",
                 "content": content,
-                "category": "sistema",
+                "category": nanobot_meta.get("category", "sistema"),
+                "importance": nanobot_meta.get("importance", "core"),
+                "provides": nanobot_meta.get("provides", ""),
+                "required_integrations": nanobot_meta.get("requires", {}).get("integrations", []),
             })
             seen.add(s["name"])
 
@@ -1114,6 +1171,9 @@ form.addEventListener("submit", async (e) => {{
                     "always": bool(skill.get("always_active", False)),
                     "content": skill["content"],
                     "category": tpl.get("category", "Sólides"),
+                    "importance": "core",
+                    "provides": "",
+                    "required_integrations": [],
                     "template_id": tpl["id"],
                 })
         return result
@@ -1280,6 +1340,7 @@ form.addEventListener("submit", async (e) => {{
             "description": entry.description,
             "category": entry.category,
             "docs_url": entry.docs_url,
+            "setup_steps": list(entry.setup_steps),
             "credential_fields": [
                 {
                     "key": f.key,
@@ -1739,6 +1800,9 @@ form.addEventListener("submit", async (e) => {{
     from nanobot.web.routes.clients import router as clients_router
     app.include_router(clients_router)
 
+    ws_clients: dict[str, list[WebSocket]] = {}
+    ws_tasks: set[asyncio.Task] = set()
+
     @app.websocket("/ws/chat")
     async def ws_chat(ws: WebSocket):
         await ws.accept()
@@ -1764,6 +1828,101 @@ form.addEventListener("submit", async (e) => {{
 
         uid = user["user_id"]
         logger.info("WebSocket connected: {}", uid)
+        ws_clients.setdefault(uid, []).append(ws)
+
+        async def _deliver(payload: dict) -> bool:
+            """Send to this socket, falling back to the user's newest live socket.
+
+            The web client auto-reconnects: a long agent turn can outlive the
+            socket that submitted it, so the response is rerouted instead of lost.
+            """
+            candidates = [ws] + [s for s in reversed(ws_clients.get(uid, [])) if s is not ws]
+            for sock in candidates:
+                if (sock.client_state != WebSocketState.CONNECTED
+                        or sock.application_state != WebSocketState.CONNECTED):
+                    continue
+                try:
+                    await sock.send_json(payload)
+                    return True
+                except Exception:
+                    continue
+            return False
+
+        async def on_progress(text: str, *, tool_hint: bool = False) -> None:
+            await _deliver({
+                "type": "tool_hint" if tool_hint else "progress",
+                "content": text,
+            })
+
+        async def _handle_message(content: str, session_key: str, agent_id: str | None) -> None:
+            """Run one agent turn and deliver the outcome.
+
+            Runs as a background task so the receive loop keeps consuming
+            frames during long turns — otherwise uvicorn pauses reading
+            (backpressure), keepalive pongs stop being read and the socket
+            is killed mid-turn.
+            """
+            error_payload: dict[str, Any] | None = None
+            response: str | None = None
+            try:
+                response = await asyncio.wait_for(
+                    app.state.agent.process_direct(
+                        content,
+                        session_key=session_key,
+                        channel="web",
+                        chat_id=uid,
+                        on_progress=on_progress,
+                        user_id=uid,
+                        agent_id=agent_id,
+                    ),
+                    timeout=_WEB_CHAT_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Chat timed out for {} after {}s", uid, _WEB_CHAT_TIMEOUT_S)
+                error_payload = {
+                    "type": "error",
+                    "code": "timeout",
+                    "content": (
+                        "A tarefa demorou demais e foi interrompida. "
+                        "Tente novamente ou reformule o pedido."
+                    ),
+                    "session_key": session_key,
+                }
+            except ValueError as e:
+                msg = str(e)
+                logger.warning("Chat validation error for {}: {}", uid, msg)
+                low = msg.lower()
+                if "agent not found" in low or "no agent available" in low:
+                    code = "agent_not_found"
+                    message = "Agente não encontrado ou sem acesso."
+                elif "user not found" in low:
+                    code = "user_not_found"
+                    message = "Usuário não encontrado."
+                else:
+                    code = "invalid_request"
+                    message = msg
+                error_payload = {
+                    "type": "error",
+                    "code": code,
+                    "content": message,
+                    "session_key": session_key,
+                }
+            except Exception as e:
+                logger.exception("Chat error for {}", uid)
+                error_payload = {
+                    "type": "error",
+                    "code": "internal_error",
+                    "content": f"Erro interno: {e}",
+                    "session_key": session_key,
+                }
+
+            payload = error_payload if error_payload is not None else {
+                "type": "response",
+                "content": response,
+                "session_key": session_key,
+            }
+            if not await _deliver(payload):
+                logger.warning("WS closed before response for {}", uid)
 
         try:
             while True:
@@ -1778,89 +1937,59 @@ form.addEventListener("submit", async (e) => {{
                     if not content:
                         continue
 
-                    async def on_progress(text: str, *, tool_hint: bool = False) -> None:
-                        try:
-                            await ws.send_json({
-                                "type": "tool_hint" if tool_hint else "progress",
-                                "content": text,
-                            })
-                        except Exception:
-                            pass
-
-                    error_payload: dict[str, Any] | None = None
-                    response: str | None = None
-                    try:
-                        response = await asyncio.wait_for(
-                            app.state.agent.process_direct(
-                                content,
-                                session_key=session_key,
-                                channel="web",
-                                chat_id=uid,
-                                on_progress=on_progress,
-                                user_id=uid,
-                                agent_id=agent_id,
-                            ),
-                            timeout=_WEB_CHAT_TIMEOUT_S,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning("Chat timed out for {} after {}s", uid, _WEB_CHAT_TIMEOUT_S)
-                        error_payload = {
-                            "type": "error",
-                            "code": "timeout",
-                            "content": (
-                                "A tarefa demorou demais e foi interrompida. "
-                                "Tente novamente ou reformule o pedido."
-                            ),
-                            "session_key": session_key,
-                        }
-                    except ValueError as e:
-                        msg = str(e)
-                        logger.warning("Chat validation error for {}: {}", uid, msg)
-                        low = msg.lower()
-                        if "agent not found" in low or "no agent available" in low:
-                            code = "agent_not_found"
-                            message = "Agente não encontrado ou sem acesso."
-                        elif "user not found" in low:
-                            code = "user_not_found"
-                            message = "Usuário não encontrado."
-                        else:
-                            code = "invalid_request"
-                            message = msg
-                        error_payload = {
-                            "type": "error",
-                            "code": code,
-                            "content": message,
-                            "session_key": session_key,
-                        }
-                    except Exception as e:
-                        logger.exception("Chat error for {}", uid)
-                        error_payload = {
-                            "type": "error",
-                            "code": "internal_error",
-                            "content": f"Erro interno: {e}",
-                            "session_key": session_key,
-                        }
-
-                    try:
-                        if error_payload is not None:
-                            await ws.send_json(error_payload)
-                        else:
-                            await ws.send_json({
-                                "type": "response",
-                                "content": response,
-                                "session_key": session_key,
-                            })
-                    except Exception:
-                        logger.warning("WS closed before response for {}", uid)
-                        break
+                    task = asyncio.create_task(
+                        _handle_message(content, session_key, agent_id)
+                    )
+                    ws_tasks.add(task)
+                    task.add_done_callback(ws_tasks.discard)
 
                 elif msg_type == "ping":
-                    await ws.send_json({"type": "pong"})
+                    try:
+                        await ws.send_json({"type": "pong"})
+                    except Exception:
+                        break
 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected: {}", uid)
+        except RuntimeError as e:
+            logger.info("WebSocket closed mid-send for {}: {}", uid, e)
         except Exception as e:
             logger.exception("WebSocket error for {}: {}", token, e)
+        finally:
+            socks = ws_clients.get(uid)
+            if socks and ws in socks:
+                socks.remove(ws)
+                if not socks:
+                    ws_clients.pop(uid, None)
+
+    @app.get("/r/{token}")
+    async def serve_report(token: str):
+        """Serve a generated report page by its secret token (capability URL).
+
+        No auth: the unguessable token is the access control. Served with a
+        script-blocking CSP so LLM/user-authored HTML cannot run scripts against
+        the app's origin.
+        """
+        import re
+
+        if not re.fullmatch(r"[0-9a-fA-F]{8,64}", token):
+            raise HTTPException(404, "Not found")
+        reports_dir = (config.workspace_path / "reports").resolve()
+        path = (reports_dir / f"{token}.html").resolve()
+        if not path.is_relative_to(reports_dir) or not path.is_file():
+            raise HTTPException(404, "Not found")
+        return FileResponse(
+            path,
+            media_type="text/html",
+            headers={
+                "Content-Security-Policy": (
+                    "default-src 'none'; style-src 'unsafe-inline'; "
+                    "img-src data:; font-src data:; base-uri 'none'"
+                ),
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
 
     @app.get("/")
     async def root():

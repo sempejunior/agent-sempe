@@ -236,10 +236,16 @@ class HeartbeatConfig(Base):
 
 
 class GatewayConfig(Base):
-    """Gateway/server configuration."""
+    """Gateway/server configuration.
+
+    public_url: external base URL of this instance (e.g. https://bot.example.com),
+    used to build absolute links for published report pages delivered via channels.
+    Empty means relative links (web chat only).
+    """
 
     host: str = "0.0.0.0"
     port: int = 18790
+    public_url: str = ""
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
