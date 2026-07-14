@@ -1,17 +1,29 @@
 """LiteLLM provider implementation for multi-provider support."""
 
+import asyncio
 import os
 from typing import Any
 
 import json_repair
 import litellm
 from litellm import acompletion
+from loguru import logger
 
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.providers.base import LLMProvider, LLMResponse, ProviderError, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
 
 # Standard OpenAI chat-completion message keys; extras (e.g. reasoning_content) are stripped for strict providers.
 _ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name"})
+
+_TRANSIENT_EXCEPTIONS = (
+    litellm.exceptions.RateLimitError,
+    litellm.exceptions.Timeout,
+    litellm.exceptions.APIConnectionError,
+    litellm.exceptions.InternalServerError,
+    litellm.exceptions.ServiceUnavailableError,
+)
+_MAX_ATTEMPTS = 3
+_BACKOFF_SECONDS = (1, 4)
 
 
 class LiteLLMProvider(LLMProvider):
@@ -30,10 +42,12 @@ class LiteLLMProvider(LLMProvider):
         default_model: str = "anthropic/claude-opus-4-5",
         extra_headers: dict[str, str] | None = None,
         provider_name: str | None = None,
+        request_timeout: float = 120.0,
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
+        self.request_timeout = request_timeout
 
         # Detect gateway / local deployment.
         # provider_name (from config key) is the primary signal;
@@ -197,6 +211,7 @@ class LiteLLMProvider(LLMProvider):
             "messages": self._sanitize_messages(self._sanitize_empty_content(messages)),
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "timeout": self.request_timeout,
         }
 
         # Apply model-specific overrides (e.g. kimi-k2.5 temperature)
@@ -218,15 +233,27 @@ class LiteLLMProvider(LLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        try:
-            response = await acompletion(**kwargs)
-            return self._parse_response(response)
-        except Exception as e:
-            # Return error as content for graceful handling
-            return LLMResponse(
-                content=f"Error calling LLM: {str(e)}",
-                finish_reason="error",
-            )
+        last_error: Exception | None = None
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                response = await acompletion(**kwargs)
+                return self._parse_response(response)
+            except litellm.exceptions.ContextWindowExceededError as e:
+                raise ProviderError(str(e), code="context_window_exceeded") from e
+            except _TRANSIENT_EXCEPTIONS as e:
+                last_error = e
+                if attempt < _MAX_ATTEMPTS - 1:
+                    delay = _BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)]
+                    logger.warning(
+                        "LLM transient error ({}), retry {}/{} in {}s: {}",
+                        type(e).__name__, attempt + 1, _MAX_ATTEMPTS - 1, delay, str(e)[:200],
+                    )
+                    await asyncio.sleep(delay)
+            except Exception as e:
+                raise ProviderError(str(e), code=type(e).__name__) from e
+        raise ProviderError(
+            str(last_error), code=type(last_error).__name__, retryable=True,
+        ) from last_error
 
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""

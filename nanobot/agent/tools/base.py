@@ -21,6 +21,9 @@ class Tool(ABC):
         "object": dict,
     }
 
+    parallel_safe: bool = True
+    """Whether this tool may run concurrently with other tools in the same batch."""
+
     @property
     @abstractmethod
     def name(self) -> str:

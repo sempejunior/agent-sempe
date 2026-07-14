@@ -5,6 +5,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+class ProviderError(Exception):
+    """LLM provider failure after retries were exhausted (or a permanent error).
+
+    ``code`` carries the original exception class name for logging/metrics;
+    ``retryable`` tells whether the failure was transient (already retried).
+    """
+
+    def __init__(self, message: str, *, code: str = "provider_error", retryable: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
 @dataclass
 class ToolCallRequest:
     """A tool call request from the LLM."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -24,7 +25,7 @@ from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider
+from nanobot.providers.base import LLMProvider, ProviderError
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -45,6 +46,17 @@ _FINAL_ANSWER_PROMPT = (
     "Agora escreva a resposta final ao usuário: o que foi entregue, os números-chave "
     "e os links markdown de TODAS as páginas publicadas. Não mencione COMPLETO nem "
     "esta verificação."
+)
+
+HELP_TEXT = (
+    "🐈 nanobot commands:\n"
+    "/new — Start a new conversation\n"
+    "/help — Show available commands"
+)
+
+_PROVIDER_ERROR_MESSAGE = (
+    "O provedor de IA está instável no momento e não consegui concluir a solicitação. "
+    "Tente novamente em instantes."
 )
 
 
@@ -354,8 +366,13 @@ class AgentLoop:
         max_tokens: int | None = None,
         max_iterations: int | None = None,
         provider: LLMProvider | None = None,
+        usage_totals: dict[str, int] | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
-        """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
+        """Run the agent iteration loop. Returns (final_content, tools_used, messages).
+
+        When ``usage_totals`` is given, per-call token usage and call count are
+        accumulated into it (keys: prompt_tokens, completion_tokens, llm_calls).
+        """
         _tools = tools or self.tools
         _provider = provider or self.provider
         _model = model or self.model
@@ -375,13 +392,27 @@ class AgentLoop:
         while iteration < _max_iter:
             iteration += 1
 
-            response = await _provider.chat(
-                messages=messages,
-                tools=_tools.get_definitions(),
-                model=_model,
-                temperature=_temp,
-                max_tokens=_max_tokens,
-            )
+            try:
+                response = await _provider.chat(
+                    messages=messages,
+                    tools=_tools.get_definitions(),
+                    model=_model,
+                    temperature=_temp,
+                    max_tokens=_max_tokens,
+                )
+            except ProviderError as e:
+                logger.error("LLM provider failed (code={}, retryable={}): {}", e.code, e.retryable, e)
+                final_content = _PROVIDER_ERROR_MESSAGE
+                break
+
+            if usage_totals is not None:
+                usage_totals["prompt_tokens"] = (
+                    usage_totals.get("prompt_tokens", 0) + response.usage.get("prompt_tokens", 0)
+                )
+                usage_totals["completion_tokens"] = (
+                    usage_totals.get("completion_tokens", 0) + response.usage.get("completion_tokens", 0)
+                )
+                usage_totals["llm_calls"] = usage_totals.get("llm_calls", 0) + 1
 
             if response.has_tool_calls:
                 if nudged:
@@ -409,14 +440,15 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await _tools.execute(tool_call.name, tool_call.arguments)
+                results = await _tools.execute_calls(response.tool_calls)
+                for tool_call, result in zip(response.tool_calls, results):
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
             else:
                 content = self._strip_think(response.content) or ""
                 is_sentinel = content.strip().upper().startswith("COMPLETO")
-                if tools_used and not nudged:
+                if not nudged and not is_sentinel and (content or tools_used):
                     nudged = True
                     pending_final = content
                     messages = self.context.add_assistant_message(
@@ -606,14 +638,19 @@ class AgentLoop:
                 history=history,
                 current_message=msg.content, channel=channel, chat_id=chat_id,
             )
+            turn_started = time.monotonic()
+            usage_totals: dict[str, int] = {}
             final_content, _, all_msgs = await self._run_agent_loop(
                 messages, tools=tools, model=_model, temperature=_temperature,
                 max_tokens=_max_tokens, max_iterations=_max_iterations,
-                provider=_provider,
+                provider=_provider, usage_totals=usage_totals,
+            )
+            self._record_turn_usage(
+                session, usage_totals, time.monotonic() - turn_started, _user_id, _agent_id,
             )
             if final_content:
                 all_msgs.append({"role": "assistant", "content": final_content})
-            self._save_turn(session, all_msgs, 1 + len(history))
+            self._save_turn(session, all_msgs, 1 + len(history), user_content=msg.content)
             await sessions.save(session)
             return OutboundMessage(
                 channel=channel,
@@ -660,7 +697,7 @@ class AgentLoop:
                                   content="New session started.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands")
+                                  content=HELP_TEXT)
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if (unconsolidated >= _memory_window and session.key not in self._consolidating):
@@ -712,11 +749,16 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
 
+        turn_started = time.monotonic()
+        usage_totals: dict[str, int] = {}
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages, on_progress=on_progress or _bus_progress,
             tools=tools, model=_model, temperature=_temperature,
             max_tokens=_max_tokens, max_iterations=_max_iterations,
-            provider=_provider,
+            provider=_provider, usage_totals=usage_totals,
+        )
+        self._record_turn_usage(
+            session, usage_totals, time.monotonic() - turn_started, _user_id, _agent_id,
         )
 
         if final_content is None:
@@ -726,10 +768,10 @@ class AgentLoop:
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         all_msgs.append({"role": "assistant", "content": final_content})
-        self._save_turn(session, all_msgs, 1 + len(history))
+        self._save_turn(session, all_msgs, 1 + len(history), user_content=msg.content)
         await sessions.save(session)
 
-        if message_tool := tools.get("message"):
+        if msg.channel != "web" and (message_tool := tools.get("message")):
             if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
                 return None
 
@@ -738,12 +780,50 @@ class AgentLoop:
             metadata={**(msg.metadata or {}), "_owner_id": _user_id, "_agent_id": _agent_id},
         )
 
+    @staticmethod
+    def _record_turn_usage(
+        session: Session, usage_totals: dict[str, int], duration_s: float,
+        user_id: str, agent_id: str,
+    ) -> None:
+        """Log per-turn token usage and accumulate it in the session metadata."""
+        prompt = usage_totals.get("prompt_tokens", 0)
+        completion = usage_totals.get("completion_tokens", 0)
+        calls = usage_totals.get("llm_calls", 0)
+        logger.info(
+            "Turn usage: prompt={} completion={} llm_calls={} duration={:.1f}s user={} agent={}",
+            prompt, completion, calls, duration_s, user_id or "-", agent_id or "-",
+        )
+        totals = session.metadata.setdefault(
+            "token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "turns": 0},
+        )
+        totals["prompt_tokens"] += prompt
+        totals["completion_tokens"] += completion
+        totals["turns"] += 1
+        session.metadata["last_turn"] = {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "llm_calls": calls,
+            "duration_s": round(duration_s, 1),
+        }
+
     _TOOL_RESULT_MAX_CHARS = 500
 
-    def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
-        """Save new-turn messages into session, truncating large tool results."""
+    def _save_turn(
+        self, session: Session, messages: list[dict], skip: int,
+        user_content: str | None = None,
+    ) -> None:
+        """Save new-turn messages into session, truncating large tool results.
+
+        The first message of a turn is the LLM-facing user message, which carries
+        the volatile runtime-context prefix. When ``user_content`` is given, the
+        stored copy uses the original text instead, so persisted history reflects
+        what the user actually sent.
+        """
         from datetime import datetime
-        for m in messages[skip:]:
+        turn_messages = messages[skip:]
+        if user_content is not None and turn_messages and turn_messages[0].get("role") == "user":
+            turn_messages[0] = self._with_user_content(turn_messages[0], user_content)
+        for m in turn_messages:
             content = m.get("content")
             if not m.get("tool_calls") and isinstance(content, str):
                 if content in (_COMPLETION_NUDGE, _FINAL_ANSWER_PROMPT):
@@ -765,6 +845,19 @@ class AgentLoop:
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
         session.updated_at = datetime.now()
+
+    @staticmethod
+    def _with_user_content(message: dict, user_content: str) -> dict:
+        """Return a copy of a user message with its text replaced by ``user_content``."""
+        content = message.get("content")
+        if isinstance(content, list):
+            new_content = [
+                {**block, "text": user_content}
+                if isinstance(block, dict) and block.get("type") == "text" else block
+                for block in content
+            ]
+            return {**message, "content": new_content}
+        return {**message, "content": user_content}
 
     async def _consolidate_memory(
         self, session: Session, *, archive_all: bool = False,

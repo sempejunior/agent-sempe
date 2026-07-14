@@ -1,8 +1,16 @@
 """Tool registry for dynamic tool management."""
 
-from typing import Any
+import asyncio
+from typing import TYPE_CHECKING, Any
+
+from loguru import logger
 
 from nanobot.agent.tools.base import Tool
+
+if TYPE_CHECKING:
+    from nanobot.providers.base import ToolCallRequest
+
+DEFAULT_TOOL_TIMEOUT_S = 180
 
 
 class ToolRegistry:
@@ -53,6 +61,37 @@ class ToolRegistry:
             return result
         except Exception as e:
             return f"Error executing {name}: {str(e)}" + _HINT
+
+    async def execute_calls(
+        self, calls: list["ToolCallRequest"], *, timeout: float = DEFAULT_TOOL_TIMEOUT_S,
+    ) -> list[str | list[dict[str, Any]]]:
+        """Execute a batch of tool calls, each bounded by ``timeout``.
+
+        Independent calls run concurrently; results keep the input order (the
+        chat API requires one tool result per call, in order). A call whose
+        tool declares ``parallel_safe = False`` forces the whole batch to run
+        sequentially.
+        """
+        parallel = len(calls) > 1 and all(
+            getattr(self._tools.get(call.name), "parallel_safe", True) for call in calls
+        )
+        if parallel:
+            return list(await asyncio.gather(
+                *(self._execute_bounded(call, timeout) for call in calls)
+            ))
+        return [await self._execute_bounded(call, timeout) for call in calls]
+
+    async def _execute_bounded(
+        self, call: "ToolCallRequest", timeout: float,
+    ) -> str | list[dict[str, Any]]:
+        try:
+            return await asyncio.wait_for(self.execute(call.name, call.arguments), timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Tool call {} timed out after {}s", call.name, timeout)
+            return (
+                f"Error: tool '{call.name}' timed out after {int(timeout)}s. "
+                "Try a different approach or a smaller request."
+            )
 
     @property
     def tool_names(self) -> list[str]:

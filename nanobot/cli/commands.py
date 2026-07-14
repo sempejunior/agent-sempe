@@ -258,6 +258,7 @@ def _make_provider(config: Config, strict: bool = True):
         default_model=model,
         extra_headers=p.extra_headers if p else None,
         provider_name=provider_name,
+        request_timeout=config.providers.request_timeout_s,
     )
 
 
@@ -346,7 +347,23 @@ def gateway(
         )
 
         async def on_cron_job(job: CronJob) -> str | None:
-            """Execute a cron job through the agent."""
+            """Execute a cron job through the agent.
+
+            Multiuser jobs (job.user_id set) run with the owner's user/agent
+            context, mirroring the web-server wiring; legacy filesystem jobs
+            keep the CLI routing.
+            """
+            if job.user_id:
+                channel = job.payload.channel or "system"
+                to = job.payload.to or f"web:{job.user_id}"
+                return await agent.process_direct(
+                    job.payload.message,
+                    session_key=f"cron:{job.id}",
+                    channel="system",
+                    chat_id=f"{channel}:{to}",
+                    user_id=job.user_id,
+                    agent_id=job.agent_id or None,
+                )
             response = await agent.process_direct(
                 job.payload.message,
                 session_key=f"cron:{job.id}",
