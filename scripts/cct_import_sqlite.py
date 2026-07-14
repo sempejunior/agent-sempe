@@ -57,7 +57,6 @@ def _unescape(field: str) -> str | None:
     if field == "\\N":
         return None
     out = []
-    it = iter(range(len(field)))
     i = 0
     while i < len(field):
         ch = field[i]
