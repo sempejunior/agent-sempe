@@ -62,6 +62,8 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
     tools: [
       { id: "web_search", name: "Pesquisa Web", desc: "Busca na internet", icon: Search },
       { id: "web_fetch", name: "Leitor de URL", desc: "Lê conteúdo de sites", icon: Globe },
+      { id: "cnpj_lookup", name: "Consulta CNPJ", desc: "Dados públicos da Receita (CNAE, município)", icon: Search },
+      { id: "cct_search", name: "Base de CCTs", desc: "Busca convenções coletivas na base local (Mediador/MTE)", icon: Search },
     ],
   },
   {

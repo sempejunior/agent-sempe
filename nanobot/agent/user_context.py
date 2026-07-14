@@ -198,6 +198,7 @@ async def build_user_context(
         rag_enabled=retriever is not None,
         integration_repo=repos.integrations,
         agent_bootstrap=agent_doc.get("bootstrap", {}) or {},
+        agent_name=agent_doc.get("name", "") or "",
     )
     tools = build_tool_registry(
         tools_enabled=tools_enabled,
@@ -254,6 +255,8 @@ def build_tool_registry(
     public_url: str | None = None,
 ) -> ToolRegistry:
     """Build a ToolRegistry with only the enabled tools."""
+    from nanobot.agent.tools.cct import CctSearchTool
+    from nanobot.agent.tools.cnpj import CnpjLookupTool
     from nanobot.agent.tools.cron import CronTool
     from nanobot.agent.tools.filesystem import (
         EditFileTool,
@@ -282,6 +285,8 @@ def build_tool_registry(
         ),
         "web_search": lambda: WebSearchTool(api_key=brave_api_key),
         "web_fetch": lambda: WebFetchTool(),
+        "cnpj_lookup": lambda: CnpjLookupTool(),
+        "cct_search": lambda: CctSearchTool(),
         "message": lambda: MessageTool(send_callback=bus.publish_outbound),
         "save_skill": lambda: SaveSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace),
         "read_skill": lambda: ReadSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace, builtin_dir=BUILTIN_SKILLS_DIR),
