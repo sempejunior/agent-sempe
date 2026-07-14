@@ -278,7 +278,8 @@ function ClientList() {
 
               <div className="text-right shrink-0 hidden sm:block">
                 <div className="text-xs font-bold text-text-secondary">
-                  {client.total_interactions} mensagens
+                  {client.total_interactions}{" "}
+                  {client.total_interactions === 1 ? "interacao" : "interacoes"}
                 </div>
                 <div className="text-[11px] text-text-muted mt-0.5">
                   {relativeTime(client.last_seen)}

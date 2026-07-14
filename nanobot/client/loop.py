@@ -18,11 +18,13 @@ import asyncio
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from nanobot.agent.loop import AgentLoop
+from nanobot.bus.events import OutboundMessage
 
 if TYPE_CHECKING:
     from nanobot.agent.memory import MemoryStore
-    from nanobot.bus.events import InboundMessage, OutboundMessage
+    from nanobot.bus.events import InboundMessage
     from nanobot.client.memory import ClientScopedMemory
+    from nanobot.client.selection import SelectionDecision
 
 
 class ClientAwareAgentLoop(AgentLoop):
@@ -60,6 +62,18 @@ class ClientAwareAgentLoop(AgentLoop):
         base_key = session_key or msg.session_key
         msg.session_key_override = f"client:{client_id}:{base_key}"
 
+        if msg.agent_id is None and not (msg.metadata or {}).get("_agent_id"):
+            decision = await self._resolve_selection(msg, user_id, client_id)
+            if decision.reply is not None:
+                await self._save_selection_exchange(user_id, client_id, msg, decision.reply)
+                return OutboundMessage(
+                    channel=msg.channel, chat_id=msg.chat_id,
+                    content=decision.reply,
+                    metadata={**(msg.metadata or {}), "_owner_id": user_id},
+                )
+            if decision.agent_id:
+                msg.agent_id = decision.agent_id
+
         lock = self._get_swap_lock(user_id)
         async with lock:
             agent_id = await self._resolve_agent_id(user_id, msg)
@@ -71,6 +85,39 @@ class ClientAwareAgentLoop(AgentLoop):
                 return await super()._process_message(msg, session_key, on_progress)
             finally:
                 self._restore_memory(uctx, originals)
+
+    async def _save_selection_exchange(
+        self, user_id: str, client_id: str, msg: InboundMessage, reply: str,
+    ) -> None:
+        """Persist a picker exchange in an agent-less client session.
+
+        The selection dialogue happens before any agent owns the conversation,
+        so it is stored under the bare client session key — the client panel
+        merges it with the agent sessions to show the full conversation.
+        """
+        from datetime import datetime
+
+        session_id = await self._repos.sessions.save({
+            "user_id": user_id,
+            "session_key": msg.session_key,
+            "client_id": client_id,
+        })
+        now = datetime.now().isoformat()
+        await self._repos.messages.append_many(session_id, user_id, [
+            {"role": "user", "content": msg.content, "timestamp": now},
+            {"role": "assistant", "content": reply, "timestamp": now},
+        ])
+
+    async def _resolve_selection(
+        self, msg: InboundMessage, user_id: str, client_id: str,
+    ) -> "SelectionDecision":
+        from nanobot.client.selection import resolve_selection
+
+        return await resolve_selection(
+            msg, user_id, client_id,
+            agents=self._repos.agents,
+            clients=self._repos.clients,
+        )
 
     async def _resolve_client(self, msg: InboundMessage, owner_id: str) -> str | None:
         from nanobot.client.resolver import resolve_client

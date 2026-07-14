@@ -125,6 +125,7 @@ class TelegramChannel(BaseChannel):
     BOT_COMMANDS = [
         BotCommand("start", "Start the bot"),
         BotCommand("new", "Start a new conversation"),
+        BotCommand("agente", "Trocar de agente"),
         BotCommand("help", "Show available commands"),
         BotCommand("pairing", "Approve a pending pairing code (owner only)"),
     ]
@@ -174,6 +175,8 @@ class TelegramChannel(BaseChannel):
         # Add command handlers
         self._app.add_handler(CommandHandler("start", self._on_start))
         self._app.add_handler(CommandHandler("new", self._forward_command))
+        self._app.add_handler(CommandHandler("agente", self._forward_command))
+        self._app.add_handler(CommandHandler("agentes", self._forward_command))
         self._app.add_handler(CommandHandler("help", self._on_help))
         self._app.add_handler(CommandHandler("pairing", self._on_pairing))
 
@@ -345,6 +348,7 @@ class TelegramChannel(BaseChannel):
         await update.message.reply_text(
             "🐈 nanobot commands:\n"
             "/new — Start a new conversation\n"
+            "/agente — Trocar de agente\n"
             "/help — Show available commands"
         )
 

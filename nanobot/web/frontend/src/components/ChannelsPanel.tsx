@@ -549,8 +549,8 @@ export function ChannelsPanel() {
 
   const subtitle =
     channels.length === 0
-      ? "Configure credenciais dos conectores. Para escolher quais canais um agente usa, edite o agente."
-      : `${connectedCount} conectado(s)${failedCount > 0 ? ` · ${failedCount} com falha` : ""} · credenciais compartilhadas entre agentes`;
+      ? "Configure credenciais dos conectores. Varios agentes podem usar o mesmo canal — o usuario final escolhe com quem falar."
+      : `${connectedCount} conectado(s)${failedCount > 0 ? ` · ${failedCount} com falha` : ""} · canais compartilhados entre agentes`;
 
   return (
     <div className="container-app">
