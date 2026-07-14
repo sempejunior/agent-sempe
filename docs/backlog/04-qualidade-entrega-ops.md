@@ -6,6 +6,9 @@
 > **Feito:** `tests/` versionado (fora do `.gitignore`); ruff limpo em `nanobot`+`tests`
 > (per-file-ignores p/ o módulo compacto `azure_report.py` + params camelCase de tools);
 > CI (`.github/workflows/ci.yml`: ruff + pytest + build do frontend) e `.pre-commit-config.yaml`.
+> Suíte em **140 testes** (jul/2026): repositórios, API de auth/agentes, seleção de agente em canal
+> compartilhado, resiliência do loop (retry/timeout/paralelismo/tokens), tools cnpj_lookup e
+> cct_search.
 > **A fazer:** mypy; ativar `E501`; cobrir web/API (TestClient) e repos DB; eslint como gate
 > (hoje advisory — 3 erros pré-existentes no front); tirar assets buildados do git; Dockerfile
 > multi-stage/non-root; versionamento de API.
