@@ -44,6 +44,7 @@ class ContextBuilder:
         rag_enabled: bool = False,
         integration_repo: "IntegrationRepository | None" = None,
         agent_bootstrap: dict[str, str] | None = None,
+        agent_name: str = "",
     ):
         self.workspace = workspace
         self.memory = memory_store or MemoryStore(workspace)
@@ -55,6 +56,7 @@ class ContextBuilder:
         self._rag_enabled = rag_enabled
         self._integration_repo = integration_repo
         self._agent_bootstrap = agent_bootstrap or {}
+        self._agent_name = agent_name
         self._mode: str = "db" if user_repo is not None and user_id is not None else "fs"
 
     async def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
@@ -204,9 +206,10 @@ IMPORTANT: Always use `--no-sandbox` with Chromium (required in container)."""
         desktop = self._get_desktop_section()
 
         if self._mode == "db":
-            return f"""# nanobot
+            name = self._agent_name or "nanobot"
+            return f"""# {name}
 
-You are nanobot, a helpful AI assistant.
+You are {name}, a helpful AI assistant.
 
 ## Runtime
 {runtime}
@@ -218,6 +221,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
 ## Tool Call Guidelines
 - Before calling tools, you may briefly state your intent (e.g. "Let me check that"), but NEVER predict or describe the expected result before receiving it.
+- Never reply with only a promise of future action ("I'll gather the data..."): a reply that announces work MUST include the tool calls in the same response. A text-only reply ends your turn.
 - Before modifying a file, read it first to confirm its current content.
 - Do not assume a file or directory exists — use list_dir or read_file to verify.
 - After writing or editing a file, re-read it if accuracy matters.
@@ -247,6 +251,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
 ## Tool Call Guidelines
 - Before calling tools, you may briefly state your intent (e.g. "Let me check that"), but NEVER predict or describe the expected result before receiving it.
+- Never reply with only a promise of future action ("I'll gather the data..."): a reply that announces work MUST include the tool calls in the same response. A text-only reply ends your turn.
 - Before modifying a file, read it first to confirm its current content.
 - Do not assume a file or directory exists — use list_dir or read_file to verify.
 - After writing or editing a file, re-read it if accuracy matters.

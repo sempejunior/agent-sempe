@@ -191,10 +191,7 @@ class SQLiteMessageRepository:
         )
         await self._db.commit()
 
-        await self._db.execute(
-            "UPDATE sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), session_id),
-        )
+        await self._sync_message_count(session_id)
         await self._db.commit()
         return cursor.lastrowid or 0
 
@@ -229,11 +226,18 @@ class SQLiteMessageRepository:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
-        await self._db.execute(
-            "UPDATE sessions SET message_count = message_count + ?, updated_at = ? WHERE id = ?",
-            (len(messages), datetime.now().isoformat(), session_id),
-        )
+        await self._sync_message_count(session_id)
         await self._db.commit()
+
+    async def _sync_message_count(self, session_id: int) -> None:
+        """Recompute message_count from the actual message rows."""
+        await self._db.execute(
+            """UPDATE sessions
+               SET message_count = (SELECT COUNT(*) FROM messages WHERE session_id = ?),
+                   updated_at = ?
+               WHERE id = ?""",
+            (session_id, datetime.now().isoformat(), session_id),
+        )
 
     async def count(self, session_id: int) -> int:
         cursor = await self._db.execute(
