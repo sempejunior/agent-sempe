@@ -144,7 +144,7 @@ def pdate(s):
     if not s: return None
     s = s.replace("Z","").split(".")[0]
     try: return datetime.fromisoformat(s)
-    except: return None
+    except Exception: return None
 
 def size_bucket(sp):
     if not sp: return None
@@ -320,14 +320,12 @@ def stage_bars(p):
 
 def render(project, year, R, wip, with_flow):
     people = R["people"]; proj_types = R["proj_types"]
-    pm_count = R["pm_count"]; pm_sp = R["pm_sp"]
+    pm_count = R["pm_count"]
     all_cycle = R["all_cycle"]; all_lead = R["all_lead"]; sprint = R["sprint"]
     total = sum(p["count"] for p in people.values())
     total_sp = sum(p["sp"] for p in people.values())
     assigned = sorted([(n,p) for n,p in people.items() if n != "(Não identificado)"],
                       key=lambda kv:-kv[1]["count"])
-    with_est = sum(p["count"]-p["no_est"] for p in people.values())
-    est_pct = round(100*with_est/total) if total else 0
     peak = max(pm_count, key=lambda k:pm_count[k]) if pm_count else (year,1)
     top_vol = assigned[0] if assigned else None
     top_sp = max(assigned, key=lambda kv:kv[1]["sp"]) if assigned else None

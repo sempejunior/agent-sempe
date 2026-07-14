@@ -1,16 +1,23 @@
 # 03 — Confiabilidade e observabilidade
 
-> **Status:** proposto, não iniciado. **Prioridade:** P1.
+> **Status:** parcialmente entregue (13/07/2026, via fase 0 do [09](09-evolucao-agent-loop.md)).
+> **Prioridade:** P1.
 > **Tipo:** robustez de runtime + operação. Ver contexto em [00](00-avaliacao-e-roadmap.md).
+>
+> **Feito (13/07/2026):** timeout do LLM configurável (`providers.request_timeout_s`, default 120s)
+> e timeout por tool-call (180s, turno continua); retry com backoff e classificação de erro no
+> provider (`ProviderError` tipado — erro de LLM não vira mais resposta ao usuário); tokens por
+> turno logados e persistidos em `sessions.metadata` (primeiro insumo de métricas); cron multiuser
+> corrigido (jobs criados na UI rodavam sem contexto de user/agente e completavam em 2ms sem efeito).
+> **A fazer:** o restante abaixo (idempotência, transações, shutdown, rate-limit, observabilidade).
 
 ## Problema (estado atual)
 
-- **LLM sem timeout explícito** (`litellm_provider.py:222`): só o caminho web tem guarda externa de
-  180s; cron/canais podem travar no default do provider (~10min).
-- **Tool-call sem timeout** (`loop.py:412`): um MCP travado paralisa o turno inteiro (só exec/http/
-  web_fetch se autolimitam).
+- ~~**LLM sem timeout explícito**~~ (resolvido 13/07) e ~~**tool-call sem timeout**~~ (resolvido
+  13/07); MCP mantém o timeout próprio de 30s.
 - **Sem retry/idempotência**: cron roda o job 1× (falhou, perdeu); crash no meio do turno deixa
-  `messages`/`memories` parciais (commits incrementais) sem dedupe no replay.
+  `messages`/`memories` parciais (commits incrementais) sem dedupe no replay. (O retry de **LLM**
+  transiente já existe; o de **jobs** não.)
 - **Escritas multi-passo não atômicas**: `create_agent` grava skills + RAG + linha do agente em
   commits separados; falha no meio deixa estado inconsistente.
 - **Shutdown frágil**: depende de `KeyboardInterrupt`; sob `docker stop` (SIGTERM) o `asyncio.gather`
@@ -23,8 +30,7 @@
 ## Escopo
 
 ### Confiabilidade
-- **Timeout explícito** no LLM (`acompletion(timeout=...)`) e **por tool-call** (`asyncio.wait_for`
-  em `_tools.execute`); MCP com timeout próprio.
+- ~~Timeout explícito no LLM e por tool-call~~ — **entregue** (13/07, item 09 fase 0).
 - **Retry + idempotência**: chave de idempotência por turno; cron com retry/back-off e marcação de
   execução; replay não duplica efeitos.
 - **Transações atômicas** nas escritas multi-passo (uma transação por operação de negócio).

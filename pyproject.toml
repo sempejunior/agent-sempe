@@ -97,6 +97,14 @@ target-version = "py311"
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# Módulo de analytics denso, escrito em estilo compacto (uma linha por métrica).
+"nanobot/agent/tools/azure_report.py" = ["E701", "E702", "E741", "N803", "N806", "E401", "E402", "I001"]
+# Nomes de parâmetro fazem parte do schema exposto ao LLM (camelCase intencional).
+"nanobot/agent/tools/web.py" = ["N803"]
+"nanobot/channels/qq.py" = ["N806"]
+"nanobot/agent/tools/registry.py" = ["N806"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

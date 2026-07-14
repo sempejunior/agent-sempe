@@ -187,11 +187,13 @@ class SessionManager:
         self._session_ids[key] = session_id
         self._loaded_counts[key] = len(messages)
 
+        metadata = row.get("metadata")
         return Session(
             key=key,
             messages=messages,
             created_at=datetime.fromisoformat(row["created_at"]) if isinstance(row.get("created_at"), str) else datetime.now(),
             last_consolidated=row.get("last_consolidated", 0),
+            metadata=metadata if isinstance(metadata, dict) else {},
         )
 
     async def _save_to_db(self, session: Session) -> None:
@@ -201,6 +203,7 @@ class SessionManager:
             "session_key": self._db_key(session.key),
             "last_consolidated": session.last_consolidated,
             "message_count": len(session.messages),
+            "metadata": session.metadata,
         })
         self._session_ids[session.key] = session_id
 

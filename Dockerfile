@@ -29,7 +29,9 @@ RUN apt-get update && \
     xterm \
     xdotool \
     imagemagick \
-    tesseract-ocr && \
+    tesseract-ocr \
+    tesseract-ocr-por \
+    poppler-utils && \
     apt-get purge -y gnupg && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*

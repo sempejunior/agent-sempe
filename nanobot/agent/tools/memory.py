@@ -25,9 +25,11 @@ class SaveMemoryTool(Tool):
         return (
             "Save an important fact to long-term memory so it persists across sessions. "
             "Call this proactively — WITHOUT asking permission — whenever the user reveals "
-            "their name, role, company, timezone, preferences, ongoing project, or any "
-            "personal detail worth remembering. Do not ask 'should I remember?'; just save "
-            "and continue. Also use when the user explicitly asks you to remember something."
+            "their name, role, company, team, timezone, preferences, ongoing project, or any "
+            "personal detail worth remembering (e.g. 'is a team leader'). Do not ask "
+            "'should I remember?'; just save and continue. Also use when the user explicitly "
+            "asks you to remember something. Do NOT save ephemeral runtime details such as "
+            "the current channel, chat id, or time — they change every conversation."
         )
 
     @property
@@ -53,6 +55,9 @@ class SaveMemoryTool(Tool):
 
         try:
             current = await self._memory.read_long_term()
+            existing_lines = {line.strip() for line in current.splitlines()} if current else set()
+            if fact in existing_lines:
+                return f"Already memorized: {fact}"
             if current:
                 updated = current.rstrip() + "\n" + fact + "\n"
             else:

@@ -19,12 +19,15 @@ if TYPE_CHECKING:
 def _extract_external_id(msg: InboundMessage) -> str | None:
     """Extract the external user identifier from an inbound message.
 
-    For most channels the sender_id is the external identity.  For web/CLI
-    channels where everyone shares the same sender_id, there's nothing to
-    resolve — return None.
+    For most channels the sender_id is the external identity. On the web
+    channel every message comes from the authenticated owner, so the owner's
+    user_id is the identity — their web chats belong to a client like any
+    channel conversation. CLI/system messages have no client.
     """
-    if msg.channel in ("web", "cli", "system"):
+    if msg.channel in ("cli", "system"):
         return None
+    if msg.channel == "web":
+        return msg.user_id or None
     return msg.sender_id or None
 
 
@@ -53,7 +56,7 @@ async def resolve_client(
     client_id = str(uuid.uuid4())
     display_name = msg.metadata.get("sender_name", "") if msg.metadata else ""
     if not display_name:
-        display_name = f"{msg.channel}:{external_id[:8]}"
+        display_name = external_id if msg.channel == "web" else f"{msg.channel}:{external_id[:8]}"
 
     try:
         await clients.create({
@@ -75,6 +78,7 @@ async def resolve_client(
             return retry
         raise
 
+    await clients.touch(client_id)
     logger.info(
         "Auto-created client {} for {}:{} (owner={})",
         client_id, msg.channel, external_id, owner_id,

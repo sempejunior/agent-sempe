@@ -570,6 +570,16 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             fields["agent_config"] = merged_cfg
         ok = await app.state.repos.agents.update_agent(user["user_id"], agent_id, fields)
         _invalidate_agent_context(user["user_id"], agent_id)
+        if "channel_configs" in fields:
+            before = current_agent.get("channel_configs", {}) or {}
+            after = fields["channel_configs"] or {}
+            changed = {
+                name for name in set(before) | set(after)
+                if (before.get(name) or {}).get("enabled")
+                != (after.get(name) or {}).get("enabled")
+            }
+            for channel_name in changed:
+                await _sync_user_channel_instance(user["user_id"], channel_name)
         agent = await app.state.repos.agents.get_agent(user["user_id"], agent_id)
         return {"ok": ok, "agent": _public_agent(agent)}
 
@@ -814,6 +824,22 @@ form.addEventListener("submit", async (e) => {{
             })
         return result
 
+    async def _find_session_by_suffix(
+        uid: str, agent_id: str, session_key: str,
+    ) -> dict[str, Any] | None:
+        """Match a session whose stored key gained a client prefix.
+
+        The client layer rewrites web session keys to
+        ``agent:<id>:client:<cid>:web:<uuid>`` while the studio UI only knows
+        the ``web:<uuid>`` suffix it created.
+        """
+        sessions = await app.state.repos.sessions.list_sessions(uid, agent_id=agent_id)
+        suffix = f":{session_key}"
+        return next(
+            (s for s in sessions if s.get("session_key", "").endswith(suffix)),
+            None,
+        )
+
     @app.get("/api/sessions/{session_key:path}/messages")
     async def get_messages(request: Request, session_key: str):
         user, agent = await _require_agent(request)
@@ -823,6 +849,8 @@ form.addEventListener("submit", async (e) => {{
         session = await repos.sessions.get(uid, db_session_key, agent["agent_id"])
         if not session:
             session = await repos.sessions.get(uid, session_key, agent["agent_id"])
+        if not session:
+            session = await _find_session_by_suffix(uid, agent["agent_id"], session_key)
         if not session:
             return []
         msgs = await repos.messages.get_messages(session["id"], limit=200)
@@ -845,6 +873,12 @@ form.addEventListener("submit", async (e) => {{
         ok = await app.state.repos.sessions.delete(uid, db_session_key, agent["agent_id"])
         if not ok:
             ok = await app.state.repos.sessions.delete(uid, session_key, agent["agent_id"])
+        if not ok:
+            match = await _find_session_by_suffix(uid, agent["agent_id"], session_key)
+            if match:
+                ok = await app.state.repos.sessions.delete(
+                    uid, match["session_key"], agent["agent_id"],
+                )
         return {"ok": ok}
 
     @app.get("/api/cron")
@@ -1570,7 +1604,7 @@ form.addEventListener("submit", async (e) => {{
         user_cfgs = _get_user_channel_configs(user)
         agent_cfgs = _get_agent_channel_configs(agent)
         channels_mgr = getattr(app.state, "channels", None)
-        user_status = channels_mgr.get_user_channel_status(uid, agent["agent_id"]) if channels_mgr else {}
+        user_status = channels_mgr.get_user_channel_status(uid) if channels_mgr else {}
 
         result = []
         for name in CHANNEL_ORDER:
@@ -1648,10 +1682,10 @@ form.addEventListener("submit", async (e) => {{
             await _set_agent_channel_enabled(
                 uid, agent, channel_name, bool(body["enabled"]),
             )
+            await _sync_user_channel_instance(uid, channel_name)
 
         channels_mgr = getattr(app.state, "channels", None)
-        owner_key = channels_mgr._owner_key(uid, agent["agent_id"]) if channels_mgr else uid
-        existing = channels_mgr.user_channels.get(owner_key, {}).get(channel_name) if channels_mgr else None
+        existing = channels_mgr.user_channels.get(uid, {}).get(channel_name) if channels_mgr else None
         if existing:
             existing._last_error = None
         return {"ok": True}
@@ -1703,6 +1737,22 @@ form.addEventListener("submit", async (e) => {{
             uid, agent["agent_id"], {"channel_configs": all_agent_cfgs},
         )
 
+    async def _sync_user_channel_instance(uid: str, channel_name: str) -> None:
+        """Stop the user's shared channel instance when no agent has it enabled.
+
+        Agents share one channel instance per user; starting it requires
+        validated credentials and stays in the explicit /start endpoint.
+        """
+        from nanobot.client.selection import list_channel_agents
+
+        channels_mgr = getattr(app.state, "channels", None)
+        if not channels_mgr:
+            return
+        enabled = await list_channel_agents(app.state.repos.agents, uid, channel_name)
+        running = channels_mgr.user_channels.get(uid, {}).get(channel_name)
+        if not enabled and running:
+            await channels_mgr.stop_user_channel(uid, channel_name)
+
     @app.post("/api/channels/{channel_name}/start")
     async def start_channel(request: Request, channel_name: str):
         user, agent = await _require_agent(request)
@@ -1744,9 +1794,7 @@ form.addEventListener("submit", async (e) => {{
                 f"Channel {channel_name} has unresolved credential placeholder(s): {', '.join(bad_refs)}. Paste the real secret.",
             )
 
-        owner_key = channels_mgr._owner_key(uid, agent["agent_id"])
-        user_chs = channels_mgr.user_channels.get(owner_key, {})
-        existing = user_chs.get(channel_name)
+        existing = channels_mgr.user_channels.get(uid, {}).get(channel_name)
         if existing and getattr(existing, "is_running", False):
             await _set_agent_channel_enabled(uid, agent, channel_name, True)
             return {"ok": True, "message": "Already running"}
@@ -1759,10 +1807,10 @@ form.addEventListener("submit", async (e) => {{
             raise HTTPException(400, f"Invalid config for {channel_name}: {e}")
 
         try:
-            channels_mgr.create_user_channel(uid, channel_name, cfg, agent_id=agent["agent_id"])
-            task = await channels_mgr.start_user_channel(uid, channel_name, agent_id=agent["agent_id"])
+            channels_mgr.create_user_channel(uid, channel_name, cfg)
+            task = await channels_mgr.start_user_channel(uid, channel_name)
             await asyncio.wait({task}, timeout=3)
-            current = channels_mgr.user_channels.get(owner_key, {}).get(channel_name)
+            current = channels_mgr.user_channels.get(uid, {}).get(channel_name)
             last_error = getattr(current, "_last_error", None) if current else None
             if last_error:
                 raise RuntimeError(last_error)
@@ -1793,8 +1841,16 @@ form.addEventListener("submit", async (e) => {{
         if not channels_mgr:
             raise HTTPException(503, "Channel manager not available")
 
-        await channels_mgr.stop_user_channel(uid, channel_name, agent_id=agent["agent_id"])
+        from nanobot.client.selection import list_channel_agents
+
         await _set_agent_channel_enabled(uid, agent, channel_name, False)
+        await _sync_user_channel_instance(uid, channel_name)
+        remaining = await list_channel_agents(app.state.repos.agents, uid, channel_name)
+        if remaining:
+            return {
+                "ok": True,
+                "message": f"Agente desconectado; {channel_name} segue ativo para outros agentes",
+            }
         return {"ok": True, "message": f"{channel_name} stopped"}
 
     from nanobot.web.routes.clients import router as clients_router

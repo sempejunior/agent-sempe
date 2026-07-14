@@ -1,9 +1,10 @@
 # 00 — Avaliação geral & roadmap de produção
 
-> **Status:** avaliação concluída; itens derivados propostos (01–04).
+> **Status:** avaliação concluída; itens derivados 01–10 (ordem viva no
+> [README](README.md), atualizada em 14/07/2026).
 > **Tipo:** análise de prontidão + roadmap.
-> Consolida a avaliação do projeto como um todo para virar SaaS multi-tenant, e sequencia todos
-> os itens do backlog (00–07). Os números dos itens seguem a **ordem de prioridade**.
+> Consolida a avaliação do projeto como um todo para virar SaaS multi-tenant. A numeração dos
+> itens é histórica; a **ordem de prioridade atual** é a do README do backlog.
 
 ## Recomendação central (muda a ordem de execução)
 
@@ -19,9 +20,12 @@ erguer sobre alicerce trincado.
 ```
 P0  01 Auth + Tenancy + RBAC      ─┐ fundação de identidade e segurança
 P0  02 Segurança + LGPD           ─┘ (dados de RH: não abrir/escalar sem isto)
-P1  03 Confiabilidade + Observabilidade
-P1  04 Qualidade + Entrega (CI/CD) + Ops   (sempre-on; habilita o resto com rede)
-P2  05 Padronização de capacidades
+P1  04 Qualidade + Entrega (CI/CD) + Ops   (em andamento; habilita o resto com rede)
+P1  03 Confiabilidade + Observabilidade    (parcial: timeouts/retry/tokens entregues via 09)
+P2  10 Base de CCTs — operação             (fase 1 entregue; demanda ativa de negócio)
+P2  09 Evolução do agent loop              (fase 0 entregue)
+P2  08 Feedback de progresso no chat
+P2  05 Padronização de capacidades         (oportunístico / refactor-on-touch)
 P3  06 Capacidades criadas pelo cliente
 P4  07 Cloud, multi-tenant e escala
 ```

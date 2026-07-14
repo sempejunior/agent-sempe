@@ -65,6 +65,8 @@ const BUILTIN_TOOLS: BuiltinTool[] = [
   { id: "rag_ingest", name: "Adicionar à base RAG", cat: "Memória" },
   { id: "web_search", name: "Pesquisar na web", cat: "Web" },
   { id: "web_fetch", name: "Ler URL", cat: "Web" },
+  { id: "cnpj_lookup", name: "Consulta CNPJ (Receita)", cat: "Web" },
+  { id: "cct_search", name: "Base de CCTs (Mediador)", cat: "Web" },
   { id: "message", name: "Enviar mensagens proativas", cat: "Automação" },
   { id: "cron", name: "Agendar tarefas", cat: "Automação" },
   { id: "save_mcp_server", name: "Cadastrar MCP", cat: "Automação" },

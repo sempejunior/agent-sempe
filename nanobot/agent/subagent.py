@@ -166,7 +166,8 @@ class SubagentManager:
                     for tool_call in response.tool_calls:
                         args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                         logger.debug("Subagent [{}] executing: {} with arguments: {}", task_id, tool_call.name, args_str)
-                        result = await tools.execute(tool_call.name, tool_call.arguments)
+                    results = await tools.execute_calls(response.tool_calls)
+                    for tool_call, result in zip(response.tool_calls, results):
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,

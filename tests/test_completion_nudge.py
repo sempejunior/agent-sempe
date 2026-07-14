@@ -2,8 +2,6 @@
 
 from unittest.mock import AsyncMock
 
-import pytest
-
 from nanobot.agent.loop import _COMPLETION_NUDGE, _FINAL_ANSWER_PROMPT, AgentLoop
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -77,14 +75,39 @@ async def test_nudge_lets_model_continue_working(tmp_path):
     assert any(m.get("content") == _COMPLETION_NUDGE for m in messages)
 
 
-async def test_no_nudge_without_tool_use(tmp_path):
+async def test_text_only_reply_is_nudged_once(tmp_path):
     loop, provider, registry = make_loop(tmp_path, [
         LLMResponse(content="Oi!"),
+        LLMResponse(content="COMPLETO"),
     ])
     final, _, messages = await loop._run_agent_loop(
         [{"role": "user", "content": "oi"}], tools=registry,
     )
     assert final == "Oi!"
+    assert provider.chat.call_count == 2
+    assert all(m.get("content") != _COMPLETION_NUDGE for m in messages)
+
+
+async def test_announcement_only_reply_is_pushed_to_work(tmp_path):
+    loop, provider, registry = make_loop(tmp_path, [
+        LLMResponse(content="Vou levantar os projetos e montar o relatório."),
+        tool_call_response(),
+        LLMResponse(content="Relatório pronto: tudo analisado."),
+    ])
+    final, tools_used, messages = await loop._run_agent_loop(
+        [{"role": "user", "content": "quero um relatório da equipe"}], tools=registry,
+    )
+    assert final == "Relatório pronto: tudo analisado."
+    assert tools_used == ["echo"]
+
+
+async def test_empty_reply_is_not_nudged(tmp_path):
+    loop, provider, registry = make_loop(tmp_path, [
+        LLMResponse(content=None),
+    ])
+    final, _, messages = await loop._run_agent_loop(
+        [{"role": "user", "content": "oi"}], tools=registry,
+    )
     assert provider.chat.call_count == 1
     assert all(m.get("content") != _COMPLETION_NUDGE for m in messages)
 

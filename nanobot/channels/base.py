@@ -21,7 +21,7 @@ class BaseChannel(ABC):
 
     def __init__(
         self, config: Any, bus: MessageBus, *,
-        owner_id: str | None = None, agent_id: str | None = None,
+        owner_id: str | None = None,
     ):
         """
         Initialize the channel.
@@ -36,7 +36,6 @@ class BaseChannel(ABC):
         self._running = False
         self._last_error: str | None = None
         self._owner_id = owner_id
-        self._agent_id = agent_id
 
     @abstractmethod
     async def start(self) -> None:
@@ -132,7 +131,6 @@ class BaseChannel(ABC):
             metadata=metadata or {},
             session_key_override=session_key,
             user_id=self._owner_id,
-            agent_id=self._agent_id,
         )
 
         await self.bus.publish_inbound(msg)
