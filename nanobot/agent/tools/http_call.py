@@ -52,8 +52,9 @@ class HttpCallTool(Tool):
             "Faz uma chamada HTTP em uma das APIs integradas ao usuário. "
             "Use quando o usuário pedir uma ação em GitHub, Jira, Notion, "
             "Slack, Grafana, Google Workspace ou qualquer API cadastrada. "
-            "Consulte a lista de integrações ativas em /api/integrations "
-            "para descobrir integration_slug e endpoint_key disponíveis."
+            "Os integration_slug e endpoint_key disponíveis estão na seção "
+            "'Integrations & MCPs' do seu contexto. Identidade (tenant, empresa, "
+            "usuário) vem da credencial da integração — não a envie no body."
         )
 
     @property
@@ -180,6 +181,7 @@ class HttpCallTool(Tool):
 
         body = kwargs.get("body")
         json_body = body if isinstance(body, (dict, list)) else None
+        json_body = self._inject_credential_body(entry, endpoint, credentials, json_body)
 
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -203,6 +205,33 @@ class HttpCallTool(Tool):
             f"Error: integration '{integration['slug']}' is a custom API and does not "
             "yet declare endpoints. Custom endpoints are not implemented in this milestone."
         )
+
+    @staticmethod
+    def _inject_credential_body(
+        entry: IntegrationEntry,
+        endpoint: APIEndpoint,
+        credentials: dict[str, str],
+        body: Any,
+    ) -> Any:
+        """Overwrite body fields the integration binds to credential fields.
+
+        The credential wins over whatever the model sent: identity belongs to
+        the activated integration, not to the LLM. Credential fields that are
+        empty are left out so the API rejects the call instead of the agent
+        reporting a false success.
+        """
+        assert entry.api is not None
+        mapping = {**entry.api.body_from_credential, **endpoint.body_from_credential}
+        resolved = {
+            field_name: credentials[cred_key]
+            for field_name, cred_key in mapping.items()
+            if credentials.get(cred_key)
+        }
+        if not resolved:
+            return body
+        if isinstance(body, list):
+            return body
+        return {**(body if isinstance(body, dict) else {}), **resolved}
 
     @staticmethod
     def _resolve_path(

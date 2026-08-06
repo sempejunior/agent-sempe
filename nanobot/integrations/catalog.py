@@ -40,7 +40,12 @@ class AuthSpec:
 
 @dataclass(frozen=True)
 class APIEndpoint:
-    """A single REST endpoint exposed via ``http_call``."""
+    """A single REST endpoint exposed via ``http_call``.
+
+    ``body_from_credential`` maps a request body field to a credential field
+    (``{"employeeUserId": "user_id"}``). It extends whatever the integration
+    declares and takes precedence over it for the same body field.
+    """
 
     key: str
     method: str
@@ -48,15 +53,37 @@ class APIEndpoint:
     description: str
     query_params: tuple[str, ...] = ()
     body_params: tuple[str, ...] = ()
+    body_from_credential: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class APIIntegration:
-    """A pre-configured REST API integration."""
+    """A pre-configured REST API integration.
+
+    ``body_from_credential`` maps request body fields to credential fields for
+    every endpoint of this integration. Use it for identity the caller owns and
+    the model must never choose (tenant, company, acting user).
+    """
 
     base_url: str
     endpoints: tuple[APIEndpoint, ...]
     default_headers: dict[str, str] = field(default_factory=dict)
+    body_from_credential: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GitSpec:
+    """How to reach this provider's repositories over HTTPS.
+
+    ``clone_url_template`` is formatted over the decrypted credential plus a
+    ``path`` (the group/project or owner/repo the caller asks for), so a new
+    provider is a catalog entry and no code. The secret never goes into the URL:
+    it travels as an askpass answer, which is why only the username is templated.
+    """
+
+    clone_url_template: str
+    auth_username: str = ""
+    auth_secret_field: str = "token"
 
 
 @dataclass(frozen=True)
@@ -76,6 +103,8 @@ class MCPIntegration:
     env: dict[str, str] = field(default_factory=dict)
     env_from_credential: dict[str, str] = field(default_factory=dict)
     header_from_credential: dict[str, str] = field(default_factory=dict)
+    tool_allowlist: tuple[str, ...] = ()
+    tool_denylist: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -93,6 +122,7 @@ class IntegrationEntry:
     setup_steps: tuple[str, ...] = ()
     api: APIIntegration | None = None
     mcp: MCPIntegration | None = None
+    git: GitSpec | None = None
 
 
 CATALOG: tuple[IntegrationEntry, ...] = (
@@ -134,8 +164,16 @@ CATALOG: tuple[IntegrationEntry, ...] = (
                 APIEndpoint("list_pulls", "GET", "/repos/{owner}/{repo}/pulls",
                             "Lista pull requests.",
                             query_params=("state", "head", "base", "per_page")),
+                APIEndpoint("create_pull_request", "POST", "/repos/{owner}/{repo}/pulls",
+                            "Abre um pull request de head para base.",
+                            body_params=("title", "head", "base", "body", "draft")),
+                APIEndpoint("add_issue_comment", "POST",
+                            "/repos/{owner}/{repo}/issues/{number}/comments",
+                            "Comenta numa issue ou pull request.",
+                            body_params=("body",)),
             ),
         ),
+        git=GitSpec("https://github.com/{path}.git", "x-access-token", "token"),
     ),
     IntegrationEntry(
         id="jira",
@@ -208,11 +246,82 @@ CATALOG: tuple[IntegrationEntry, ...] = (
                             "Executa query WIQL para work items.",
                             query_params=("api-version",),
                             body_params=("query",)),
+                APIEndpoint("create_pull_request", "POST",
+                            "/{organization}/{project}/_apis/git/repositories/"
+                            "{repositoryId}/pullrequests",
+                            "Abre um pull request. Refs no formato "
+                            "refs/heads/<branch>.",
+                            query_params=("api-version",),
+                            body_params=("sourceRefName", "targetRefName", "title",
+                                         "description")),
+                APIEndpoint("add_work_item_comment", "POST",
+                            "/{organization}/{project}/_apis/wit/workItems/{id}/comments",
+                            "Comenta numa work item.",
+                            query_params=("api-version",),
+                            body_params=("text",)),
                 APIEndpoint("get_work_item", "GET", "/{organization}/_apis/wit/workitems/{id}",
                             "Retorna work item por ID.",
                             query_params=("api-version",)),
             ),
         ),
+        git=GitSpec("https://dev.azure.com/{organization}/_git/{path}", "azure", "pat"),
+    ),
+    IntegrationEntry(
+        id="gitlab",
+        kind="api",
+        name="GitLab",
+        description=(
+            "Repositórios, merge requests e issues do GitLab (gitlab.com ou "
+            "self-hosted). Habilita clonar, criar branch e abrir MR."
+        ),
+        category="devtools",
+        docs_url="https://docs.gitlab.com/ee/api/rest/",
+        setup_steps=(
+            "Informe a URL da sua instância (https://gitlab.com para a nuvem).",
+            "Crie um Personal Access Token em Preferences → Access Tokens.",
+            "Escopos: 'read_api' basta para consultar; para clonar, criar branch e "
+            "abrir merge request o token precisa de 'write_repository' e 'api'.",
+        ),
+        credential_fields=(
+            CredentialField("base_url", "URL da instância", "url",
+                            hint="https://gitlab.com ou a URL do seu GitLab."),
+            CredentialField("token", "Personal Access Token", "password",
+                            hint="Preferences → Access Tokens. Escopos: api, "
+                                 "write_repository."),
+        ),
+        auth=AuthSpec(mode="api_key_header", header_name="PRIVATE-TOKEN",
+                      secret_field="token"),
+        api=APIIntegration(
+            base_url="",
+            default_headers={"Content-Type": "application/json"},
+            endpoints=(
+                APIEndpoint("list_projects", "GET", "/api/v4/projects",
+                            "Lista projetos visíveis.",
+                            query_params=("membership", "search", "per_page", "page")),
+                APIEndpoint("get_project", "GET", "/api/v4/projects/{id}",
+                            "Metadados do projeto. id aceita o caminho "
+                            "url-encoded (grupo%2Fprojeto)."),
+                APIEndpoint("get_file", "GET",
+                            "/api/v4/projects/{id}/repository/files/{file_path}",
+                            "Conteúdo de um arquivo. file_path url-encoded; "
+                            "informe ref na query.",
+                            query_params=("ref",)),
+                APIEndpoint("create_merge_request", "POST",
+                            "/api/v4/projects/{id}/merge_requests",
+                            "Abre um merge request de source_branch para "
+                            "target_branch.",
+                            body_params=("source_branch", "target_branch", "title",
+                                         "description", "remove_source_branch")),
+                APIEndpoint("add_mr_note", "POST",
+                            "/api/v4/projects/{id}/merge_requests/{iid}/notes",
+                            "Comenta num merge request.",
+                            body_params=("body",)),
+                APIEndpoint("list_issues", "GET", "/api/v4/projects/{id}/issues",
+                            "Lista issues do projeto.",
+                            query_params=("state", "labels", "per_page")),
+            ),
+        ),
+        git=GitSpec("{base_url}/{path}.git", "oauth2", "token"),
     ),
     IntegrationEntry(
         id="grafana",
@@ -470,6 +579,114 @@ CATALOG: tuple[IntegrationEntry, ...] = (
                 "AZURE_DEVOPS_AUTH_METHOD": "pat",
                 "AZURE_DEVOPS_PAT": "{pat}",
             },
+        ),
+    ),
+    IntegrationEntry(
+        id="solides_start",
+        kind="api",
+        name="Sólides Start (RH/DP)",
+        description=(
+            "Jornadas de RH/DP na base da própria empresa: avisos de atraso e falta, "
+            "pedidos de saída antecipada e sua aprovação, holerite do colaborador, "
+            "feedback entre pessoas e sugestões à empresa."
+        ),
+        category="hr",
+        setup_steps=(
+            "Pegue a URL da API interna do seu Sólides Start, terminando em "
+            "/internal/v1 (ex: https://start.suaempresa.com.br/internal/v1).",
+            "Peça ao time que administra o Start a chave de integração "
+            "(X-Internal-Api-Key) do seu ambiente.",
+            "Informe o tenant (grupo econômico) e a empresa. O agente age sempre "
+            "em nome do usuário informado aqui — cadastre uma integração por "
+            "pessoa/papel quando quiser um agente para o colaborador e outro "
+            "para o gestor.",
+        ),
+        credential_fields=(
+            CredentialField("base_url", "URL da API interna", "url",
+                            hint="Termina em /internal/v1."),
+            CredentialField("api_key", "Chave de integração", "password",
+                            hint="Enviada no header X-Internal-Api-Key."),
+            CredentialField("tenant_id", "Tenant ID", "text",
+                            hint="UUID do tenant (grupo econômico)."),
+            CredentialField("company_id", "Company ID", "text", required=False,
+                            hint="UUID da empresa. Opcional em tenant de empresa única."),
+            CredentialField("user_id", "User ID", "text",
+                            hint="UUID da pessoa em nome de quem o agente age."),
+        ),
+        auth=AuthSpec(mode="api_key_header", header_name="X-Internal-Api-Key",
+                      secret_field="api_key"),
+        api=APIIntegration(
+            base_url="",
+            default_headers={"Content-Type": "application/json"},
+            body_from_credential={
+                "tenantId": "tenant_id",
+                "companyId": "company_id",
+                "userId": "user_id",
+            },
+            endpoints=(
+                APIEndpoint("notify_lateness", "POST",
+                            "/start/hr-ops-api/notify-lateness",
+                            "Avisa o empregador que o colaborador vai se atrasar "
+                            "(vira alerta na caixa do gestor).",
+                            body_params=("date", "expectedArrivalTime", "reason")),
+                APIEndpoint("notify_absence", "POST",
+                            "/start/hr-ops-api/notify-absence",
+                            "Avisa o empregador que o colaborador vai faltar.",
+                            body_params=("date", "reason")),
+                APIEndpoint("register_leave_early_request", "POST",
+                            "/start/hr-ops-api/register-leave-early-request",
+                            "Cria pedido de saída antecipada (status REQUESTED) e "
+                            "alerta o gestor.",
+                            body_params=("date", "leaveTime", "reason")),
+                APIEndpoint("list_leave_early_requests", "POST",
+                            "/start/hr-ops-api/list-leave-early-requests",
+                            "Lista pedidos de saída antecipada. Com employeeUserId, "
+                            "lista os de uma pessoa; sem ele, os da empresa. status "
+                            "aceita REQUESTED, APPROVED, REJECTED ou ALL.",
+                            body_params=("status", "employeeUserId", "limit")),
+                APIEndpoint("review_leave_early_request", "POST",
+                            "/start/hr-ops-api/review-leave-early-request",
+                            "Aprova ou rejeita um pedido de saída antecipada e "
+                            "notifica a pessoa. decision aceita 'approve' ou "
+                            "'reject' (minúsculas).",
+                            body_params=("requestId", "decision", "note")),
+                APIEndpoint("list_my_payslips", "POST",
+                            "/start/hr-ops-api/list-my-payslips",
+                            "Lista os holerites do próprio colaborador. competencia "
+                            "no formato MM/AAAA filtra um mês.",
+                            body_params=("competencia", "limit"),
+                            body_from_credential={"employeeUserId": "user_id"}),
+                APIEndpoint("get_my_payslip_download_url", "POST",
+                            "/start/hr-ops-api/get-my-payslip-download-url",
+                            "URL assinada (expira em ~5 min) do PDF de um holerite "
+                            "do próprio colaborador.",
+                            body_params=("documentId",),
+                            body_from_credential={"employeeUserId": "user_id"}),
+                APIEndpoint("lookup_employee", "POST",
+                            "/start/occurrence-api/lookup-employee",
+                            "Busca fuzzy de colaborador por nome. Devolve matches "
+                            "com userId e match_score — use para resolver um nome "
+                            "antes de qualquer ação sobre a pessoa.",
+                            body_params=("nameQuery", "limit", "excludeUserId")),
+                APIEndpoint("register_peer_feedback", "POST",
+                            "/start/hr-ops-api/register-peer-feedback",
+                            "Registra e entrega feedback identificado a uma pessoa "
+                            "(feedbackType: positive ou constructive).",
+                            body_params=("recipientUserId", "recipientName",
+                                         "feedbackType", "message"),
+                            body_from_credential={"senderUserId": "user_id"}),
+                APIEndpoint("list_received_feedbacks", "POST",
+                            "/start/hr-ops-api/list-received-feedbacks",
+                            "Lista os feedbacks recebidos pelo próprio colaborador.",
+                            body_params=("limit",),
+                            body_from_credential={"recipientUserId": "user_id"}),
+                APIEndpoint("submit_company_suggestion", "POST",
+                            "/start/hr-ops-api/submit-company-suggestion",
+                            "Envia sugestão à empresa e notifica o gestor. Com "
+                            "anonymous=true o autor é descartado no servidor.",
+                            body_params=("text", "anonymous"),
+                            body_from_credential={"authorUserId": "user_id"}),
+            ),
         ),
     ),
 )
