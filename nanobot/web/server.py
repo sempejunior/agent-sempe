@@ -200,19 +200,24 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             public_url=config.gateway.public_url or None,
         )
 
-        async def on_cron_job(job):
-            channel = job.payload.channel or "system"
-            to = job.payload.to or f"web:{job.user_id}"
-            return await agent.process_direct(
-                job.payload.message,
-                session_key=f"cron:{job.id}",
-                channel="system",
-                chat_id=f"{channel}:{to}",
-                user_id=job.user_id,
-                agent_id=job.agent_id or None,
-            )
+        from nanobot.cron.runner import build_cron_callback, build_job_timeout
 
-        cron.on_job = on_cron_job
+        async def _push_to_web_clients(user_id: str, job_id: str, text: str) -> None:
+            """Nudge live sockets with the result; the session is the record."""
+            for socket in list(ws_clients.get(user_id, [])):
+                try:
+                    await socket.send_json({
+                        "type": "response", "content": text,
+                        "session_key": f"system:web:{user_id}",
+                        "cron_job_id": job_id,
+                    })
+                except Exception:
+                    continue
+
+        cron.on_job = build_cron_callback(
+            agent=agent, bus=bus, repos=repos, push_web=_push_to_web_clients,
+        )
+        cron.job_timeout = build_job_timeout(repos)
 
         await cron.start()
 
