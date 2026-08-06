@@ -202,8 +202,13 @@ export interface CronJob {
   id: string;
   name: string;
   enabled: boolean;
+  agent_id?: string;
+  agent_name?: string;
   schedule_kind: string;
   schedule_expr: string;
+  schedule_label?: string;
+  every_days?: number | null;
+  at_time?: string | null;
   message: string;
   deliver?: boolean;
   channel?: string | null;
@@ -215,36 +220,40 @@ export interface CronJob {
   last_error?: string | null;
 }
 
-export async function listCronJobs(): Promise<CronJob[]> {
-  return request("/cron");
+export async function listCronJobs(agentId?: string): Promise<CronJob[]> {
+  const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return request(`/cron${query}`);
 }
 
-export interface CronSchedulePayload {
-  kind: "every" | "cron" | "at";
+export interface ScheduleBody {
+  kind: "every" | "interval" | "cron" | "at";
   every_seconds?: number;
+  every_days?: number;
+  at_time?: string;
+  anchor_ms?: number;
   expr?: string;
   tz?: string;
   at_ms?: number;
+  count?: number;
 }
 
+/** Kept as an alias: older callers import CronSchedulePayload. */
+export type CronSchedulePayload = ScheduleBody;
+
 export async function previewCronSchedule(
-  schedule: CronSchedulePayload,
+  schedule: ScheduleBody,
   count = 5,
-): Promise<{ next_runs: number[] }> {
+): Promise<{ next_runs: number[]; label?: string }> {
   return request("/cron/preview", {
     method: "POST",
-    body: JSON.stringify({ ...schedule, count }),
+    body: JSON.stringify({ count, ...schedule }),
   });
 }
 
-export async function addCronJob(data: {
+export async function addCronJob(data: ScheduleBody & {
   name: string;
   message: string;
-  kind: "every" | "cron" | "at";
-  every_seconds?: number;
-  expr?: string;
-  tz?: string;
-  at_ms?: number;
+  agent_id?: string;
   deliver?: boolean;
   channel?: string | null;
   to?: string | null;
@@ -797,6 +806,20 @@ export interface UserIntegration {
 
 export async function getIntegrationsCatalog(): Promise<CatalogEntry[]> {
   return request("/integrations/catalog");
+}
+
+export type ToolCatalogEntry = {
+  id: string;
+  label: string;
+  category: string;
+  permission: boolean;
+  warn: string;
+  requires: string[];
+  integrations: string[];
+};
+
+export async function getToolsCatalog(): Promise<ToolCatalogEntry[]> {
+  return request("/tools/catalog");
 }
 
 export async function listIntegrations(): Promise<UserIntegration[]> {

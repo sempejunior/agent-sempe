@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
+import type { Agent } from "@/lib/api";
 import { ChatMessage } from "./ChatMessage";
 import { Bot, Eye, Mic, MessageSquarePlus, Paperclip, Send, Sparkles, Terminal } from "lucide-react";
 import { getIcon, ICON_CATALOG } from "@/lib/iconCatalog";
@@ -13,16 +14,17 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 
-const QUICK_COMMANDS = [
-  "Qual a política de reembolso para combustível?",
-  "Qual o saldo de férias de Mariana Souza?",
-  "Consultar perfil comportamental no Profiler",
+const FALLBACK_COMMANDS = [
+  "O que você consegue fazer?",
+  "Quais integrações você tem ativas?",
 ];
 
 export function ChatArea() {
   const {
     agents,
     activeAgentId,
+    templates,
+    loadTemplates,
     messages,
     sending,
     sendMessage,
@@ -38,9 +40,16 @@ export function ChatArea() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
 
+  useEffect(() => {
+    if (templates.length === 0) loadTemplates();
+  }, [templates.length, loadTemplates]);
+
   const currentAgent =
     agents.find((agent) => agent.agent_id === activeAgentId) ??
     agents[0] ?? { agent_id: "", name: "Paulo", role: "Especialista em DP", avatar: "P" };
+  const templateId = (currentAgent as Agent).metadata?.template;
+  const starters = templates.find((t) => t.id === templateId)?.starter_prompts ?? [];
+  const quickCommands = starters.length > 0 ? starters : FALLBACK_COMMANDS;
   const lastMsg = messages[messages.length - 1];
   const needsThinkingBubble =
     sending && (!lastMsg || lastMsg.role !== "assistant" || !lastMsg.isStreaming);
@@ -183,7 +192,7 @@ export function ChatArea() {
                 <Sparkles className="h-3.5 w-3.5 text-purple" />
                 Comandos rápidos:
               </span>
-              {QUICK_COMMANDS.map((command) => (
+              {quickCommands.map((command) => (
                 <button
                   key={command}
                   type="button"

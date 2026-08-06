@@ -14,7 +14,6 @@ import {
   ExternalLink,
   Search,
   X,
-  ChevronDown,
   Globe,
   Copy,
   Check,
@@ -49,38 +48,11 @@ import {
   type BuiltinSkill,
   type CustomSkill,
   type MCPServer,
+  type UserIntegration,
+  getToolsCatalog,
+  type ToolCatalogEntry,
 } from "@/lib/api";
-
-interface BuiltinTool {
-  id: string;
-  name: string;
-  cat: string;
-  warn?: boolean;
-}
-
-const BUILTIN_TOOLS: BuiltinTool[] = [
-  { id: "save_memory", name: "Salvar memória", cat: "Memória" },
-  { id: "search_memory", name: "Buscar memória", cat: "Memória" },
-  { id: "rag_search", name: "Consultar base RAG", cat: "Memória" },
-  { id: "rag_ingest", name: "Adicionar à base RAG", cat: "Memória" },
-  { id: "web_search", name: "Pesquisar na web", cat: "Web" },
-  { id: "web_fetch", name: "Ler URL", cat: "Web" },
-  { id: "cnpj_lookup", name: "Consulta CNPJ (Receita)", cat: "Web" },
-  { id: "cct_search", name: "Base de CCTs (Mediador)", cat: "Web" },
-  { id: "message", name: "Enviar mensagens proativas", cat: "Automação" },
-  { id: "cron", name: "Agendar tarefas", cat: "Automação" },
-  { id: "save_mcp_server", name: "Cadastrar MCP", cat: "Automação" },
-  { id: "read_file", name: "Ler arquivo", cat: "Arquivos" },
-  { id: "write_file", name: "Escrever arquivo", cat: "Arquivos" },
-  { id: "edit_file", name: "Editar arquivo", cat: "Arquivos" },
-  { id: "list_dir", name: "Listar pasta", cat: "Arquivos" },
-  { id: "publish_page", name: "Gerador de página", cat: "Relatórios & Páginas" },
-  { id: "publish_report", name: "Relatório estruturado", cat: "Relatórios & Páginas" },
-  { id: "azure_devops_report", name: "Relatório Azure DevOps", cat: "Relatórios & Páginas" },
-  { id: "exec", name: "Executar shell", cat: "Sistema", warn: true },
-  { id: "computer", name: "Controlar desktop", cat: "Sistema", warn: true },
-  { id: "browser", name: "Controlar navegador", cat: "Sistema", warn: true },
-];
+import { toast } from "@/lib/toast";
 
 const CHANNELS = [
   { id: "telegram", label: "Telegram" },
@@ -93,7 +65,7 @@ const STEPS = [
   { key: 1, label: "Template" },
   { key: 2, label: "Identidade" },
   { key: 3, label: "Instruções" },
-  { key: 4, label: "Ferramentas" },
+  { key: 4, label: "Permissões" },
   { key: 5, label: "Skills & Conhecimento" },
   { key: 6, label: "Canais" },
 ];
@@ -121,6 +93,7 @@ export function AgentStudioPage() {
   const [builtinSkills, setBuiltinSkills] = useState<BuiltinSkill[]>([]);
   const [mcpServers, setMcpServers] = useState<MCPServer[]>([]);
   const [activeIntegrations, setActiveIntegrations] = useState<Set<string>>(new Set());
+  const [mcpIntegrations, setMcpIntegrations] = useState<UserIntegration[]>([]);
   const recommendedSkills = useMemo(
     () => templates.find((t) => t.id === wizardDraft.template_id)?.recommended_skills ?? [],
     [templates, wizardDraft.template_id],
@@ -141,16 +114,20 @@ export function AgentStudioPage() {
       .then((d) => setMcpServers(d.mcpServers ?? []))
       .catch(() => setMcpServers([]));
     listIntegrations()
-      .then((list) =>
+      .then((list) => {
         setActiveIntegrations(
           new Set(
             list
               .filter((i) => i.enabled && i.system_integration_id)
               .map((i) => i.system_integration_id as string),
           ),
-        ),
-      )
-      .catch(() => setActiveIntegrations(new Set()));
+        );
+        setMcpIntegrations(list.filter((i) => i.enabled && i.kind === "mcp"));
+      })
+      .catch(() => {
+        setActiveIntegrations(new Set());
+        setMcpIntegrations([]);
+      });
   }, [editingAgentId]);
 
   useEffect(() => {
@@ -198,7 +175,7 @@ export function AgentStudioPage() {
   const headerTitle = editingAgent ? `Editar ${editingAgent.name}` : "Novo agente";
   const headerSubtitle = editingAgent
     ? "Ajuste identidade, personalidade, capacidades e canais deste agente."
-    : "6 passos: escolher template, definir identidade, personalidade, ferramentas, skills e onde ele atua.";
+    : "6 passos: escolher template, definir identidade, personalidade, permissões, skills e onde ele atua.";
 
   const canGoNext = (() => {
     if (wizardStep === 1) return Boolean(wizardDraft.template_id);
@@ -421,6 +398,7 @@ export function AgentStudioPage() {
               activeIntegrations={activeIntegrations}
               recommendedSkills={recommendedSkills}
               mcpServers={mcpServers}
+              mcpIntegrations={mcpIntegrations}
               ragEnabled={wizardDraft.rag_enabled}
               onToggleSkill={toggleSkill}
               onToggleMcp={toggleMcp}
@@ -1053,117 +1031,114 @@ interface StepToolsProps {
 }
 
 function StepTools({ tools, onToggleTool }: StepToolsProps) {
-  const grouped = BUILTIN_TOOLS.reduce<Record<string, BuiltinTool[]>>(
+  const [catalog, setCatalog] = useState<ToolCatalogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    getToolsCatalog()
+      .then(setCatalog)
+      .catch((e) => toast("error", (e as Error).message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const permissions = catalog.filter((t) => t.permission);
+  const builtin = catalog.filter((t) => !t.permission);
+  const granted = permissions.filter((t) => tools.includes(t.id)).length;
+
+  const grouped = permissions.reduce<Record<string, ToolCatalogEntry[]>>(
     (acc, tool) => {
-      (acc[tool.cat] ??= []).push(tool);
+      (acc[tool.category] ??= []).push(tool);
       return acc;
     },
     {},
   );
   const cats = Object.keys(grouped);
-  const [open, setOpen] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(cats.map((c) => [c, true])),
-  );
 
-  const toggleCat = (c: string) => setOpen((prev) => ({ ...prev, [c]: !prev[c] }));
-  const allOpen = cats.every((c) => open[c]);
-  const setAll = (v: boolean) =>
-    setOpen(Object.fromEntries(cats.map((c) => [c, v])));
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="w-6 h-6 text-purple animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="font-display font-bold text-lg text-text-primary">
-          Ferramentas
+          Permissões
         </h2>
         <p className="text-sm text-text-muted mt-1">
-          Ações brutas que o agente pode executar: clicar, ler arquivo, buscar na
-          web, salvar memória. No próximo passo você amarra essas ações em{" "}
-          <span className="font-semibold text-text-primary">skills</span>{" "}
-          (procedimentos) que orientam quando e como usá-las.
+          Seu agente já vem com o essencial ligado. Aqui você decide apenas o que
+          tem consequência fora dele — rodar comandos, controlar uma máquina, agir
+          sozinho ou falar com pessoas.
         </p>
         <p className="text-sm text-text-muted mt-2">
-          <span className="font-semibold text-text-primary">{tools.length}</span>{" "}
-          ferramentas ativas de {BUILTIN_TOOLS.length}
+          <span className="font-semibold text-text-primary">{granted}</span> de{" "}
+          {permissions.length} permissões concedidas
         </p>
-      </div>
-
-      <div className="flex items-center justify-end">
-        <Button variant="ghost" size="sm" onClick={() => setAll(!allOpen)}>
-          {allOpen ? "Recolher tudo" : "Expandir tudo"}
-        </Button>
       </div>
 
       <div className="space-y-3">
-        {cats.map((cat) => {
-          const catTools = grouped[cat];
-          const activeCount = catTools.filter((t) => tools.includes(t.id)).length;
-          const isOpen = open[cat];
-          return (
-            <div
-              key={cat}
-              className="rounded-2xl border border-border bg-surface overflow-hidden"
-            >
-              <button
-                type="button"
-                onClick={() => toggleCat(cat)}
-                className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-surface-alt transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <ChevronDown
-                    className={cn(
-                      "w-4 h-4 text-text-muted transition-transform",
-                      !isOpen && "-rotate-90",
-                    )}
-                  />
-                  <span className="text-sm font-bold text-text-primary uppercase tracking-wider">
-                    {cat}
-                  </span>
-                  <Badge variant="muted" className="text-[10px]">
-                    {activeCount}/{catTools.length}
-                  </Badge>
-                </div>
-              </button>
-              {isOpen && (
-                <div className="px-4 pb-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                  {catTools.map((tool) => {
-                    const checked = tools.includes(tool.id);
-                    return (
-                      <label
-                        key={tool.id}
-                        className={cn(
-                          "flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
-                          checked
-                            ? "border-purple bg-purple-muted"
-                            : "border-border bg-surface-alt hover:border-purple/40",
-                        )}
-                      >
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={() => onToggleTool(tool.id)}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-text-primary truncate">
-                            {tool.name}
-                          </p>
-                          <p className="text-[11px] text-text-muted font-mono truncate">
-                            {tool.id}
-                          </p>
-                        </div>
-                        {tool.warn && (
-                          <AlertTriangle
-                            className="w-4 h-4 text-yellow shrink-0"
-                            aria-label="Use com cuidado"
-                          />
-                        )}
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
+        {cats.map((cat) => (
+          <div
+            key={cat}
+            className="rounded-2xl border border-border bg-surface overflow-hidden"
+          >
+            <div className="px-4 py-3 border-b border-border">
+              <span className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                {cat}
+              </span>
             </div>
-          );
-        })}
+            <div className="p-4 grid gap-2 md:grid-cols-2">
+              {grouped[cat].map((tool) => {
+                const checked = tools.includes(tool.id);
+                return (
+                  <label
+                    key={tool.id}
+                    className={cn(
+                      "flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors",
+                      checked
+                        ? "border-purple bg-purple-muted"
+                        : "border-border bg-surface-alt hover:border-purple/40",
+                    )}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={() => onToggleTool(tool.id)}
+                      className="mt-0.5"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-text-primary">
+                        {tool.label}
+                      </p>
+                      {tool.warn && (
+                        <p className="text-[11px] text-text-muted mt-0.5 flex items-start gap-1">
+                          <AlertTriangle className="w-3 h-3 text-yellow shrink-0 mt-0.5" />
+                          {tool.warn}
+                        </p>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-2xl border border-border bg-surface-alt p-4">
+        <p className="text-sm font-semibold text-text-primary">
+          Já incluído, sem precisar configurar
+        </p>
+        <p className="text-sm text-text-muted mt-1">
+          Memória, base de conhecimento, skills, publicação de páginas e
+          relatórios, leitura da web, arquivos do próprio agente e chamadas às
+          APIs das integrações que você ativar.
+        </p>
+        <p className="text-[11px] text-text-muted font-mono mt-2 break-words">
+          {builtin.map((t) => t.id).join(" · ")}
+        </p>
       </div>
     </div>
   );
@@ -1177,6 +1152,7 @@ interface StepKnowledgeProps {
   activeIntegrations: Set<string>;
   recommendedSkills: string[];
   mcpServers: MCPServer[];
+  mcpIntegrations: UserIntegration[];
   ragEnabled: boolean;
   onToggleSkill: (name: string) => void;
   onToggleMcp: (name: string) => void;
@@ -1193,6 +1169,7 @@ function StepKnowledge({
   activeIntegrations,
   recommendedSkills,
   mcpServers,
+  mcpIntegrations,
   ragEnabled,
   onToggleSkill,
   onToggleMcp,
@@ -1269,7 +1246,8 @@ function StepKnowledge({
               APIs conectadas (MCPs)
             </h3>
             <p className="text-[11px] text-text-muted">
-              Servidores MCP que este agente pode invocar.
+              Servidores MCP que este agente pode invocar — os que vêm de uma
+              integração ativa e os que você cadastrou à mão.
             </p>
           </div>
           <Button variant="ghost" size="sm" onClick={onOpenMcps}>
@@ -1279,7 +1257,34 @@ function StepKnowledge({
           </Button>
         </div>
 
+        {mcpIntegrations.length > 0 && (
+          <div className="grid gap-2 md:grid-cols-2">
+            {mcpIntegrations.map((integration) => (
+              <div
+                key={integration.slug}
+                className="flex items-start gap-3 p-3 rounded-xl border border-border bg-surface"
+              >
+                <div className="w-8 h-8 rounded-lg bg-purple-muted flex items-center justify-center shrink-0">
+                  <Plug className="w-4 h-4 text-purple" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-text-primary truncate">
+                    {integration.label || integration.slug}
+                  </p>
+                  <p className="text-[11px] text-text-muted font-mono truncate mt-0.5">
+                    mcp_{integration.slug}_*
+                  </p>
+                  <Badge variant="success" className="mt-1.5">
+                    Ativo via Integrações
+                  </Badge>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {mcpServers.length === 0 ? (
+          mcpIntegrations.length === 0 && (
           <div className="rounded-2xl border border-dashed border-border bg-surface-alt p-6 text-center">
             <p className="text-sm text-text-secondary">
               Você ainda não conectou nenhum MCP.
@@ -1295,6 +1300,7 @@ function StepKnowledge({
               </Button>
             </div>
           </div>
+          )
         ) : (
           <div className="grid gap-2 md:grid-cols-2">
             {mcpServers.map((server) => {
