@@ -179,3 +179,24 @@ def test_solides_start_endpoints_declare_only_known_credential_fields():
         mapped.update(endpoint.body_from_credential.values())
 
     assert mapped <= known
+
+
+async def test_the_integration_default_query_is_applied(captured, monkeypatch):
+    """api-version é constante da integração, não lembrança do modelo."""
+    tool = _make_tool({"organization": "acme", "pat": "segredo"},
+                      slug="azure_devops", system_integration_id="azure_devops")
+
+    await tool.execute(integration_slug="azure_devops", endpoint_key="get_work_item",
+                       path_params={"id": "42"})
+
+    assert "api-version=7.1" in str(captured[0].url)
+
+
+async def test_the_model_can_override_a_default_query(captured):
+    tool = _make_tool({"organization": "acme", "pat": "segredo"},
+                      slug="azure_devops", system_integration_id="azure_devops")
+
+    await tool.execute(integration_slug="azure_devops", endpoint_key="get_work_item",
+                       path_params={"id": "42"}, query={"api-version": "6.0"})
+
+    assert "api-version=6.0" in str(captured[0].url)

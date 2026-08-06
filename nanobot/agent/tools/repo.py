@@ -274,7 +274,7 @@ class RepoTool(Tool):
             url = spec.clone_url_template.format(**values)
         except KeyError as e:
             raise _RepoError(f"credencial não tem o campo {e} exigido pela origem") from None
-        if spec.auth_username and "://" in url:
+        if spec.auth_username and url.startswith(("http://", "https://")):
             scheme, rest = url.split("://", 1)
             url = f"{scheme}://{spec.auth_username}@{rest}"
         return url

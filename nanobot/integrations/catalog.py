@@ -54,6 +54,7 @@ class APIEndpoint:
     query_params: tuple[str, ...] = ()
     body_params: tuple[str, ...] = ()
     body_from_credential: dict[str, str] = field(default_factory=dict)
+    default_query: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,9 @@ class APIIntegration:
     endpoints: tuple[APIEndpoint, ...]
     default_headers: dict[str, str] = field(default_factory=dict)
     body_from_credential: dict[str, str] = field(default_factory=dict)
+    default_query: dict[str, str] = field(default_factory=dict)
+    """Query parameters every call needs — an API version, for instance. They are
+    a constant of the integration, not a choice for the model to remember."""
 
 
 @dataclass(frozen=True)
@@ -238,6 +242,7 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         auth=AuthSpec(mode="basic", username_field="", password_field="pat"),
         api=APIIntegration(
             base_url="https://dev.azure.com",
+            default_query={"api-version": "7.1"},
             endpoints=(
                 APIEndpoint("list_projects", "GET", "/{organization}/_apis/projects",
                             "Lista projetos.",

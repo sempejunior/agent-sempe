@@ -173,7 +173,11 @@ class HttpCallTool(Tool):
 
         auth = self._apply_auth(entry.auth, credentials, headers)
 
-        query = kwargs.get("query") or {}
+        query = {
+            **(entry.api.default_query or {}),
+            **(endpoint.default_query or {}),
+            **(kwargs.get("query") or {}),
+        }
         if entry.auth.mode == "query_key" and entry.auth.query_param:
             secret = credentials.get(entry.auth.secret_field, "")
             if secret:

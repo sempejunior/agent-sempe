@@ -175,3 +175,21 @@ async def test_invalid_action_is_reported(tool):
     out = await tool.execute(action="merge")
 
     assert "ação inválida" in out
+
+
+async def test_a_local_remote_gets_no_username_in_the_url():
+    """file:// não tem credencial — injetar usuário quebraria a URL."""
+    from nanobot.agent.tools.repo import RepoTool
+    spec = GitSpec("{base_url}/{path}", "oauth2", "token")
+    url = RepoTool._clone_url(spec, {"base_url": "file:///tmp/origens", "token": "x"},
+                              "repo.git")
+    assert url == "file:///tmp/origens/repo.git"
+
+
+async def test_an_https_remote_gets_the_username():
+    from nanobot.agent.tools.repo import RepoTool
+    spec = GitSpec("{base_url}/{path}.git", "oauth2", "token")
+    url = RepoTool._clone_url(spec, {"base_url": "https://gitlab.com", "token": "x"},
+                              "grupo/projeto")
+    assert url == "https://oauth2@gitlab.com/grupo/projeto.git"
+    assert "x" not in url
