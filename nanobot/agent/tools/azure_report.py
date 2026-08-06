@@ -17,8 +17,18 @@ Uso:
 
 Org e PAT são lidos de ~/.kiro/settings/mcp.json (servidor "azure-devops").
 """
-import asyncio, base64, html, json, statistics, sys, time, urllib.error, urllib.request, uuid
-from collections import defaultdict, Counter
+import asyncio
+import base64
+import html
+import json
+import statistics
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -139,22 +149,28 @@ def fetch_revisions(base, pat_b64, project, ids, workers=8):
     return out
 
 # ---------------------------------------------------------------- helpers
-import urllib.parse
 def pdate(s):
-    if not s: return None
+    if not s:
+        return None
     s = s.replace("Z","").split(".")[0]
-    try: return datetime.fromisoformat(s)
-    except Exception: return None
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
 
 def size_bucket(sp):
-    if not sp: return None
-    if sp <= 2: return "P"
-    if sp <= 5: return "M"
+    if not sp:
+        return None
+    if sp <= 2:
+        return "P"
+    if sp <= 5:
+        return "M"
     return "G"
 
 def attribute(f):
     def nm(k):
-        v = f.get(k); return v.get("displayName") if isinstance(v, dict) else None
+        v = f.get(k)
+        return v.get("displayName") if isinstance(v, dict) else None
     return (nm("System.AssignedTo") or nm("Microsoft.VSTS.Common.ActivatedBy")
             or nm("Microsoft.VSTS.Common.ResolvedBy") or nm("Microsoft.VSTS.Common.ClosedBy")
             or "(Não identificado)")
@@ -201,13 +217,15 @@ def process_flow(seq, smap, somap):
     # carryover: mudou de iteração ao longo da vida
     citers = []
     for _, _, it in seq:
-        if it and (not citers or citers[-1] != it): citers.append(it)
+        if it and (not citers or citers[-1] != it):
+            citers.append(it)
     carryover = 1 if len(set(citers)) > 1 else 0
     # cycle start = primeira entrada em InProgress
     cstart = None
     for dt, st, _ in seq:
         if smap.get(st,"InProgress") == "InProgress":
-            cstart = dt; break
+            cstart = dt
+            break
     return stage_sec, rework, reopen, carryover, cstart
 
 def analyze(items, smap, somap, revmap):
@@ -216,7 +234,8 @@ def analyze(items, smap, somap, revmap):
     sprint = defaultdict(lambda: {"count":0,"sp":0.0,"carryover":0})
     total_rework = total_reopen = total_flow = 0
     for it in items:
-        f = it["fields"]; wid = it["id"]
+        f = it["fields"]
+        wid = it["id"]
         who = attribute(f)
         wt = f.get("System.WorkItemType","?")
         sp = f.get("Microsoft.VSTS.Scheduling.StoryPoints")
@@ -225,41 +244,62 @@ def analyze(items, smap, somap, revmap):
         start = pdate(f.get("Microsoft.VSTS.Common.ActivatedDate")) or created
         sp_iter = short_iter(f.get("System.IterationPath"))
         p = people[who]
-        p["count"] += 1; p["types"][wt] += 1; proj_types[wt] += 1
-        if sp: p["sp"] += sp
-        else: p["no_est"] += 1
-        if is_defect_type(wt): p["defects"] += 1
+        p["count"] += 1
+        p["types"][wt] += 1
+        proj_types[wt] += 1
+        if sp:
+            p["sp"] += sp
+        else:
+            p["no_est"] += 1
+        if is_defect_type(wt):
+            p["defects"] += 1
         if closed:
             mk = (closed.year, closed.month)
-            p["months"][mk] += 1; pm_count[mk] += 1
-            if sp: pm_sp[mk] += sp
+            p["months"][mk] += 1
+            pm_count[mk] += 1
+            if sp:
+                pm_sp[mk] += sp
             sprint[sp_iter]["count"] += 1
-            if sp: sprint[sp_iter]["sp"] += sp
+            if sp:
+                sprint[sp_iter]["sp"] += sp
         sb = size_bucket(sp)
-        if sb: p["sizes"][sb] += 1
+        if sb:
+            p["sizes"][sb] += 1
         # lead time (criação -> conclusão)
         if closed and created and closed >= created:
             ld = (closed-created).total_seconds()/86400
-            if ld <= 400: p["lead"].append(ld); all_lead.append(ld)
+            if ld <= 400:
+                p["lead"].append(ld)
+                all_lead.append(ld)
         # flow (revisions)
         seq = revmap.get(wid) if revmap else None
         if seq:
             stage_sec, rw, ro, co, cstart = process_flow(seq, smap, somap)
-            p["flow_items"] += 1; total_flow += 1
+            p["flow_items"] += 1
+            total_flow += 1
             for st, sec in stage_sec.items():
                 if smap.get(st,"InProgress") == "InProgress":
-                    p["stage_sum"][st] += sec; p["stage_n"][st] += 1
-            p["rework"] += rw; p["reopen"] += ro; p["carryover"] += co
-            total_rework += rw; total_reopen += ro
-            if co: sprint[sp_iter]["carryover"] += 1
+                    p["stage_sum"][st] += sec
+                    p["stage_n"][st] += 1
+            p["rework"] += rw
+            p["reopen"] += ro
+            p["carryover"] += co
+            total_rework += rw
+            total_reopen += ro
+            if co:
+                sprint[sp_iter]["carryover"] += 1
             cyc_start = cstart or start
             if closed and cyc_start and closed >= cyc_start:
                 cy = (closed-cyc_start).total_seconds()/86400
-                if cy <= 400: p["cycle"].append(cy); all_cycle.append(cy)
+                if cy <= 400:
+                    p["cycle"].append(cy)
+                    all_cycle.append(cy)
         else:
             if closed and start and closed >= start:
                 cy = (closed-start).total_seconds()/86400
-                if cy <= 400: p["cycle"].append(cy); all_cycle.append(cy)
+                if cy <= 400:
+                    p["cycle"].append(cy)
+                    all_cycle.append(cy)
     return dict(people=people, proj_types=proj_types, pm_count=pm_count, pm_sp=pm_sp,
                 all_cycle=all_cycle, all_lead=all_lead, sprint=sprint,
                 total_rework=total_rework, total_reopen=total_reopen, total_flow=total_flow)
@@ -270,21 +310,31 @@ def analyze_wip(items):
     for it in items:
         f = it["fields"]
         def nm(k):
-            v=f.get(k); return v.get("displayName") if isinstance(v,dict) else None
+            v = f.get(k)
+            return v.get("displayName") if isinstance(v,dict) else None
         who = nm("System.AssignedTo") or nm("Microsoft.VSTS.Common.ActivatedBy") or "(Não atribuído)"
         start = pdate(f.get("Microsoft.VSTS.Common.ActivatedDate")) or pdate(f.get("System.CreatedDate"))
-        w = wip[who]; w["count"] += 1
+        w = wip[who]
+        w["count"] += 1
         w["states"][f.get("System.State","?")] += 1
         if start:
             age = (now-start).total_seconds()/86400
-            if age >= 0: w["ages"].append(age)
+            if age >= 0:
+                w["ages"].append(age)
     return wip
 
 # ---------------------------------------------------------------- render
-def avg(l): return round(statistics.mean(l),1) if l else 0
-def med(l): return round(statistics.median(l),1) if l else 0
-def esc(s): return html.escape(str(s))
-def slug(s): return "p-" + "".join(c.lower() if c.isalnum() else "-" for c in s).strip("-")
+def avg(values):
+    return round(statistics.mean(values),1) if values else 0
+
+def med(values):
+    return round(statistics.median(values),1) if values else 0
+
+def esc(s):
+    return html.escape(str(s))
+
+def slug(s):
+    return "p-" + "".join(c.lower() if c.isalnum() else "-" for c in s).strip("-")
 
 def bars(counter, total, color="#4f8cff", limit=None, unit=""):
     items = counter.most_common(limit) if limit else sorted(counter.items(), key=lambda kv:-kv[1])
@@ -318,10 +368,13 @@ def stage_bars(p):
     c = Counter({st: round(d,1) for st,d in avgdays.items()})
     return f'<div class="bars">{bars(c, 0, "#a07bff", unit="d")}</div>'
 
-def render(project, year, R, wip, with_flow):
-    people = R["people"]; proj_types = R["proj_types"]
-    pm_count = R["pm_count"]
-    all_cycle = R["all_cycle"]; all_lead = R["all_lead"]; sprint = R["sprint"]
+def render(project, year, analysis, wip, with_flow):
+    people = analysis["people"]
+    proj_types = analysis["proj_types"]
+    pm_count = analysis["pm_count"]
+    all_cycle = analysis["all_cycle"]
+    all_lead = analysis["all_lead"]
+    sprint = analysis["sprint"]
     total = sum(p["count"] for p in people.values())
     total_sp = sum(p["sp"] for p in people.values())
     assigned = sorted([(n,p) for n,p in people.items() if n != "(Não identificado)"],
@@ -329,11 +382,12 @@ def render(project, year, R, wip, with_flow):
     peak = max(pm_count, key=lambda k:pm_count[k]) if pm_count else (year,1)
     top_vol = assigned[0] if assigned else None
     top_sp = max(assigned, key=lambda kv:kv[1]["sp"]) if assigned else None
-    rework_rate = round(100*R["total_rework"]/R["total_flow"]) if R["total_flow"] else 0
+    rework_rate = round(100*analysis["total_rework"]/analysis["total_flow"]) if analysis["total_flow"] else 0
     total_defects = sum(p["defects"] for p in people.values())
     total_wip = sum(w["count"] for w in wip.values())
     gen = datetime.now().strftime("%d/%m/%Y %H:%M")
-    P = []; A = P.append
+    parts = []
+    add = parts.append
 
     # nav
     nav = ['<a href="#overview" class="nav-link">📊 Visão Geral</a>',
@@ -346,68 +400,74 @@ def render(project, year, R, wip, with_flow):
     nav_html = "".join(nav)
 
     # overview
-    A(f'<section id="overview"><h1>Relatório de Desempenho — {esc(project)} {year}</h1>')
-    A(f'<p class="subtitle">Complemento à AVD · itens concluídos no Azure DevOps · gerado em {gen}</p>')
-    A('<div class="cards">')
+    add(f'<section id="overview"><h1>Relatório de Desempenho — {esc(project)} {year}</h1>')
+    add(f'<p class="subtitle">Complemento à AVD · itens concluídos no Azure DevOps · gerado em {gen}</p>')
+    add('<div class="cards">')
     cards = [("Itens concluídos", total), ("Story Points", round(total_sp)),
              ("Profissionais", len(assigned)),
              ("Lead time médio", f"{avg(all_lead)}d"),
              ("Cycle time médio", f"{avg(all_cycle)}d")]
-    if with_flow: cards.append(("Retrabalho", f"{rework_rate}%"))
+    if with_flow:
+        cards.append(("Retrabalho", f"{rework_rate}%"))
     cards += [("Defeitos", total_defects), ("WIP atual", total_wip)]
     for label, val in cards:
-        A(f'<div class="card"><div class="card-val">{val}</div><div class="card-lbl">{label}</div></div>')
-    A('</div>')
-    A('<div class="panel"><h3>Destaques</h3><ul class="highlights">')
-    if pm_count: A(f'<li>📈 Pico de entregas em <b>{MES[peak[1]-1]}/{peak[0]}</b> ({pm_count[peak]} itens).</li>')
-    if top_vol: A(f'<li>🏆 Maior volume: <b>{esc(top_vol[0])}</b> ({top_vol[1]["count"]} itens).</li>')
-    if top_sp: A(f'<li>💪 Mais Story Points: <b>{esc(top_sp[0])}</b> ({round(top_sp[1]["sp"])} SP).</li>')
-    A(f'<li>⏱️ Lead time mediano {med(all_lead)}d · cycle time mediano {med(all_cycle)}d (tempo na fila = lead − cycle).</li>')
-    if with_flow: A(f'<li>🔁 Retrabalho médio do time: <b>{rework_rate}%</b> dos itens voltaram de estágio.</li>')
-    A('</ul></div>')
-    A('<div class="panel"><h3>Velocidade mensal (itens concluídos)</h3>'+month_bars(pm_count, year)+'</div>')
-    A('<div class="panel"><h3>Distribuição por tipo de trabalho</h3>'
+        add(f'<div class="card"><div class="card-val">{val}</div><div class="card-lbl">{label}</div></div>')
+    add('</div>')
+    add('<div class="panel"><h3>Destaques</h3><ul class="highlights">')
+    if pm_count:
+        add(f'<li>📈 Pico de entregas em <b>{MES[peak[1]-1]}/{peak[0]}</b> ({pm_count[peak]} itens).</li>')
+    if top_vol:
+        add(f'<li>🏆 Maior volume: <b>{esc(top_vol[0])}</b> ({top_vol[1]["count"]} itens).</li>')
+    if top_sp:
+        add(f'<li>💪 Mais Story Points: <b>{esc(top_sp[0])}</b> ({round(top_sp[1]["sp"])} SP).</li>')
+    add(f'<li>⏱️ Lead time mediano {med(all_lead)}d · cycle time mediano {med(all_cycle)}d (tempo na fila = lead − cycle).</li>')
+    if with_flow:
+        add(f'<li>🔁 Retrabalho médio do time: <b>{rework_rate}%</b> dos itens voltaram de estágio.</li>')
+    add('</ul></div>')
+    add('<div class="panel"><h3>Velocidade mensal (itens concluídos)</h3>'+month_bars(pm_count, year)+'</div>')
+    add('<div class="panel"><h3>Distribuição por tipo de trabalho</h3>'
       f'<div class="bars">{bars(proj_types, total, "#22c3a6")}</div></div>')
-    A('</section>')
+    add('</section>')
 
     # ranking
-    A('<section id="ranking"><h2>🏆 Ranking de produtividade</h2>')
-    A('<p class="note">Atribuição por autoria real (Responsável → quem ativou → quem resolveu).</p>')
+    add('<section id="ranking"><h2>🏆 Ranking de produtividade</h2>')
+    add('<p class="note">Atribuição por autoria real (Responsável → quem ativou → quem resolveu).</p>')
     head = '<th>#</th><th>Profissional</th><th>Itens</th><th>SP</th><th>Lead</th><th>Cycle</th>'
-    if with_flow: head += '<th>Retrabalho</th>'
+    if with_flow:
+        head += '<th>Retrabalho</th>'
     head += '<th>Defeitos</th>'
-    A(f'<table class="rank"><thead><tr>{head}</tr></thead><tbody>')
+    add(f'<table class="rank"><thead><tr>{head}</tr></thead><tbody>')
     for i,(n,p) in enumerate(assigned,1):
         rw = f'<td>{round(100*p["rework"]/p["flow_items"]) if p["flow_items"] else 0}%</td>' if with_flow else ''
-        A(f'<tr><td>{i}</td><td><a href="#{slug(n)}">{esc(n)}</a></td><td>{p["count"]}</td>'
+        add(f'<tr><td>{i}</td><td><a href="#{slug(n)}">{esc(n)}</a></td><td>{p["count"]}</td>'
           f'<td>{round(p["sp"])}</td><td>{avg(p["lead"])}d</td><td>{avg(p["cycle"])}d</td>{rw}'
           f'<td>{p["defects"]}</td></tr>')
-    A('</tbody></table></section>')
+    add('</tbody></table></section>')
 
     # sprints
-    A('<section id="sprints"><h2>🗓️ Previsibilidade por sprint</h2>')
-    A('<p class="note">Itens e Story Points concluídos por iteração, e <b>carryover</b> (itens que mudaram de sprint ao longo da vida = arrastaram).</p>')
-    A('<table class="rank"><thead><tr><th>Sprint</th><th>Itens entregues</th><th>Story Points</th><th>Carryover</th></tr></thead><tbody>')
+    add('<section id="sprints"><h2>🗓️ Previsibilidade por sprint</h2>')
+    add('<p class="note">Itens e Story Points concluídos por iteração, e <b>carryover</b> (itens que mudaram de sprint ao longo da vida = arrastaram).</p>')
+    add('<table class="rank"><thead><tr><th>Sprint</th><th>Itens entregues</th><th>Story Points</th><th>Carryover</th></tr></thead><tbody>')
     def iter_key(k):
         return (0,int("".join(filter(str.isdigit,k)) or 0)) if any(c.isdigit() for c in k) else (1,0)
     for it in sorted(sprint, key=iter_key):
         s = sprint[it]
-        A(f'<tr><td>{esc(it)}</td><td>{s["count"]}</td><td>{round(s["sp"])}</td><td>{s["carryover"]}</td></tr>')
-    A('</tbody></table></section>')
+        add(f'<tr><td>{esc(it)}</td><td>{s["count"]}</td><td>{round(s["sp"])}</td><td>{s["carryover"]}</td></tr>')
+    add('</tbody></table></section>')
 
     # wip
-    A('<section id="wip"><h2>🔧 WIP atual (trabalho em andamento)</h2>')
-    A(f'<p class="note">Fotografia de hoje: {total_wip} itens em andamento. Muito WIP por pessoa ou itens muito antigos (aging alto) indicam dispersão ou bloqueios.</p>')
-    A('<table class="rank"><thead><tr><th>Profissional</th><th>Itens em andamento</th><th>Idade média</th><th>Mais antigo</th></tr></thead><tbody>')
+    add('<section id="wip"><h2>🔧 WIP atual (trabalho em andamento)</h2>')
+    add(f'<p class="note">Fotografia de hoje: {total_wip} itens em andamento. Muito WIP por pessoa ou itens muito antigos (aging alto) indicam dispersão ou bloqueios.</p>')
+    add('<table class="rank"><thead><tr><th>Profissional</th><th>Itens em andamento</th><th>Idade média</th><th>Mais antigo</th></tr></thead><tbody>')
     for n in sorted(wip, key=lambda k:-wip[k]["count"]):
         w = wip[n]
-        A(f'<tr><td>{esc(n)}</td><td>{w["count"]}</td><td>{avg(w["ages"])}d</td><td>{round(max(w["ages"])) if w["ages"] else 0}d</td></tr>')
-    A('</tbody></table></section>')
+        add(f'<tr><td>{esc(n)}</td><td>{w["count"]}</td><td>{avg(w["ages"])}d</td><td>{round(max(w["ages"])) if w["ages"] else 0}d</td></tr>')
+    add('</tbody></table></section>')
 
     # per professional
     for n,p in assigned:
-        A(f'<section id="{slug(n)}" class="prof"><h2>{esc(n)}</h2>')
-        A('<div class="cards small">')
+        add(f'<section id="{slug(n)}" class="prof"><h2>{esc(n)}</h2>')
+        add('<div class="cards small">')
         pcards = [("Itens", p["count"]), ("Story Points", round(p["sp"])),
                   ("Lead", f'{avg(p["lead"])}d'), ("Cycle", f'{avg(p["cycle"])}d'),
                   ("Defeitos", p["defects"])]
@@ -416,34 +476,34 @@ def render(project, year, R, wip, with_flow):
         wcount = wip.get(n,{}).get("count",0)
         pcards.append(("WIP atual", wcount))
         for label, val in pcards:
-            A(f'<div class="card"><div class="card-val">{val}</div><div class="card-lbl">{label}</div></div>')
-        A('</div>')
-        A('<div class="grid2">')
-        A(f'<div class="panel"><h3>Tipos de trabalho</h3><div class="bars">{bars(p["types"], p["count"], "#4f8cff")}</div></div>')
+            add(f'<div class="card"><div class="card-val">{val}</div><div class="card-lbl">{label}</div></div>')
+        add('</div>')
+        add('<div class="grid2">')
+        add(f'<div class="panel"><h3>Tipos de trabalho</h3><div class="bars">{bars(p["types"], p["count"], "#4f8cff")}</div></div>')
         sz = p["sizes"]
         sizebars = (f'<div class="bars">{bars(Counter({"Pequena (≤2 SP)":sz.get("P",0),"Média (3-5 SP)":sz.get("M",0),"Grande (≥8 SP)":sz.get("G",0)}), sum(sz.values()) or 1, "#f0a93b")}</div>'
                     if sum(sz.values()) else '<p class="note">Sem itens estimados.</p>')
-        A(f'<div class="panel"><h3>Tamanho das entregas</h3>{sizebars}</div>')
-        A('</div>')
+        add(f'<div class="panel"><h3>Tamanho das entregas</h3>{sizebars}</div>')
+        add('</div>')
         if with_flow:
-            A('<div class="grid2">')
-            A(f'<div class="panel"><h3>Tempo médio por estágio do fluxo</h3>{stage_bars(p)}</div>')
+            add('<div class="grid2">')
+            add(f'<div class="panel"><h3>Tempo médio por estágio do fluxo</h3>{stage_bars(p)}</div>')
             rwpct = round(100*p["rework"]/p["flow_items"]) if p["flow_items"] else 0
-            A('<div class="panel"><h3>Qualidade & fluxo</h3><div class="bars">'
+            add('<div class="panel"><h3>Qualidade & fluxo</h3><div class="bars">'
               f'<div class="bar-row"><span class="bar-label">Retrabalho</span><span class="bar-track"><span class="bar-fill" style="width:{min(rwpct,100)}%;background:#e0556b"></span></span><span class="bar-val">{rwpct}%</span></div>'
               f'<div class="kv">Itens com retrocesso: <b>{p["rework"]}</b> · Reaberturas pós-conclusão: <b>{p["reopen"]}</b></div>'
               f'<div class="kv">Carryover (mudou de sprint): <b>{p["carryover"]}</b></div>'
               f'<div class="kv">Lead time médio: <b>{avg(p["lead"])}d</b> · Cycle time médio: <b>{avg(p["cycle"])}d</b> · fila ≈ <b>{round(avg(p["lead"])-avg(p["cycle"]),1)}d</b></div>'
               '</div></div>')
-            A('</div>')
-        A(f'<div class="panel"><h3>Ritmo mensal</h3>{month_bars(p["months"], year)}</div>')
-        A('</section>')
+            add('</div>')
+        add(f'<div class="panel"><h3>Ritmo mensal</h3>{month_bars(p["months"], year)}</div>')
+        add('</section>')
 
     if "(Não identificado)" in people:
         ua = people["(Não identificado)"]
-        A(f'<section><p class="note">Obs.: {ua["count"]} itens não puderam ser atribuídos.</p></section>')
+        add(f'<section><p class="note">Obs.: {ua["count"]} itens não puderam ser atribuídos.</p></section>')
 
-    A('<section id="metodo"><h2>Notas metodológicas</h2><ul class="note">'
+    add('<section id="metodo"><h2>Notas metodológicas</h2><ul class="note">'
       '<li><b>Itens concluídos</b>: <code>ClosedDate</code> no ano.</li>'
       '<li><b>Atribuição</b>: Responsável → ActivatedBy → ResolvedBy → ClosedBy (Responsável é limpo após a entrega).</li>'
       '<li><b>Lead time</b>: criação→conclusão. <b>Cycle time</b>: 1ª entrada em "InProgress"→conclusão. A diferença ≈ tempo na fila.</li>'
@@ -454,7 +514,7 @@ def render(project, year, R, wip, with_flow):
       '<li>Código/PRs estão no GitLab — métricas de commit/review de PR não vêm do Azure. Volume ≠ complexidade/qualidade; use com o contexto da AVD.</li>'
       '</ul></section>')
 
-    body = "".join(P)
+    body = "".join(parts)
     return PAGE.replace("{{NAV}}", nav_html).replace("{{BODY}}", body).replace("{{TITLE}}", esc(f"{project} {year}"))
 
 PAGE = """<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
@@ -532,12 +592,12 @@ def generate_report(org, pat_b64, project, year=None, with_flow=True, workers=8)
     if with_flow:
         ids = [it["id"] for it in items]
         revmap = fetch_revisions(base, pat_b64, project, ids, workers=workers)
-    R = analyze(items, smap, somap, revmap)
+    analysis = analyze(items, smap, somap, revmap)
     wip = analyze_wip(wip_items)
-    page = render(project, year, R, wip, with_flow)
+    page = render(project, year, analysis, wip, with_flow)
     # Organized structured data the AI can reshape into any view/report.
     people = {}
-    for name, p in R["people"].items():
+    for name, p in analysis["people"].items():
         if name == "(Não identificado)":
             continue
         people[name] = {
@@ -553,18 +613,18 @@ def generate_report(org, pat_b64, project, year=None, with_flow=True, workers=8)
                             for st in p["stage_n"]},
         }
     sprints = {k: {"itens": v["count"], "story_points": round(v["sp"], 1),
-                   "carryover": v["carryover"]} for k, v in R["sprint"].items()}
+                   "carryover": v["carryover"]} for k, v in analysis["sprint"].items()}
     wip_por_pessoa = {n: {"itens": w["count"], "estados": dict(w["states"]),
                           "idade_media_d": avg(w["ages"]),
                           "mais_antigo_d": round(max(w["ages"])) if w["ages"] else 0}
                       for n, w in wip.items()}
-    por_mes = {f"{y}-{m:02d}": {"itens": c, "story_points": round(R["pm_sp"].get((y, m), 0), 1)}
-               for (y, m), c in sorted(R["pm_count"].items())}
+    por_mes = {f"{y}-{m:02d}": {"itens": c, "story_points": round(analysis["pm_sp"].get((y, m), 0), 1)}
+               for (y, m), c in sorted(analysis["pm_count"].items())}
     summary = {
         "project": project, "year": year,
         "itens_concluidos": len(items), "wip_total": len(wip_items),
         "pessoas": len(people), "estados_concluidos": sorted(done_states),
-        "tipos_projeto": dict(R["proj_types"]),
+        "tipos_projeto": dict(analysis["proj_types"]),
         "por_pessoa": people, "por_sprint": sprints, "por_mes": por_mes,
         "wip_por_pessoa": wip_por_pessoa,
     }
