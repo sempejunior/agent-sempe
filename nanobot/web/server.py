@@ -9,13 +9,16 @@ import secrets as pysecrets
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from starlette.websockets import WebSocketState
+
+if TYPE_CHECKING:
+    from nanobot.cron.types import CronSchedule
 
 _STATIC_DIR = Path(__file__).parent / "frontend" / "static"
 
@@ -52,11 +55,71 @@ _TEMPLATE_RECOMMENDED_SKILLS = {
     "ponto_assistente": ["regras_ponto_portaria_671", "calculo_banco_horas"],
     "dp_analista": ["folha_pagamento_basico", "admissao_rescisao_checklist"],
     "juridico_trabalhista": ["analise_risco_trabalhista", "redacao_juridica_formal"],
+    "start_rh_ops": [
+        "start-avisos-presenca", "start-saida-antecipada-revisao", "start-holerite",
+        "start-feedback-e-sugestao", "cruzar-entrega-e-pessoas", "criar-paginas",
+    ],
 }
 
 
 def _template_recommended_skills(template_id: str) -> list[str]:
     return list(_TEMPLATE_RECOMMENDED_SKILLS.get(template_id, []))
+
+
+def _schedule_from_body(body: dict[str, Any]) -> CronSchedule:
+    """Build a CronSchedule from a request body, for both preview and create."""
+    from nanobot.cron.service import _now_ms
+    from nanobot.cron.types import CronSchedule
+
+    kind = body.get("kind", "every")
+    if kind == "every":
+        return CronSchedule(kind="every",
+                            every_ms=int(body.get("every_seconds", 3600)) * 1000)
+    if kind == "interval":
+        return CronSchedule(
+            kind="interval",
+            every_days=int(body.get("every_days", 1)),
+            at_time=body.get("at_time"),
+            anchor_ms=int(body.get("anchor_ms") or _now_ms()),
+            tz=body.get("tz"),
+        )
+    if kind == "cron":
+        return CronSchedule(kind="cron", expr=body.get("expr", "0 9 * * *"),
+                            tz=body.get("tz"))
+    if kind == "at":
+        return CronSchedule(kind="at", at_ms=int(body.get("at_ms", 0)))
+    raise HTTPException(400, f"Invalid schedule kind '{kind}'")
+
+
+_PATCH_DICT_FIELDS = {
+    "agent_config": ("rag",),
+    "bootstrap": (),
+    "channel_configs": (),
+    "metadata": (),
+}
+"""Agent fields whose PATCH body merges by key, plus keys that merge one level deeper."""
+
+
+def _merge_patch(
+    current: dict[str, Any], incoming: dict[str, Any], deep_keys: tuple[str, ...],
+) -> dict[str, Any]:
+    """Merge a PATCH body over the stored dict, by key (RFC 7396 style).
+
+    A partial PATCH must not drop the keys it does not mention: sending only
+    ``IDENTITY.md`` cannot erase ``AGENTS.md``. Keys in ``deep_keys`` merge one
+    level deeper, and an explicit ``None`` removes a key.
+    """
+    merged = dict(current or {})
+    for key, value in incoming.items():
+        if value is None:
+            merged.pop(key, None)
+        elif key in deep_keys and isinstance(value, dict):
+            nested = dict(merged.get(key, {}) or {})
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = value
+    return merged
 
 
 async def _ensure_db(app_state: Any, data_dir: Path) -> bool:
@@ -557,17 +620,11 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
             "metadata", "status",
         }
         fields = {k: v for k, v in body.items() if k in allowed}
-        if "agent_config" in fields and isinstance(fields["agent_config"], dict):
-            merged_cfg = dict(current_agent.get("agent_config", {}) or {})
-            incoming = fields["agent_config"]
-            for key, value in incoming.items():
-                if key == "rag" and isinstance(value, dict):
-                    existing_rag = dict(merged_cfg.get("rag", {}) or {})
-                    existing_rag.update(value)
-                    merged_cfg["rag"] = existing_rag
-                else:
-                    merged_cfg[key] = value
-            fields["agent_config"] = merged_cfg
+        for name, deep_keys in _PATCH_DICT_FIELDS.items():
+            if isinstance(fields.get(name), dict):
+                fields[name] = _merge_patch(
+                    current_agent.get(name, {}) or {}, fields[name], deep_keys,
+                )
         ok = await app.state.repos.agents.update_agent(user["user_id"], agent_id, fields)
         _invalidate_agent_context(user["user_id"], agent_id)
         if "channel_configs" in fields:
@@ -883,19 +940,36 @@ form.addEventListener("submit", async (e) => {{
 
     @app.get("/api/cron")
     async def list_cron(request: Request):
+        """List the user's scheduled routines across all of their agents.
+
+        Pass ``?agent_id=`` to narrow it down. The routine is executed by a
+        specific agent — the one that holds the integrations and skills it needs —
+        so the caller always sees which agent owns each one.
+        """
+        from nanobot.cron.describe import describe_schedule
         from nanobot.cron.service import compute_next_runs
-        user, agent = await _require_agent(request)
+        user = await _require_user(request)
+        only_agent = request.query_params.get("agent_id")
         jobs = await app.state.cron.list_jobs(
-            user_id=user["user_id"], include_disabled=True, agent_id=agent["agent_id"],
+            user_id=user["user_id"], include_disabled=True, agent_id=only_agent,
         )
+        agent_names = {
+            a["agent_id"]: a.get("name", "")
+            for a in await app.state.repos.agents.list_agents(user["user_id"])
+        }
         return [
             {
                 "id": j.id, "name": j.name, "enabled": j.enabled,
+                "agent_id": j.agent_id,
+                "agent_name": agent_names.get(j.agent_id, ""),
                 "schedule_kind": j.schedule.kind,
+                "schedule_label": describe_schedule(j.schedule),
                 "schedule_expr": j.schedule.expr or (
                     f"every {(j.schedule.every_ms or 0) // 1000}s"
                     if j.schedule.kind == "every" else ""
                 ),
+                "every_days": j.schedule.every_days,
+                "at_time": j.schedule.at_time,
                 "message": j.payload.message,
                 "deliver": j.payload.deliver,
                 "channel": j.payload.channel,
@@ -912,40 +986,23 @@ form.addEventListener("submit", async (e) => {{
     @app.post("/api/cron/preview")
     async def preview_cron(request: Request):
         """Given a schedule, return the next N run timestamps. Does not persist anything."""
+        from nanobot.cron.describe import describe_schedule
         from nanobot.cron.service import compute_next_runs
-        from nanobot.cron.types import CronSchedule
         body = await request.json()
-        kind = body.get("kind", "every")
         count = min(int(body.get("count", 5)), 20)
-        if kind == "every":
-            sched = CronSchedule(kind="every", every_ms=int(body.get("every_seconds", 3600)) * 1000)
-        elif kind == "cron":
-            sched = CronSchedule(kind="cron", expr=body.get("expr", ""), tz=body.get("tz"))
-        elif kind == "at":
-            sched = CronSchedule(kind="at", at_ms=int(body.get("at_ms", 0)))
-        else:
-            raise HTTPException(400, "Invalid schedule kind")
+        sched = _schedule_from_body(body)
         try:
             runs = compute_next_runs(sched, count=count)
         except Exception as e:
             raise HTTPException(400, f"Invalid schedule: {e}") from e
-        return {"next_runs": runs}
+        return {"next_runs": runs, "label": describe_schedule(sched)}
 
     @app.post("/api/cron")
     async def add_cron(request: Request):
-        user, agent = await _require_agent(request)
         body = await request.json()
-        from nanobot.cron.types import CronSchedule
-
-        kind = body.get("kind", "every")
-        if kind == "every":
-            sched = CronSchedule(kind="every", every_ms=int(body.get("every_seconds", 3600)) * 1000)
-        elif kind == "cron":
-            sched = CronSchedule(kind="cron", expr=body.get("expr", "0 9 * * *"), tz=body.get("tz"))
-        elif kind == "at":
-            sched = CronSchedule(kind="at", at_ms=int(body.get("at_ms", 0)))
-        else:
-            raise HTTPException(400, "Invalid schedule kind")
+        user, agent = await _require_agent(request, body.get("agent_id"))
+        sched = _schedule_from_body(body)
+        kind = sched.kind
 
         job = await app.state.cron.add_job(
             name=body.get("name", "Web job"),
@@ -962,17 +1019,17 @@ form.addEventListener("submit", async (e) => {{
 
     @app.delete("/api/cron/{job_id}")
     async def delete_cron(request: Request, job_id: str):
-        user, agent = await _require_agent(request)
-        ok = await app.state.cron.remove_job(job_id, user_id=user["user_id"], agent_id=agent["agent_id"])
+        user = await _require_user(request)
+        ok = await app.state.cron.remove_job(job_id, user_id=user["user_id"])
         return {"ok": ok}
 
     @app.put("/api/cron/{job_id}/enable")
     async def enable_cron(request: Request, job_id: str):
-        user, agent = await _require_agent(request)
+        user = await _require_user(request)
         body = await request.json()
         enabled = bool(body.get("enabled", True))
         job = await app.state.cron.enable_job(
-            job_id, enabled=enabled, user_id=user["user_id"], agent_id=agent["agent_id"],
+            job_id, enabled=enabled, user_id=user["user_id"],
         )
         if not job:
             raise HTTPException(404, "Job not found")
@@ -980,9 +1037,9 @@ form.addEventListener("submit", async (e) => {{
 
     @app.post("/api/cron/{job_id}/run")
     async def run_cron(request: Request, job_id: str):
-        user, agent = await _require_agent(request)
+        user = await _require_user(request)
         ok = await app.state.cron.run_job(
-            job_id, force=True, user_id=user["user_id"], agent_id=agent["agent_id"],
+            job_id, force=True, user_id=user["user_id"],
         )
         if not ok:
             raise HTTPException(404, "Job not found or could not be run")
@@ -1434,6 +1491,17 @@ form.addEventListener("submit", async (e) => {{
             "created_at": row.get("created_at", ""),
             "updated_at": row.get("updated_at", ""),
         }
+
+    @app.get("/api/tools/catalog")
+    async def get_tools_catalog(request: Request):
+        """Tool catalog for the UI.
+
+        Entries with ``permission: true`` are the only ones a client chooses;
+        the rest is infrastructure the agent always has.
+        """
+        await _require_user(request)
+        from nanobot.agent.tools.catalog import serialize_catalog
+        return serialize_catalog()
 
     @app.get("/api/integrations/catalog")
     async def get_integrations_catalog(request: Request):

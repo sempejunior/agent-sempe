@@ -59,3 +59,86 @@ def test_agent_isolated_between_users(client):
     r = client.get("/api/agents", headers=_auth("bob"))
     assert r.status_code == 200
     assert all(a["agent_id"] != aid for a in r.json())
+
+
+def _new_agent(client, uid="u1", **extra):
+    client.post("/api/auth/register", json={"user_id": uid})
+    body = {"name": "A", "role": "r", "description": "d", **extra}
+    r = client.post("/api/agents", json=body, headers=_auth(uid))
+    assert r.status_code == 200, r.text
+    return r.json()["agent_id"]
+
+
+def test_patch_bootstrap_keeps_untouched_keys(client):
+    aid = _new_agent(client, bootstrap={"SOUL.md": "alma", "AGENTS.md": "regras"})
+
+    r = client.patch(
+        f"/api/agents/{aid}",
+        json={"bootstrap": {"IDENTITY.md": "quem eu sou"}},
+        headers=_auth("u1"),
+    )
+    assert r.status_code == 200, r.text
+
+    bootstrap = r.json()["agent"]["bootstrap"]
+    assert bootstrap["IDENTITY.md"] == "quem eu sou"
+    assert bootstrap["SOUL.md"] == "alma"
+    assert bootstrap["AGENTS.md"] == "regras"
+
+
+def test_patch_bootstrap_can_overwrite_a_key(client):
+    aid = _new_agent(client, bootstrap={"SOUL.md": "antiga"})
+
+    r = client.patch(
+        f"/api/agents/{aid}", json={"bootstrap": {"SOUL.md": "nova"}}, headers=_auth("u1"),
+    )
+    assert r.json()["agent"]["bootstrap"]["SOUL.md"] == "nova"
+
+
+def test_patch_removes_a_key_with_explicit_null(client):
+    aid = _new_agent(client, bootstrap={"SOUL.md": "alma", "AGENTS.md": "regras"})
+
+    r = client.patch(
+        f"/api/agents/{aid}", json={"bootstrap": {"SOUL.md": None}}, headers=_auth("u1"),
+    )
+    bootstrap = r.json()["agent"]["bootstrap"]
+    assert "SOUL.md" not in bootstrap
+    assert bootstrap["AGENTS.md"] == "regras"
+
+
+def test_patch_metadata_keeps_the_template_reference(client):
+    aid = _new_agent(client, metadata={"template": "start_rh_ops"})
+
+    r = client.patch(
+        f"/api/agents/{aid}", json={"metadata": {"nota": "meu agente"}}, headers=_auth("u1"),
+    )
+    metadata = r.json()["agent"]["metadata"]
+    assert metadata["template"] == "start_rh_ops"
+    assert metadata["nota"] == "meu agente"
+
+
+def test_patch_agent_config_merges_rag_one_level_deeper(client):
+    aid = _new_agent(client, agent_config={"model": "m1", "rag": {"enabled": True, "top_k": 5}})
+
+    r = client.patch(
+        f"/api/agents/{aid}",
+        json={"agent_config": {"rag": {"top_k": 9}}},
+        headers=_auth("u1"),
+    )
+    cfg = r.json()["agent"]["agent_config"]
+    assert cfg["rag"] == {"enabled": True, "top_k": 9}
+    assert cfg["model"] == "m1"
+
+
+def test_patch_channel_configs_does_not_disable_the_others(client):
+    aid = _new_agent(client, channel_configs={
+        "telegram": {"enabled": True}, "slack": {"enabled": True},
+    })
+
+    r = client.patch(
+        f"/api/agents/{aid}",
+        json={"channel_configs": {"slack": {"enabled": False}}},
+        headers=_auth("u1"),
+    )
+    channels = r.json()["agent"]["channel_configs"]
+    assert channels["telegram"]["enabled"] is True
+    assert channels["slack"]["enabled"] is False
