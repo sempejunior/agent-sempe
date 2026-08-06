@@ -30,7 +30,12 @@ class CronTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Schedule reminders and recurring tasks. Actions: add, list, remove."
+        return (
+            "Agenda lembretes e tarefas recorrentes. Ações: add, list, remove. "
+            "Para uma cadência em dias com hora fixa (ex.: a cada 15 dias às 9h) use "
+            "every_days + at_time. Para regra de calendário (dias da semana, dia do "
+            "mês) use cron_expr. Sempre informe tz quando houver hora envolvida."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -48,7 +53,18 @@ class CronTool(Tool):
                 },
                 "every_seconds": {
                     "type": "integer",
-                    "description": "Interval in seconds (for recurring tasks)"
+                    "description": "Intervalo em segundos, sem hora fixa. "
+                                   "Prefira every_days quando o usuário pensar em dias."
+                },
+                "every_days": {
+                    "type": "integer",
+                    "description": "Cadência em dias corridos contada a partir de hoje "
+                                   "(ex.: 15 para 'a cada 15 dias', 7 para semanal). "
+                                   "Combine com at_time."
+                },
+                "at_time": {
+                    "type": "string",
+                    "description": "Hora do disparo em HH:MM, para every_days."
                 },
                 "cron_expr": {
                     "type": "string",
@@ -75,6 +91,8 @@ class CronTool(Tool):
         action: str,
         message: str = "",
         every_seconds: int | None = None,
+        every_days: int | None = None,
+        at_time: str | None = None,
         cron_expr: str | None = None,
         tz: str | None = None,
         at: str | None = None,
@@ -82,7 +100,9 @@ class CronTool(Tool):
         **kwargs: Any
     ) -> str:
         if action == "add":
-            return await self._add_job(message, every_seconds, cron_expr, tz, at)
+            return await self._add_job(
+                message, every_seconds, every_days, at_time, cron_expr, tz, at,
+            )
         elif action == "list":
             return await self._list_jobs()
         elif action == "remove":
@@ -93,6 +113,8 @@ class CronTool(Tool):
         self,
         message: str,
         every_seconds: int | None,
+        every_days: int | None,
+        at_time: str | None,
         cron_expr: str | None,
         tz: str | None,
         at: str | None,
@@ -101,8 +123,8 @@ class CronTool(Tool):
             return "Error: message is required for add"
         if not self._channel or not self._chat_id:
             return "Error: no session context (channel/chat_id)"
-        if tz and not cron_expr:
-            return "Error: tz can only be used with cron_expr"
+        if tz and not (cron_expr or every_days):
+            return "Error: tz can only be used with cron_expr or every_days"
         if tz:
             from zoneinfo import ZoneInfo
             try:
@@ -111,7 +133,10 @@ class CronTool(Tool):
                 return f"Error: unknown timezone '{tz}'"
 
         delete_after = False
-        if every_seconds:
+        if every_days:
+            schedule = CronSchedule(kind="interval", every_days=every_days,
+                                    at_time=at_time, tz=tz)
+        elif every_seconds:
             schedule = CronSchedule(kind="every", every_ms=every_seconds * 1000)
         elif cron_expr:
             schedule = CronSchedule(kind="cron", expr=cron_expr, tz=tz)
@@ -122,8 +147,10 @@ class CronTool(Tool):
             schedule = CronSchedule(kind="at", at_ms=at_ms)
             delete_after = True
         else:
-            return "Error: either every_seconds, cron_expr, or at is required"
+            return ("Error: informe every_days (+ at_time), every_seconds, "
+                    "cron_expr ou at")
 
+        from nanobot.cron.describe import describe_schedule
         job = await self._cron.add_job(
             name=message[:30],
             schedule=schedule,
@@ -135,14 +162,16 @@ class CronTool(Tool):
             user_id=self._user_id,
             agent_id=self._agent_id,
         )
-        return f"Created job '{job.name}' (id: {job.id})"
+        return (f"Agendamento criado: '{job.name}' — "
+                f"{describe_schedule(job.schedule)} (id: {job.id})")
 
     async def _list_jobs(self) -> str:
         jobs = await self._cron.list_jobs(user_id=self._user_id, agent_id=self._agent_id or None)
         if not jobs:
             return "No scheduled jobs."
-        lines = [f"- {j.name} (id: {j.id}, {j.schedule.kind})" for j in jobs]
-        return "Scheduled jobs:\n" + "\n".join(lines)
+        from nanobot.cron.describe import describe_schedule
+        lines = [f"- {j.name} — {describe_schedule(j.schedule)} (id: {j.id})" for j in jobs]
+        return "Agendamentos:\n" + "\n".join(lines)
 
     async def _remove_job(self, job_id: str | None) -> str:
         if not job_id:

@@ -6,7 +6,8 @@ import asyncio
 import json
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+from datetime import time as clock_time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
@@ -22,6 +23,44 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _schedule_tz(schedule: CronSchedule):
+    """Resolve the schedule timezone, falling back to the host's."""
+    if schedule.tz:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(schedule.tz)
+    return datetime.now().astimezone().tzinfo
+
+
+def _interval_runs(schedule: CronSchedule, now_ms: int, count: int) -> list[int]:
+    """Occurrences of an anchored day interval, strictly after ``now_ms``.
+
+    The cadence is measured in calendar days from the anchor and the time of day
+    is rebuilt in local time on every occurrence, so neither a late run nor a
+    daylight saving change shifts the clock time.
+    """
+    if not schedule.every_days or schedule.every_days <= 0 or count <= 0:
+        return []
+    tz = _schedule_tz(schedule)
+    anchor = datetime.fromtimestamp((schedule.anchor_ms or now_ms) / 1000, tz)
+    hour, minute = anchor.hour, anchor.minute
+    if schedule.at_time:
+        head, _, tail = schedule.at_time.partition(":")
+        hour, minute = int(head), int(tail or 0)
+    now = datetime.fromtimestamp(now_ms / 1000, tz)
+
+    elapsed = (now.date() - anchor.date()).days
+    step = schedule.every_days
+    index = max(0, elapsed // step)
+    out: list[int] = []
+    while len(out) < count:
+        day = anchor.date() + timedelta(days=index * step)
+        when = datetime.combine(day, clock_time(hour, minute), tzinfo=tz)
+        if when > now:
+            out.append(int(when.timestamp() * 1000))
+        index += 1
+    return out
+
+
 def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
     """Compute next run time in ms."""
     if schedule.kind == "at":
@@ -31,6 +70,10 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
         if not schedule.every_ms or schedule.every_ms <= 0:
             return None
         return now_ms + schedule.every_ms
+
+    if schedule.kind == "interval":
+        runs = _interval_runs(schedule, now_ms, 1)
+        return runs[0] if runs else None
 
     if schedule.kind == "cron" and schedule.expr:
         try:
@@ -63,6 +106,9 @@ def compute_next_runs(schedule: CronSchedule, count: int = 3, now_ms: int | None
             return []
         return [base + schedule.every_ms * (i + 1) for i in range(count)]
 
+    if schedule.kind == "interval":
+        return _interval_runs(schedule, base, count)
+
     if schedule.kind == "cron" and schedule.expr:
         try:
             from zoneinfo import ZoneInfo
@@ -84,16 +130,28 @@ def compute_next_runs(schedule: CronSchedule, count: int = 3, now_ms: int | None
 
 def _validate_schedule_for_add(schedule: CronSchedule) -> None:
     """Validate schedule fields that would otherwise create non-runnable jobs."""
-    if schedule.tz and schedule.kind != "cron":
-        raise ValueError("tz can only be used with cron schedules")
+    if schedule.tz and schedule.kind not in ("cron", "interval"):
+        raise ValueError("tz can only be used with cron or interval schedules")
 
-    if schedule.kind == "cron" and schedule.tz:
+    if schedule.tz:
         try:
             from zoneinfo import ZoneInfo
 
             ZoneInfo(schedule.tz)
         except Exception:
             raise ValueError(f"unknown timezone '{schedule.tz}'") from None
+
+    if schedule.kind == "interval":
+        if not schedule.every_days or schedule.every_days <= 0:
+            raise ValueError("interval schedules need every_days >= 1")
+        if schedule.at_time:
+            head, _, tail = schedule.at_time.partition(":")
+            try:
+                clock_time(int(head), int(tail or 0))
+            except ValueError:
+                raise ValueError(
+                    f"invalid at_time '{schedule.at_time}', expected HH:MM"
+                ) from None
 
 
 def _job_to_dict(job: CronJob) -> dict[str, Any]:
@@ -110,6 +168,9 @@ def _job_to_dict(job: CronJob) -> dict[str, Any]:
             "every_ms": job.schedule.every_ms,
             "expr": job.schedule.expr,
             "tz": job.schedule.tz,
+            "every_days": job.schedule.every_days,
+            "at_time": job.schedule.at_time,
+            "anchor_ms": job.schedule.anchor_ms,
         },
         "payload": {
             "kind": job.payload.kind,
@@ -141,6 +202,9 @@ def _dict_to_job(d: dict[str, Any]) -> CronJob:
             at_ms=sched.get("at_ms") or sched.get("atMs"),
             every_ms=sched.get("every_ms") or sched.get("everyMs"),
             expr=sched.get("expr"),
+            every_days=sched.get("every_days") or sched.get("everyDays"),
+            at_time=sched.get("at_time") or sched.get("atTime"),
+            anchor_ms=sched.get("anchor_ms") or sched.get("anchorMs"),
             tz=sched.get("tz"),
         ),
         payload=CronPayload(
@@ -205,6 +269,9 @@ class CronService:
                             at_ms=j["schedule"].get("atMs"),
                             every_ms=j["schedule"].get("everyMs"),
                             expr=j["schedule"].get("expr"),
+                            every_days=j["schedule"].get("everyDays"),
+                            at_time=j["schedule"].get("atTime"),
+                            anchor_ms=j["schedule"].get("anchorMs"),
                             tz=j["schedule"].get("tz"),
                         ),
                         payload=CronPayload(
@@ -252,6 +319,9 @@ class CronService:
                         "atMs": j.schedule.at_ms,
                         "everyMs": j.schedule.every_ms,
                         "expr": j.schedule.expr,
+                        "everyDays": j.schedule.every_days,
+                        "atTime": j.schedule.at_time,
+                        "anchorMs": j.schedule.anchor_ms,
                         "tz": j.schedule.tz,
                     },
                     "payload": {
