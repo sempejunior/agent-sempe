@@ -31,10 +31,23 @@ RUN apt-get update && \
     imagemagick \
     tesseract-ocr \
     tesseract-ocr-por \
-    poppler-utils && \
+    poppler-utils \
+    jq && \
     apt-get purge -y gnupg && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
+
+# Git ready to commit: without an identity `git commit` fails, and that is the
+# invisible blocker of any code flow. The askpass helper answers the token from
+# the child environment, so it never reaches argv or .git/config.
+RUN git config --system user.name "Solides Agent" && \
+    git config --system user.email "agent@solides.local" && \
+    git config --system init.defaultBranch main && \
+    git config --system advice.detachedHead false && \
+    git config --system safe.directory '*' && \
+    printf '#!/bin/sh\nprintf %%s "$NANOBOT_GIT_PASSWORD"\n' \
+      > /usr/local/bin/nanobot-git-askpass && \
+    chmod 755 /usr/local/bin/nanobot-git-askpass
 
 # Tell Puppeteer to use system Chromium (non-headless, renders on Xvfb)
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium

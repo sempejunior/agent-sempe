@@ -2,7 +2,7 @@ services:
   nanobot-gateway:
     entrypoint: []
     volumes:
-      - ./nanobot:/app/nanobot
+      - ./nanobot:/app/nanobot:ro
     environment:
       PYTHONPATH: /app
       DISPLAY: ":99"

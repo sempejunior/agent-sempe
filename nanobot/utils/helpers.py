@@ -1,13 +1,32 @@
 """Utility functions for nanobot."""
 
+import re
 from datetime import datetime
 from pathlib import Path
+
+_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
 
 
 def ensure_dir(path: Path) -> Path:
     """Ensure a directory exists, creating it if necessary."""
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def agent_workspace_path(workspace: Path, user_id: str, agent_id: str) -> Path:
+    """Private working directory for one user's agent, under the workspace.
+
+    The workspace root is shared by the whole instance, so anything an agent
+    writes there is readable by every other agent of every other user. Code
+    checkouts and scratch files belong in this per-agent directory instead.
+
+    Ids come from the database, not from a request, but they end up in a path —
+    so they are validated rather than trusted.
+    """
+    for value in (user_id, agent_id):
+        if not value or not _ID_RE.match(value):
+            raise ValueError(f"unsafe id for a workspace path: {value!r}")
+    return ensure_dir(workspace / "agents" / user_id / agent_id)
 
 
 def get_data_path() -> Path:

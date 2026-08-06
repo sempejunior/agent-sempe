@@ -43,8 +43,9 @@ _COMPLETION_NUDGE = (
 )
 
 _FINAL_ANSWER_PROMPT = (
-    "Agora escreva a resposta final ao usuário: o que foi entregue, os números-chave "
-    "e os links markdown de TODAS as páginas publicadas. Não mencione COMPLETO nem "
+    "Agora escreva a resposta final ao usuário: o que foi entregue e os números-chave. "
+    "Se você publicou páginas neste turno, inclua o link markdown de TODAS elas; se não "
+    "publicou nenhuma, não mencione páginas nem links. Não mencione COMPLETO nem "
     "esta verificação."
 )
 
@@ -165,7 +166,7 @@ class AgentLoop:
         self.tools.register(ExecTool(
             working_dir=str(self.workspace),
             timeout=self.exec_config.timeout,
-            restrict_to_workspace=self.restrict_to_workspace,
+            allowed_root=self.workspace if self.restrict_to_workspace else None,
         ))
         self.tools.register(WebSearchTool(api_key=self.brave_api_key))
         self.tools.register(WebFetchTool())

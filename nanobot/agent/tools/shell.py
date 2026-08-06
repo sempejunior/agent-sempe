@@ -1,12 +1,29 @@
-"""Shell execution tool."""
+"""Shell execution tool.
+
+The child process gets a **built** environment, never the gateway's own: the
+master credential key and the provider API keys live in ``os.environ``, and a
+command as simple as ``env`` would hand them to the model. Only an allowlist of
+harmless variables plus what the caller injects crosses the boundary.
+
+Confinement is by ``working_dir``, resolved and checked against ``allowed_root``
+the same way ``filesystem._resolve_path`` does it. There is no attempt to police
+the command string for paths: a shell can reach anything through indirection, so
+a regex over the command reads as protection while blocking legitimate calls like
+``/usr/bin/python3``. Real confinement needs a namespace, and that is tracked
+separately.
+"""
 
 import asyncio
 import os
 import re
+import signal
 from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+
+_ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TERM")
+_MAX_OUTPUT_CHARS = 10_000
 
 
 class ExecTool(Tool):
@@ -18,7 +35,8 @@ class ExecTool(Tool):
         working_dir: str | None = None,
         deny_patterns: list[str] | None = None,
         allow_patterns: list[str] | None = None,
-        restrict_to_workspace: bool = False,
+        allowed_root: Path | None = None,
+        env_extra: dict[str, str] | None = None,
     ):
         self.timeout = timeout
         self.working_dir = working_dir
@@ -34,7 +52,8 @@ class ExecTool(Tool):
             r":\(\)\s*\{.*\};\s*:",          # fork bomb
         ]
         self.allow_patterns = allow_patterns or []
-        self.restrict_to_workspace = restrict_to_workspace
+        self.allowed_root = allowed_root
+        self.env_extra = env_extra or {}
 
     @property
     def name(self) -> str:
@@ -61,18 +80,49 @@ class ExecTool(Tool):
             "required": ["command"]
         }
 
+    def _build_env(self) -> dict[str, str]:
+        """Environment for the child: allowlisted variables plus injected ones."""
+        env = {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
+        env.update(self.env_extra)
+        return env
+
+    def _resolve_cwd(self, working_dir: str | None) -> Path:
+        """Resolve the working directory, keeping it under ``allowed_root``."""
+        raw = working_dir or self.working_dir or os.getcwd()
+        cwd = Path(raw).expanduser()
+        if not cwd.is_absolute() and self.allowed_root:
+            cwd = self.allowed_root / cwd
+        cwd = cwd.resolve()
+        if self.allowed_root:
+            root = self.allowed_root.resolve()
+            try:
+                cwd.relative_to(root)
+            except ValueError:
+                raise PermissionError(
+                    f"working_dir {raw} is outside the allowed directory {root}"
+                ) from None
+        return cwd
+
     async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
-        cwd = working_dir or self.working_dir or os.getcwd()
-        guard_error = self._guard_command(command, cwd)
+        guard_error = self._guard_command(command)
         if guard_error:
             return guard_error
+
+        try:
+            cwd = self._resolve_cwd(working_dir)
+        except PermissionError as e:
+            return f"Error: {e}"
+        if not cwd.is_dir():
+            return f"Error: working_dir {cwd} does not exist"
 
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
+                cwd=str(cwd),
+                env=self._build_env(),
+                start_new_session=True,
             )
 
             try:
@@ -81,13 +131,7 @@ class ExecTool(Tool):
                     timeout=self.timeout
                 )
             except asyncio.TimeoutError:
-                process.kill()
-                # Wait for the process to fully terminate so pipes are
-                # drained and file descriptors are released.
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
+                await self._terminate(process)
                 return f"Error: Command timed out after {self.timeout} seconds"
 
             output_parts = []
@@ -105,47 +149,44 @@ class ExecTool(Tool):
 
             result = "\n".join(output_parts) if output_parts else "(no output)"
 
-            # Truncate very long output
-            max_len = 10000
-            if len(result) > max_len:
-                result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
+            if len(result) > _MAX_OUTPUT_CHARS:
+                dropped = len(result) - _MAX_OUTPUT_CHARS
+                result = result[:_MAX_OUTPUT_CHARS] + f"\n... (truncated, {dropped} more chars)"
 
             return result
 
         except Exception as e:
             return f"Error executing command: {str(e)}"
 
-    def _guard_command(self, command: str, cwd: str) -> str | None:
-        """Best-effort safety guard for potentially destructive commands."""
-        cmd = command.strip()
-        lower = cmd.lower()
+    @staticmethod
+    async def _terminate(process: asyncio.subprocess.Process) -> None:
+        """Kill the whole process group, not just the shell.
+
+        ``npm`` and ``pytest`` spawn children; killing the shell alone leaves
+        them running and holding the pipes open.
+        """
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            if process.returncode is not None:
+                return
+            try:
+                os.killpg(os.getpgid(process.pid), sig)
+            except (ProcessLookupError, PermissionError):
+                process.kill()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5.0)
+                return
+            except asyncio.TimeoutError:
+                continue
+
+    def _guard_command(self, command: str) -> str | None:
+        """Reject commands matching a destructive pattern."""
+        lower = command.strip().lower()
 
         for pattern in self.deny_patterns:
             if re.search(pattern, lower):
                 return "Error: Command blocked by safety guard (dangerous pattern detected)"
 
-        if self.allow_patterns:
-            if not any(re.search(p, lower) for p in self.allow_patterns):
-                return "Error: Command blocked by safety guard (not in allowlist)"
-
-        if self.restrict_to_workspace:
-            if "..\\" in cmd or "../" in cmd:
-                return "Error: Command blocked by safety guard (path traversal detected)"
-
-            cwd_path = Path(cwd).resolve()
-
-            win_paths = re.findall(r"[A-Za-z]:\\[^\\\"']+", cmd)
-            # Only match absolute paths — avoid false positives on relative
-            # paths like ".venv/bin/python" where "/bin/python" would be
-            # incorrectly extracted by the old pattern.
-            posix_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", cmd)
-
-            for raw in win_paths + posix_paths:
-                try:
-                    p = Path(raw.strip()).resolve()
-                except Exception:
-                    continue
-                if p.is_absolute() and cwd_path not in p.parents and p != cwd_path:
-                    return "Error: Command blocked by safety guard (path outside working dir)"
+        if self.allow_patterns and not any(re.search(p, lower) for p in self.allow_patterns):
+            return "Error: Command blocked by safety guard (not in allowlist)"
 
         return None
