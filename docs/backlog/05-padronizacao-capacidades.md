@@ -1,6 +1,7 @@
 # 05 — Padronização de Capacidades (tools / skills / templates / integrações)
 
-> **Status:** proposto, não iniciado.
+> **Status:** Fase 1 **executada** (catálogo único de tools, `GET /api/tools/catalog`, frontend
+> sem listas hardcoded, distinção infraestrutura × permissão). Fases 0, 2, 3 e 4 seguem propostas.
 > **Tipo:** refactor de arquitetura (faseado).
 > Documento de referência: estado atual (a bagunça), o modelo-alvo, as regras de
 > padronização por tipo, como adicionar cada coisa depois de padronizado, e o caminho
@@ -134,7 +135,18 @@ Ordenado por risco. **0, 1, 4 são seguros** (sem tocar dados) — ok até pra g
 **2, 3 mexem em dados** — fazer com cópia do banco e migração não-destrutiva.
 
 - **Fase 0 — ADR**: promover este doc a `docs/architecture/capabilities.md` + link no `CLAUDE.md`. Zero código.
-- **Fase 1 — Catálogo de tools único**: `base.py` metadados → `tools/catalog.py` → `GET /api/tools/catalog` → frontend consome; tools forçadas viram "sempre ativa". Sem migração.
+- **Fase 1 — Catálogo de tools único** ✅ **feita**: `agent/tools/catalog.py` é a fonte única
+  (id → metadado de UI → regra de disponibilidade → construtor); `build_tool_registry` deriva dela;
+  `GET /api/tools/catalog` serializa; `lib/tools.ts` e `BUILTIN_TOOLS` deletados e as duas telas
+  consomem o endpoint. Os metadados ficaram no `ToolSpec` em vez de na classe `Tool` — assim as ~20
+  classes de tool não precisaram ser tocadas e continua existindo um lar só.
+  A regra de produto ficou explícita no catálogo: **infraestrutura** (`permission=False`) é sempre
+  registrada quando suas dependências existem e nunca aparece como escolha; **permissão**
+  (`permission=True`) é o que tem consequência fora do sandbox (`exec`, `computer`, `browser`,
+  `screenshot`, `cron`, `message`, `save_mcp_server`) e só entra via `tools_enabled`. Isso eliminou
+  os 7 toggles que o cliente desmarcava e continuavam ligados. Capacidade de fornecedor
+  (`azure_devops_report`) passou a seguir a integração ativa via `integrations=(...)`, em vez de ser
+  um switch morto na lista.
 - **Fase 4 — Gating de MCP unificado**: `_ensure_user_mcp` respeita `mcp_servers_enabled`. Isolado.
 - **Fase 2 — Skills em dois lares**: mover skills de template pra builtin FS; template referencia por nome; parar cópia por usuário; dobrar `_TEMPLATE_RECOMMENDED_SKILLS`; remover `origin`; resolver único + validador de boot; dedup das linhas `origin='solides'`. Migração validada em cópia.
 - **Fase 3 — Templates re-sincronizáveis**: upsert idempotente do seed por hash; aposentar os reconciliadores bespoke. Depende da Fase 2.
