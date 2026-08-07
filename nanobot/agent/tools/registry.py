@@ -45,7 +45,7 @@ class ToolRegistry:
 
     async def execute(self, name: str, params: dict[str, Any]) -> str | list[dict[str, Any]]:
         """Execute a tool by name with given parameters."""
-        _HINT = "\n\n[Analyze the error above and try a different approach.]"
+        hint = "\n\n[Analyze the error above and try a different approach.]"
 
         tool = self._tools.get(name)
         if not tool:
@@ -54,13 +54,13 @@ class ToolRegistry:
         try:
             errors = tool.validate_params(params)
             if errors:
-                return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors) + _HINT
+                return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors) + hint
             result = await tool.execute(**params)
             if isinstance(result, str) and result.startswith("Error"):
-                return result + _HINT
+                return result + hint
             return result
         except Exception as e:
-            return f"Error executing {name}: {str(e)}" + _HINT
+            return f"Error executing {name}: {str(e)}" + hint
 
     async def execute_calls(
         self, calls: list["ToolCallRequest"], *, timeout: float = DEFAULT_TOOL_TIMEOUT_S,

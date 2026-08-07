@@ -25,8 +25,14 @@ import {
   getMcpConfig,
   updateMcpConfig,
   getBuiltinSkills,
+  getToolsCatalog,
 } from "@/lib/api";
-import type { BuiltinSkill, CustomSkill, MCPServerConfig } from "@/lib/api";
+import type {
+  BuiltinSkill,
+  CustomSkill,
+  MCPServerConfig,
+  ToolCatalogEntry,
+} from "@/lib/api";
 import { toast } from "@/lib/toast";
 import { useStore } from "@/lib/store";
 import {
@@ -37,13 +43,9 @@ import {
   Terminal,
   Search,
   Globe,
-  MessageSquare,
   Clock,
   Brain,
-  MousePointer2,
   FolderOpen,
-  BookOpen,
-  Upload,
   AlertTriangle,
   Network,
   FileText,
@@ -53,7 +55,6 @@ import {
   Sparkles,
   Check,
   Code,
-  Monitor,
   ChevronDown,
   Database,
   Save,
@@ -63,34 +64,17 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type ToolDef = {
-  id: string;
-  name: string;
-  desc: string;
-  icon: typeof Globe;
-  warn?: string;
-  category: string;
+const CATEGORY_ICON: Record<string, typeof Globe> = {
+  "Memória & Conhecimento": Brain,
+  Skills: Sparkles,
+  "Relatórios & Páginas": FileText,
+  Integrações: Plug,
+  Web: Globe,
+  "Dados públicos": Search,
+  "Arquivos do agente": FolderOpen,
+  Ambiente: Terminal,
+  Autonomia: Clock,
 };
-
-const TOOLS: ToolDef[] = [
-  { id: "read_file", name: "File Reader", desc: "Ler arquivos do workspace", icon: Code2, category: "Sistema de arquivos" },
-  { id: "write_file", name: "File Writer", desc: "Criar arquivos no workspace", icon: FileText, category: "Sistema de arquivos" },
-  { id: "edit_file", name: "File Editor", desc: "Modificar arquivos existentes", icon: Pencil, category: "Sistema de arquivos" },
-  { id: "list_dir", name: "Directory Listing", desc: "Listar conteúdo de diretórios", icon: FolderOpen, category: "Sistema de arquivos" },
-  { id: "exec", name: "Shell", desc: "Executar comandos no terminal", icon: Terminal, warn: "Permite execução arbitrária de comandos", category: "Sistema & Ambiente" },
-  { id: "computer", name: "Computer", desc: "Controlar aplicações visuais", icon: MousePointer2, category: "Sistema & Ambiente" },
-  { id: "browser", name: "Browser", desc: "Controlar navegador", icon: Monitor, category: "Sistema & Ambiente" },
-  { id: "web_search", name: "Web Search", desc: "Buscar na web via API", icon: Search, category: "Web & Pesquisa" },
-  { id: "web_fetch", name: "Web Reader", desc: "Extrair texto de URLs", icon: Globe, category: "Web & Pesquisa" },
-  { id: "message", name: "Messaging", desc: "Enviar mensagens proativas", icon: MessageSquare, category: "Lógica do agente" },
-  { id: "save_skill", name: "Skill Creator", desc: "Aprender e salvar rotinas", icon: Sparkles, category: "Lógica do agente" },
-  { id: "save_mcp_server", name: "MCP Connector", desc: "Cadastrar APIs MCP para o agente", icon: Plug, category: "Lógica do agente" },
-  { id: "cron", name: "Scheduled Tasks", desc: "Criar e gerenciar tarefas", icon: Clock, category: "Lógica do agente" },
-  { id: "save_memory", name: "Memory Save", desc: "Salvar na memória de longo prazo", icon: Brain, category: "Memória & Contexto" },
-  { id: "search_memory", name: "Memory Search", desc: "Recuperar eventos anteriores", icon: BookOpen, category: "Memória & Contexto" },
-  { id: "rag_search", name: "Knowledge Search", desc: "Buscar na base de documentos", icon: Search, category: "Memória & Contexto" },
-  { id: "rag_ingest", name: "Knowledge Ingest", desc: "Adicionar documentos à base", icon: Upload, category: "Memória & Contexto" },
-];
 
 type ModalState = {
   mode: "view" | "edit" | "create";
@@ -453,6 +437,7 @@ export function CapabilitiesPage() {
 
   const [loading, setLoading] = useState(true);
   const [enabledTools, setEnabledTools] = useState<string[]>([]);
+  const [toolCatalog, setToolCatalog] = useState<ToolCatalogEntry[]>([]);
   const [builtinSkills, setBuiltinSkills] = useState<BuiltinSkill[]>([]);
   const [customSkills, setCustomSkills] = useState<CustomSkill[]>([]);
   const [mcpConfig, setMcpConfig] = useState<Record<string, MCPServerConfig>>({});
@@ -469,13 +454,15 @@ export function CapabilitiesPage() {
     setMcpDirty(false);
     (async () => {
       try {
-        const [skillsRes, builtin, custom, mcp] = await Promise.all([
+        const [skillsRes, builtin, custom, mcp, catalog] = await Promise.all([
           getSkills(),
           getBuiltinSkills(),
           getCustomSkills(),
           getMcpConfig(),
+          getToolsCatalog(),
         ]);
         setEnabledTools(skillsRes.tools_enabled);
+        setToolCatalog(catalog);
         setBuiltinSkills(builtin);
         setCustomSkills(custom);
         const mcpMap: Record<string, MCPServerConfig> = {};
@@ -573,11 +560,14 @@ export function CapabilitiesPage() {
     setMcpDirty(true);
   };
 
-  const groupedTools = TOOLS.reduce<Record<string, ToolDef[]>>((acc, tool) => {
-    acc[tool.category] = acc[tool.category] || [];
-    acc[tool.category].push(tool);
-    return acc;
-  }, {});
+  const groupedTools = toolCatalog.reduce<Record<string, ToolCatalogEntry[]>>(
+    (acc, tool) => {
+      acc[tool.category] = acc[tool.category] || [];
+      acc[tool.category].push(tool);
+      return acc;
+    },
+    {},
+  );
 
   const skillCount = builtinSkills.length + customSkills.length;
   const mcpCount = Object.keys(mcpConfig).length;
@@ -601,7 +591,7 @@ export function CapabilitiesPage() {
       <div className="mb-5">
         <TabBar<Tab>
           items={[
-            { key: "tools", label: "Ferramentas", badge: TOOLS.length },
+            { key: "tools", label: "Ferramentas", badge: toolCatalog.length },
             { key: "skills", label: "Skills", badge: skillCount },
             { key: "mcp", label: "MCP", badge: mcpCount },
           ]}
@@ -655,7 +645,7 @@ export function CapabilitiesPage() {
                     {isOpen && (
                       <div className="border-t border-border p-5 grid grid-cols-1 md:grid-cols-2 gap-3">
                         {toolsInGroup.map((tool) => {
-                          const Icon = tool.icon;
+                          const Icon = CATEGORY_ICON[tool.category] ?? Blocks;
                           const enabled = enabledTools.includes(tool.id);
                           return (
                             <div
@@ -668,7 +658,7 @@ export function CapabilitiesPage() {
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-2">
                                   <span className="text-sm font-bold text-text-primary truncate">
-                                    {tool.name}
+                                    {tool.label}
                                   </span>
                                   {tool.warn && (
                                     <span title={tool.warn}>
@@ -677,13 +667,21 @@ export function CapabilitiesPage() {
                                   )}
                                 </div>
                                 <div className="text-xs text-text-muted mt-0.5 leading-relaxed">
-                                  {tool.desc}
+                                  {tool.warn || (
+                                    <span className="font-mono">{tool.id}</span>
+                                  )}
                                 </div>
                               </div>
-                              <Switch
-                                checked={enabled}
-                                onCheckedChange={() => handleToggleTool(tool.id)}
-                              />
+                              {tool.permission ? (
+                                <Switch
+                                  checked={enabled}
+                                  onCheckedChange={() => handleToggleTool(tool.id)}
+                                />
+                              ) : (
+                                <Badge variant="muted" className="shrink-0">
+                                  Sempre ativa
+                                </Badge>
+                              )}
                             </div>
                           );
                         })}

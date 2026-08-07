@@ -21,20 +21,21 @@ _DEFAULT_LIMITS = {
     "max_memory_entries": 10000,
     "max_skills": 50,
     "max_cron_jobs": 20,
-    "max_exec_timeout_s": 30,
+    "max_exec_timeout_s": 900,
+    "max_job_duration_s": 1800,
     "max_tokens_per_day": 1_000_000,
     "max_requests_per_minute": 30,
-    "sandbox_memory": "256m",
-    "sandbox_cpu": "0.5",
 }
 
 _DEFAULT_TOOLS = [
-    "web_search", "web_fetch", "exec", "read_file",
-    "write_file", "edit_file", "list_dir", "spawn", "cron", "message", "save_skill",
+    "web_search", "web_fetch", "read_file",
+    "write_file", "edit_file", "list_dir", "cron", "message", "save_skill",
     "save_memory", "search_memory", "rag_search", "rag_ingest",
     "http_call",
-    "computer", "browser",
 ]
+"""Tools a new user starts with. Permission tools that reach outside the agent's
+own sandbox — exec, computer, browser, screenshot, save_mcp_server — are granted
+per agent, never by default."""
 
 
 def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:

@@ -1,5 +1,13 @@
 import { create } from "zustand";
-import type { Agent, AgentTemplate, User, Session, Message, WsIncoming } from "./api";
+import type {
+  Agent,
+  AgentTemplate,
+  User,
+  Session,
+  Message,
+  TraceEvent,
+  WsIncoming,
+} from "./api";
 import {
   login as apiLogin,
   register as apiRegister,
@@ -121,6 +129,11 @@ interface AppState {
   disconnectWs: () => void;
   sendMessage: (content: string) => void;
 
+  trace: TraceEvent[];
+  traceEnabled: boolean;
+  setTraceEnabled: (on: boolean) => void;
+  clearTrace: () => void;
+
   toggleSidebar: () => void;
   setActiveView: (view: View) => void;
   setSelectedClientId: (id: string | null) => void;
@@ -172,6 +185,8 @@ export const useStore = create<AppState>((set, get) => ({
   ws: null,
   connected: false,
   sending: false,
+  trace: [],
+  traceEnabled: false,
 
   sidebarOpen: true,
   activeView: "agent-team",
@@ -249,12 +264,15 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const all = await listAgents();
       const isSystem = (a: Agent) =>
-        Boolean((a.metadata as { system?: boolean; template_id?: string } | undefined)?.system) ||
-        (a.metadata as { template_id?: string } | undefined)?.template_id === "skill_author";
+        Boolean((a.metadata as { system?: boolean } | undefined)?.system) ||
+        (a.metadata as { template?: string } | undefined)?.template === "skill_author";
       const systemAgents = all.filter(isSystem);
       const agents = all.filter((a) => !isSystem(a));
       const current = get().activeAgentId;
-      const active = agents.find((agent) => agent.agent_id === current)
+      // A system agent stays active if it is the one selected: reloading the list
+      // (which updateAgent, deleteAgent and login all do) must not pull the user
+      // out of a conversation with the Skill Author.
+      const active = all.find((agent) => agent.agent_id === current)
         ?? agents.find((agent) => agent.is_default)
         ?? agents[0]
         ?? null;
@@ -480,6 +498,11 @@ export const useStore = create<AppState>((set, get) => ({
           });
         }
         get().loadSessions();
+      } else if (data.type === "trace") {
+        const { type: _type, session_key: _key, ...event } = data;
+        // Cap the buffer: a long turn emits hundreds of events, each carrying a
+        // prompt or a tool result, and the panel only ever shows the recent tail.
+        set({ trace: [...get().trace, event as TraceEvent].slice(-400) });
       } else if (data.type === "error") {
         set({
           messages: [
@@ -533,10 +556,12 @@ export const useStore = create<AppState>((set, get) => ({
       content,
     };
 
+    const { traceEnabled } = get();
     set({
       messages: [...messages, userMsg],
       sending: true,
       activeSessionKey: sessionKey,
+      trace: traceEnabled ? [] : get().trace,
     });
 
     ws.send(
@@ -545,8 +570,17 @@ export const useStore = create<AppState>((set, get) => ({
         content,
         session_key: sessionKey,
         agent_id: activeAgentId,
+        trace: traceEnabled,
       })
     );
+  },
+
+  setTraceEnabled(on: boolean) {
+    set({ traceEnabled: on });
+  },
+
+  clearTrace() {
+    set({ trace: [] });
   },
 
   toggleSidebar() {

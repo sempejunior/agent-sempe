@@ -6,12 +6,25 @@ from typing import Literal
 
 @dataclass
 class CronSchedule:
-    """Schedule definition for a cron job."""
-    kind: Literal["at", "every", "cron"]
+    """Schedule definition for a cron job.
+
+    Kinds:
+        at: one shot at ``at_ms``.
+        every: repeat every ``every_ms``, counted from the previous run.
+        interval: repeat every ``every_days`` calendar days at ``at_time``,
+            counted from ``anchor_ms`` so the cadence never drifts. This is what
+            "every 15 days at 9am" needs — cron cannot express it and ``every``
+            has no time of day.
+        cron: a cron expression, for calendar rules (weekdays, day of month).
+    """
+    kind: Literal["at", "every", "interval", "cron"]
     at_ms: int | None = None
     every_ms: int | None = None
     expr: str | None = None
     tz: str | None = None
+    every_days: int | None = None
+    at_time: str | None = None
+    anchor_ms: int | None = None
 
 
 @dataclass

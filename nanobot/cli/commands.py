@@ -278,7 +278,6 @@ def gateway(
     from nanobot.channels.manager import ChannelManager
     from nanobot.config.loader import get_data_dir, load_config
     from nanobot.cron.service import CronService
-    from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
     from nanobot.session.manager import SessionManager
     from nanobot.web.server import create_app
@@ -346,39 +345,10 @@ def gateway(
             repos=repos,
         )
 
-        async def on_cron_job(job: CronJob) -> str | None:
-            """Execute a cron job through the agent.
+        from nanobot.cron.runner import build_cron_callback, build_job_timeout
 
-            Multiuser jobs (job.user_id set) run with the owner's user/agent
-            context, mirroring the web-server wiring; legacy filesystem jobs
-            keep the CLI routing.
-            """
-            if job.user_id:
-                channel = job.payload.channel or "system"
-                to = job.payload.to or f"web:{job.user_id}"
-                return await agent.process_direct(
-                    job.payload.message,
-                    session_key=f"cron:{job.id}",
-                    channel="system",
-                    chat_id=f"{channel}:{to}",
-                    user_id=job.user_id,
-                    agent_id=job.agent_id or None,
-                )
-            response = await agent.process_direct(
-                job.payload.message,
-                session_key=f"cron:{job.id}",
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to or "direct",
-            )
-            if job.payload.deliver and job.payload.to:
-                from nanobot.bus.events import OutboundMessage
-                await bus.publish_outbound(OutboundMessage(
-                    channel=job.payload.channel or "cli",
-                    chat_id=job.payload.to,
-                    content=response or ""
-                ))
-            return response
-        cron.on_job = on_cron_job
+        cron.on_job = build_cron_callback(agent=agent, bus=bus, repos=repos)
+        cron.job_timeout = build_job_timeout(repos)
 
         channels = ChannelManager(config, bus, data_dir=data_dir, db=db_conn, repos=repos)
 

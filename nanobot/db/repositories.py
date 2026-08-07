@@ -265,3 +265,45 @@ class AuditRepository(Protocol):
     async def cleanup(self, days: int = 90) -> int:
         """Delete entries older than *days*. Returns count deleted."""
         ...
+
+
+@runtime_checkable
+class WorkItemRepository(Protocol):
+    """Which demands an autonomous routine already worked, and what came out.
+
+    The record a sweeping routine needs to not re-open a pull request for the
+    same demand tomorrow, and the only durable answer to "what did the agent do
+    this week" — the conversation session is shared, windowed and lost on timeout.
+    """
+
+    async def claim(
+        self, user_id: str, *, source: str, external_id: str, agent_id: str = "",
+        title: str = "", stale_after_s: int = 3600,
+    ) -> dict[str, Any]:
+        """Try to take ownership of one demand.
+
+        Returns the row plus a ``claimed`` flag: False means someone already has
+        it or already finished it. A claim older than *stale_after_s* that never
+        completed is taken over — that is how a run killed by its timeout frees
+        its work.
+        """
+        ...
+
+    async def complete(
+        self, user_id: str, *, source: str, external_id: str, pr_url: str,
+        branch: str = "", note: str = "",
+    ) -> bool:
+        """Mark the demand done. ``pr_url`` is required: no PR, not done."""
+        ...
+
+    async def fail(
+        self, user_id: str, *, source: str, external_id: str, note: str,
+    ) -> bool: ...
+
+    async def get(
+        self, user_id: str, *, source: str, external_id: str,
+    ) -> dict[str, Any] | None: ...
+
+    async def list_items(
+        self, user_id: str, *, state: str | None = None, limit: int = 50,
+    ) -> list[dict[str, Any]]: ...

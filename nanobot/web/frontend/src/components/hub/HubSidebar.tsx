@@ -53,7 +53,7 @@ function useSections(): SidebarSection[] {
         { key: "agent-store", label: "Agent Store", icon: Store },
         { key: "agent-studio", label: "Criar Agente", icon: Sparkles },
         { key: "skills-catalog", label: "Minhas Skills", icon: Wrench },
-        { key: "alerts", label: "Alertas Agênticos", icon: Bell, badgeTone: "orange" },
+        { key: "alerts", label: "Rotinas", icon: Bell, badgeTone: "orange" },
       ],
     },
     {

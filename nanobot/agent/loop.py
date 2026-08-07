@@ -6,12 +6,14 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Iterable
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
+from nanobot.agent import trace
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
@@ -43,8 +45,9 @@ _COMPLETION_NUDGE = (
 )
 
 _FINAL_ANSWER_PROMPT = (
-    "Agora escreva a resposta final ao usuário: o que foi entregue, os números-chave "
-    "e os links markdown de TODAS as páginas publicadas. Não mencione COMPLETO nem "
+    "Agora escreva a resposta final ao usuário: o que foi entregue e os números-chave. "
+    "Se você publicou páginas neste turno, inclua o link markdown de TODAS elas; se não "
+    "publicou nenhuma, não mencione páginas nem links. Não mencione COMPLETO nem "
     "esta verificação."
 )
 
@@ -165,7 +168,7 @@ class AgentLoop:
         self.tools.register(ExecTool(
             working_dir=str(self.workspace),
             timeout=self.exec_config.timeout,
-            restrict_to_workspace=self.restrict_to_workspace,
+            allowed_root=self.workspace if self.restrict_to_workspace else None,
         ))
         self.tools.register(WebSearchTool(api_key=self.brave_api_key))
         self.tools.register(WebFetchTool())
@@ -213,8 +216,10 @@ class AgentLoop:
         finally:
             self._mcp_connecting = False
 
-    async def _ensure_user_mcp(self, user_id: str, agent_id: str) -> dict[str, Any]:
-        """Connect the user's enabled catalog MCP servers and return their tools.
+    async def _ensure_user_mcp(
+        self, user_id: str, agent_id: str,
+    ) -> tuple[dict[str, Any], tuple[str, ...]]:
+        """Connect the user's enabled catalog MCP servers; return tools and server names.
 
         Servers are launched from the user's saved integration credentials and
         kept on a persistent exit stack for the process lifetime. A config
@@ -230,10 +235,10 @@ class AgentLoop:
         cache_key = f"{user_id}:{agent_id}"
         cached = self._user_mcp_cache.get(cache_key)
         if cached and cached[0] == signature:
-            return cached[1]
+            return cached[1], cached[2]
         if not servers:
-            self._user_mcp_cache[cache_key] = (signature, {})
-            return {}
+            self._user_mcp_cache[cache_key] = (signature, {}, ())
+            return {}, ()
 
         from nanobot.agent.tools.mcp import connect_mcp_servers
         if self._dyn_mcp_stack is None:
@@ -242,8 +247,22 @@ class AgentLoop:
         temp = ToolRegistry()
         await connect_mcp_servers(servers, temp, self._dyn_mcp_stack)
         tools = dict(temp._tools)
-        self._user_mcp_cache[cache_key] = (signature, tools)
-        return tools
+        names = tuple(servers)
+        self._user_mcp_cache[cache_key] = (signature, tools, names)
+        return tools, names
+
+    @staticmethod
+    def _mcp_server_of(tool_name: str, server_names: Iterable[str]) -> str:
+        """Which MCP server a ``mcp_<server>_<tool>`` name came from.
+
+        Longest name first: a server called ``azure`` must not claim a tool from
+        ``azure_devops``.
+        """
+        remainder = tool_name[len("mcp_"):]
+        for server in sorted(server_names, key=len, reverse=True):
+            if remainder.startswith(f"{server}_"):
+                return server
+        return remainder.split("_", 1)[0]
 
     def _set_tool_context(
         self, channel: str, chat_id: str, message_id: str | None = None,
@@ -323,30 +342,34 @@ class AgentLoop:
             public_url=self.public_url,
         )
 
+        agent_doc = await self._repos.agents.get_agent(user_id, uctx.agent_id)
+        mcp_enabled_raw = (agent_doc or {}).get("agent_config", {}).get("mcp_servers_enabled")
+        mcp_filter: set[str] | None = (
+            set(mcp_enabled_raw) if isinstance(mcp_enabled_raw, list) else None
+        )
+        """None means the agent was never configured for MCP and gets every server;
+        a list — including an empty one — is the client's explicit choice."""
+
+        def _allowed(tool_name: str, server_names: Iterable[str]) -> bool:
+            if mcp_filter is None:
+                return True
+            return self._mcp_server_of(tool_name, server_names) in mcp_filter
+
         if self._mcp_connected:
-            agent_doc = await self._repos.agents.get_agent(user_id, uctx.agent_id)
-            mcp_enabled_raw = (agent_doc or {}).get("agent_config", {}).get("mcp_servers_enabled")
-            mcp_filter: set[str] | None = (
-                set(mcp_enabled_raw) if isinstance(mcp_enabled_raw, list) else None
-            )
-            server_names = sorted(self._mcp_servers.keys(), key=len, reverse=True)
             for name, tool in self.tools._tools.items():
                 if not name.startswith("mcp_") or uctx.tools.has(name):
                     continue
-                if mcp_filter is not None:
-                    remainder = name[len("mcp_"):]
-                    server_name = next(
-                        (s for s in server_names if remainder.startswith(f"{s}_")),
-                        remainder.split("_", 1)[0],
-                    )
-                    if server_name not in mcp_filter:
-                        continue
-                uctx.tools.register(tool)
+                if _allowed(name, self._mcp_servers.keys()):
+                    uctx.tools.register(tool)
 
         try:
-            user_mcp_tools = await self._ensure_user_mcp(user_id, uctx.agent_id)
+            user_mcp_tools, user_mcp_servers = await self._ensure_user_mcp(
+                user_id, uctx.agent_id,
+            )
             for name, tool in user_mcp_tools.items():
-                if not uctx.tools.has(name):
+                if uctx.tools.has(name):
+                    continue
+                if _allowed(name, user_mcp_servers):
                     uctx.tools.register(tool)
         except Exception as e:
             logger.error("Failed to connect user MCP servers for {}: {}", user_id, e)
@@ -383,6 +406,20 @@ class AgentLoop:
         messages = initial_messages
         iteration = 0
         final_content = None
+        await trace.emit(
+            "turn",
+            model=_model,
+            tools=[d["function"]["name"] for d in _tools.get_definitions()],
+            max_iterations=_max_iter,
+            system_prompt=trace.clip(next(
+                (m.get("content", "") for m in messages if m.get("role") == "system"), "",
+            )),
+            user_message=trace.clip(next(
+                (m.get("content", "") for m in reversed(messages)
+                 if m.get("role") == "user"), "",
+            ), 4_000),
+            history_messages=len(messages),
+        )
         tools_used: list[str] = []
         nudged = False
         post_nudge_tools = False
@@ -404,6 +441,16 @@ class AgentLoop:
                 logger.error("LLM provider failed (code={}, retryable={}): {}", e.code, e.retryable, e)
                 final_content = _PROVIDER_ERROR_MESSAGE
                 break
+
+            await trace.emit(
+                "llm",
+                iteration=iteration,
+                model=_model,
+                content=trace.clip(response.content or "", 4_000),
+                reasoning=trace.clip(response.reasoning_content or "", 6_000),
+                usage=response.usage,
+                tool_calls=[tc.name for tc in (response.tool_calls or ())],
+            )
 
             if usage_totals is not None:
                 usage_totals["prompt_tokens"] = (
@@ -440,8 +487,12 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
+                    await trace.emit("tool_call", iteration=iteration,
+                                     tool=tool_call.name, arguments=trace.clip(args_str))
                 results = await _tools.execute_calls(response.tool_calls)
                 for tool_call, result in zip(response.tool_calls, results):
+                    await trace.emit("tool_result", iteration=iteration,
+                                     tool=tool_call.name, result=trace.clip(result))
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -480,6 +531,7 @@ class AgentLoop:
 
         if final_content is None and iteration >= _max_iter:
             logger.warning("Max iterations ({}) reached", _max_iter)
+            await trace.emit("limit", iterations=iteration, tools_used=tools_used)
             final_content = (
                 f"I reached the maximum number of tool call iterations ({_max_iter}) "
                 "without completing the task. You can try breaking the task into smaller steps."

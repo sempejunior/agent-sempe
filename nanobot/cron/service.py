@@ -6,7 +6,8 @@ import asyncio
 import json
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
+from datetime import time as clock_time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Coroutine
 
@@ -22,6 +23,44 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _schedule_tz(schedule: CronSchedule):
+    """Resolve the schedule timezone, falling back to the host's."""
+    if schedule.tz:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(schedule.tz)
+    return datetime.now().astimezone().tzinfo
+
+
+def _interval_runs(schedule: CronSchedule, now_ms: int, count: int) -> list[int]:
+    """Occurrences of an anchored day interval, strictly after ``now_ms``.
+
+    The cadence is measured in calendar days from the anchor and the time of day
+    is rebuilt in local time on every occurrence, so neither a late run nor a
+    daylight saving change shifts the clock time.
+    """
+    if not schedule.every_days or schedule.every_days <= 0 or count <= 0:
+        return []
+    tz = _schedule_tz(schedule)
+    anchor = datetime.fromtimestamp((schedule.anchor_ms or now_ms) / 1000, tz)
+    hour, minute = anchor.hour, anchor.minute
+    if schedule.at_time:
+        head, _, tail = schedule.at_time.partition(":")
+        hour, minute = int(head), int(tail or 0)
+    now = datetime.fromtimestamp(now_ms / 1000, tz)
+
+    elapsed = (now.date() - anchor.date()).days
+    step = schedule.every_days
+    index = max(0, elapsed // step)
+    out: list[int] = []
+    while len(out) < count:
+        day = anchor.date() + timedelta(days=index * step)
+        when = datetime.combine(day, clock_time(hour, minute), tzinfo=tz)
+        if when > now:
+            out.append(int(when.timestamp() * 1000))
+        index += 1
+    return out
+
+
 def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
     """Compute next run time in ms."""
     if schedule.kind == "at":
@@ -31,6 +70,10 @@ def _compute_next_run(schedule: CronSchedule, now_ms: int) -> int | None:
         if not schedule.every_ms or schedule.every_ms <= 0:
             return None
         return now_ms + schedule.every_ms
+
+    if schedule.kind == "interval":
+        runs = _interval_runs(schedule, now_ms, 1)
+        return runs[0] if runs else None
 
     if schedule.kind == "cron" and schedule.expr:
         try:
@@ -63,6 +106,9 @@ def compute_next_runs(schedule: CronSchedule, count: int = 3, now_ms: int | None
             return []
         return [base + schedule.every_ms * (i + 1) for i in range(count)]
 
+    if schedule.kind == "interval":
+        return _interval_runs(schedule, base, count)
+
     if schedule.kind == "cron" and schedule.expr:
         try:
             from zoneinfo import ZoneInfo
@@ -84,16 +130,28 @@ def compute_next_runs(schedule: CronSchedule, count: int = 3, now_ms: int | None
 
 def _validate_schedule_for_add(schedule: CronSchedule) -> None:
     """Validate schedule fields that would otherwise create non-runnable jobs."""
-    if schedule.tz and schedule.kind != "cron":
-        raise ValueError("tz can only be used with cron schedules")
+    if schedule.tz and schedule.kind not in ("cron", "interval"):
+        raise ValueError("tz can only be used with cron or interval schedules")
 
-    if schedule.kind == "cron" and schedule.tz:
+    if schedule.tz:
         try:
             from zoneinfo import ZoneInfo
 
             ZoneInfo(schedule.tz)
         except Exception:
             raise ValueError(f"unknown timezone '{schedule.tz}'") from None
+
+    if schedule.kind == "interval":
+        if not schedule.every_days or schedule.every_days <= 0:
+            raise ValueError("interval schedules need every_days >= 1")
+        if schedule.at_time:
+            head, _, tail = schedule.at_time.partition(":")
+            try:
+                clock_time(int(head), int(tail or 0))
+            except ValueError:
+                raise ValueError(
+                    f"invalid at_time '{schedule.at_time}', expected HH:MM"
+                ) from None
 
 
 def _job_to_dict(job: CronJob) -> dict[str, Any]:
@@ -110,6 +168,9 @@ def _job_to_dict(job: CronJob) -> dict[str, Any]:
             "every_ms": job.schedule.every_ms,
             "expr": job.schedule.expr,
             "tz": job.schedule.tz,
+            "every_days": job.schedule.every_days,
+            "at_time": job.schedule.at_time,
+            "anchor_ms": job.schedule.anchor_ms,
         },
         "payload": {
             "kind": job.payload.kind,
@@ -141,6 +202,9 @@ def _dict_to_job(d: dict[str, Any]) -> CronJob:
             at_ms=sched.get("at_ms") or sched.get("atMs"),
             every_ms=sched.get("every_ms") or sched.get("everyMs"),
             expr=sched.get("expr"),
+            every_days=sched.get("every_days") or sched.get("everyDays"),
+            at_time=sched.get("at_time") or sched.get("atTime"),
+            anchor_ms=sched.get("anchor_ms") or sched.get("anchorMs"),
             tz=sched.get("tz"),
         ),
         payload=CronPayload(
@@ -177,14 +241,19 @@ class CronService:
         on_job: Callable[[CronJob], Coroutine[Any, Any, str | None]] | None = None,
         *,
         cron_repo: SQLiteCronRepository | None = None,
+        max_concurrent_jobs: int = 2,
+        job_timeout: Callable[[CronJob], Coroutine[Any, Any, int | None]] | None = None,
     ):
         self.store_path = store_path
         self.on_job = on_job
+        self.job_timeout = job_timeout
         self._cron_repo = cron_repo
         self._mode = "db" if cron_repo else "fs"
         self._store: CronStore | None = None
         self._timer_task: asyncio.Task | None = None
         self._running = False
+        self._slots = asyncio.Semaphore(max(1, max_concurrent_jobs))
+        self._inflight: dict[str, asyncio.Task] = {}
 
     def _load_store(self) -> CronStore:
         """Load jobs from disk (FS mode only)."""
@@ -205,6 +274,9 @@ class CronService:
                             at_ms=j["schedule"].get("atMs"),
                             every_ms=j["schedule"].get("everyMs"),
                             expr=j["schedule"].get("expr"),
+                            every_days=j["schedule"].get("everyDays"),
+                            at_time=j["schedule"].get("atTime"),
+                            anchor_ms=j["schedule"].get("anchorMs"),
                             tz=j["schedule"].get("tz"),
                         ),
                         payload=CronPayload(
@@ -252,6 +324,9 @@ class CronService:
                         "atMs": j.schedule.at_ms,
                         "everyMs": j.schedule.every_ms,
                         "expr": j.schedule.expr,
+                        "everyDays": j.schedule.every_days,
+                        "atTime": j.schedule.at_time,
+                        "anchorMs": j.schedule.anchor_ms,
                         "tz": j.schedule.tz,
                     },
                     "payload": {
@@ -289,11 +364,14 @@ class CronService:
         logger.info("Cron service started ({} mode, {} jobs)", self._mode, count)
 
     def stop(self) -> None:
-        """Stop the cron service."""
+        """Stop the cron service, cancelling jobs still in flight."""
         self._running = False
         if self._timer_task:
             self._timer_task.cancel()
             self._timer_task = None
+        for task in list(self._inflight.values()):
+            task.cancel()
+        self._inflight.clear()
 
     def _recompute_next_runs(self) -> None:
         """Recompute next run times for all enabled jobs (FS mode)."""
@@ -357,23 +435,82 @@ class CronService:
             ]
 
         for job in due_jobs:
-            await self._execute_job(job)
+            await self._dispatch(job)
 
         if self._mode == "fs":
             self._save_store()
         self._arm_timer()
 
-    async def _execute_job(self, job: CronJob) -> None:
-        """Execute a single job."""
+    async def _dispatch(self, job: CronJob) -> None:
+        """Reserve the job's next slot, then run it in the background.
+
+        The reservation has to happen **before** the task starts: the timer picks
+        due jobs by ``next_run_at_ms``, so a job dispatched without moving that
+        forward stays due and the timer re-fires it in a tight loop. Reserving
+        first also means a crash mid-run leaves the schedule intact instead of
+        replaying the job on the next boot.
+        """
+        if job.id in self._inflight:
+            logger.warning("Cron: job '{}' still running, skipping this tick", job.name)
+            return
+        await self._reserve(job)
+        task = asyncio.create_task(self._run_reserved(job))
+        self._inflight[job.id] = task
+        task.add_done_callback(lambda _: self._inflight.pop(job.id, None))
+
+    async def _reserve(self, job: CronJob) -> None:
+        """Move the job's next run forward so the timer stops considering it due.
+
+        The write is awaited on purpose: a reservation that is not durable before
+        the job starts would replay the job if the process died mid-run, which is
+        the very thing reserving is meant to prevent.
+        """
+        if job.schedule.kind == "at":
+            job.state.next_run_at_ms = None
+        else:
+            job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
+        job.state.last_status = "running"
+        if self._mode == "db":
+            await self._persist_state(job)
+
+    async def _run_reserved(self, job: CronJob) -> None:
+        """Run a reserved job under the concurrency limit and its own timeout."""
+        async with self._slots:
+            if not self._running:
+                return
+            await self._execute_job(job, reserved=True)
+
+    async def _persist_state(self, job: CronJob) -> None:
+        """Write the job's runtime state."""
+        await self._cron_repo.update_job_state(job.id, {
+            "next_run_at_ms": job.state.next_run_at_ms,
+            "last_run_at_ms": job.state.last_run_at_ms,
+            "last_status": job.state.last_status,
+            "last_error": job.state.last_error,
+            "enabled": 1 if job.enabled else 0,
+        }, user_id=job.user_id or None)
+
+    async def _execute_job(self, job: CronJob, *, reserved: bool = False) -> None:
+        """Execute a single job.
+
+        ``reserved`` means the next run was already computed and persisted before
+        the job started, so it must not be recomputed from the end time — that is
+        what would let a slow run push the whole cadence forward.
+        """
         start_ms = _now_ms()
         logger.info("Cron: executing job '{}' ({}) for user '{}'", job.name, job.id, job.user_id or "default")
 
+        timeout = await self.job_timeout(job) if self.job_timeout else None
         try:
             if self.on_job:
-                await self.on_job(job)
+                await asyncio.wait_for(self.on_job(job), timeout=timeout)
             job.state.last_status = "ok"
             job.state.last_error = None
             logger.info("Cron: job '{}' completed", job.name)
+        except asyncio.TimeoutError:
+            job.state.last_status = "error"
+            job.state.last_error = f"passou de {timeout}s e foi interrompido"
+            logger.error("Cron: job '{}' timed out after {}s", job.name, timeout)
         except Exception as e:
             job.state.last_status = "error"
             job.state.last_error = str(e)
@@ -392,7 +529,7 @@ class CronService:
             else:
                 job.enabled = False
                 job.state.next_run_at_ms = None
-        else:
+        elif not reserved:
             job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
 
         if self._mode == "db":

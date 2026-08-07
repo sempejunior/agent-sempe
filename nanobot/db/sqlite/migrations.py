@@ -6,7 +6,7 @@ inside a transaction so the database is always in a consistent state.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -602,6 +602,37 @@ CREATE INDEX IF NOT EXISTS idx_template_knowledge_tpl ON agent_template_knowledg
 -- idempotent across divergent DBs.
 SELECT 1;
 """),
+
+    (11, """
+-- ===================== v11: work item ledger =====================
+-- What an autonomous routine already did, per demand. Without it a routine that
+-- sweeps a board every day re-works the same items and opens duplicate PRs: the
+-- conversation session is not a usable record (it is shared between routines,
+-- windowed, truncated, and lost entirely when a run hits its timeout).
+-- The UNIQUE index is the whole mechanism: claiming is an INSERT that either
+-- wins or tells you someone already has it.
+
+CREATE TABLE IF NOT EXISTS work_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    agent_id    TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    state       TEXT NOT NULL DEFAULT 'claimed',
+    branch      TEXT NOT NULL DEFAULT '',
+    pr_url      TEXT NOT NULL DEFAULT '',
+    note        TEXT NOT NULL DEFAULT '',
+    attempts    INTEGER NOT NULL DEFAULT 1,
+    claimed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_key
+    ON work_items(user_id, source, external_id);
+CREATE INDEX IF NOT EXISTS idx_work_items_state
+    ON work_items(user_id, state, updated_at DESC);
+"""),
 ]
 
 async def _safe_add_column(db: "aiosqlite.Connection", table: str, column: str, definition: str) -> None:
@@ -754,9 +785,61 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
     await _backfill_template_guardrails(db)
     await _backfill_missing_templates(db)
     await _refresh_skill_author_prompt(db)
+    await _sync_skill_author_agents(db)
     await _consolidate_pdi_templates(db)
     await _refresh_pdi_prompt(db)
     await _enable_analise_desempenho_skill(db)
+    await _backfill_user_limits(db)
+
+
+async def _backfill_user_limits(db: "aiosqlite.Connection") -> None:
+    """Bring already-created users up to the current limit defaults.
+
+    ``_DEFAULT_LIMITS`` only applies when a user row is created, so existing
+    users keep whatever JSON was written back then — including a 30s exec ceiling
+    that kills a clone, an install or a test suite, and the dead
+    ``sandbox_memory``/``sandbox_cpu`` keys that never controlled anything.
+
+    A limit the user raised above the default is left alone; this only lifts
+    values that are still at or below an outdated default.
+    """
+    import json
+
+    from nanobot.db.sqlite.user_repo import _DEFAULT_LIMITS
+
+    outdated_ceilings = {"max_exec_timeout_s": 30}
+    dead_keys = ("sandbox_memory", "sandbox_cpu")
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+    )
+    if not await cursor.fetchone():
+        return
+
+    cursor = await db.execute("SELECT user_id, limits FROM users")
+    for user_id, raw in await cursor.fetchall():
+        try:
+            limits = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            limits = {}
+        if not isinstance(limits, dict):
+            limits = {}
+
+        updated = dict(limits)
+        for key in dead_keys:
+            updated.pop(key, None)
+        for key, default in _DEFAULT_LIMITS.items():
+            if key not in updated:
+                updated[key] = default
+            elif key in outdated_ceilings and updated[key] <= outdated_ceilings[key]:
+                updated[key] = default
+
+        if updated != limits:
+            await db.execute(
+                "UPDATE users SET limits = ? WHERE user_id = ?",
+                (json.dumps(updated), user_id),
+            )
+    await db.commit()
 
 
 async def _consolidate_pdi_templates(db: "aiosqlite.Connection") -> None:
@@ -1114,6 +1197,93 @@ async def _refresh_pdi_prompt(db: "aiosqlite.Connection") -> None:
                 "UPDATE agents SET bootstrap = ? WHERE agent_id = ?",
                 (json.dumps(bootstrap, ensure_ascii=False), agent_id),
             )
+
+    await db.commit()
+
+
+_SKILL_AUTHOR_ANCHOR = "Você é o Criador de Skills do Agent Hub"
+
+
+def _compose_skill_author_prompt(tpl: dict[str, Any]) -> str:
+    """The same composition the create-agent endpoint applies to a template."""
+    sections = [tpl["system_prompt"]]
+    if tpl.get("guardrails"):
+        sections.append(f"## Guardrails\n{tpl['guardrails']}")
+    return "\n\n".join(sections)
+
+
+async def _sync_skill_author_agents(db: "aiosqlite.Connection") -> None:
+    """Keep the platform-owned skill_author agents tracking the seed template.
+
+    Unlike the agents a client creates, this one is instantiated by a button in
+    the Skills catalog and is hidden from the agent list — nobody edits it, so
+    the seed is its source of truth. Two things drifted: the frontend built the
+    bootstrap by hand and dropped the guardrails section, and it wrote
+    ``metadata.template_id`` while the backend reads ``metadata.template``,
+    leaving two keys for one concept.
+
+    Only agents whose ``AGENTS.md`` still carries the anchor of a prompt we
+    shipped are rewritten. Idempotent: a second run finds the composed prompt
+    already in place and writes nothing.
+    """
+    import json
+
+    from nanobot.db.sqlite.seed.agent_templates_solides import SOLIDES_TEMPLATES
+
+    tpl = next((t for t in SOLIDES_TEMPLATES if t["id"] == "skill_author"), None)
+    if not tpl or not tpl.get("system_prompt"):
+        return
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_templates'"
+    )
+    if await cursor.fetchone():
+        await db.execute(
+            "UPDATE agent_templates SET system_prompt = ?, guardrails = ? "
+            "WHERE id = 'skill_author' AND system_prompt LIKE ? AND system_prompt != ?",
+            (tpl["system_prompt"], tpl.get("guardrails", ""),
+             f"%{_SKILL_AUTHOR_ANCHOR}%", tpl["system_prompt"]),
+        )
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'"
+    )
+    if not await cursor.fetchone():
+        await db.commit()
+        return
+
+    target = _compose_skill_author_prompt(tpl)
+    cursor = await db.execute(
+        "SELECT agent_id, bootstrap, metadata FROM agents WHERE metadata LIKE ?",
+        ("%skill_author%",),
+    )
+    for agent_id, bootstrap_raw, metadata_raw in await cursor.fetchall():
+        try:
+            bootstrap = json.loads(bootstrap_raw) if bootstrap_raw else {}
+            metadata = json.loads(metadata_raw) if metadata_raw else {}
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(bootstrap, dict) or not isinstance(metadata, dict):
+            continue
+        if "skill_author" not in (metadata.get("template"), metadata.get("template_id")):
+            continue
+
+        updates: dict[str, str] = {}
+        if _SKILL_AUTHOR_ANCHOR in bootstrap.get("AGENTS.md", "") \
+                and bootstrap["AGENTS.md"] != target:
+            bootstrap["AGENTS.md"] = target
+            updates["bootstrap"] = json.dumps(bootstrap, ensure_ascii=False)
+        if metadata.pop("template_id", None) or metadata.get("template") != "skill_author":
+            metadata["template"] = "skill_author"
+            updates["metadata"] = json.dumps(metadata, ensure_ascii=False)
+        if not updates:
+            continue
+
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        await db.execute(
+            f"UPDATE agents SET {assignments} WHERE agent_id = ?",
+            (*updates.values(), agent_id),
+        )
 
     await db.commit()
 

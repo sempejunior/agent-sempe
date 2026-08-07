@@ -82,7 +82,7 @@ def _effective_agent_config(user_config: dict[str, Any], agent_config: dict[str,
     merged = {**user_config, **agent_config}
     global_keys = {
         "provider", "model", "max_tokens", "temperature",
-        "max_tool_iterations", "memory_window", "language",
+        "memory_window", "language",
         "custom_instructions",
         "mcp_servers",
     }
@@ -206,16 +206,20 @@ async def build_user_context(
         bus=bus,
         brave_api_key=brave_api_key,
         exec_timeout=limits.get("max_exec_timeout_s", 30),
+        job_timeout=limits.get("max_job_duration_s", 1800),
         restrict_to_workspace=True,
         cron_service=cron_service,
         user_id=user_id,
+        agent_id=agent_id,
         skill_repo=repos.skills,
         user_repo=repos.users,
         memory_store=memory,
         retriever_store=retriever,
         integration_repo=repos.integrations,
         credential_repo=repos.credentials,
+        work_item_repo=repos.work_items,
         public_url=public_url,
+        active_integrations=active_integrations,
     )
 
     return UserContext(
@@ -243,140 +247,62 @@ def build_tool_registry(
     *,
     brave_api_key: str | None = None,
     exec_timeout: int = 30,
+    job_timeout: int = 1800,
     restrict_to_workspace: bool = True,
     cron_service: CronService | None = None,
     user_id: str | None = None,
+    agent_id: str | None = None,
     skill_repo: Any | None = None,
     user_repo: Any | None = None,
     memory_store: Any | None = None,
     retriever_store: Any | None = None,
     integration_repo: Any | None = None,
     credential_repo: Any | None = None,
+    work_item_repo: Any | None = None,
     public_url: str | None = None,
+    active_integrations: set[str] | None = None,
 ) -> ToolRegistry:
-    """Build a ToolRegistry with only the enabled tools."""
-    from nanobot.agent.tools.cct import CctSearchTool
-    from nanobot.agent.tools.cnpj import CnpjLookupTool
-    from nanobot.agent.tools.cron import CronTool
-    from nanobot.agent.tools.filesystem import (
-        EditFileTool,
-        ListDirTool,
-        ReadFileTool,
-        WriteFileTool,
+    """Build a ToolRegistry from the tool catalog.
+
+    Infrastructure tools are always registered when their dependencies exist;
+    tools declared as ``permission`` are registered only when the agent granted
+    them in ``tools_enabled``. Availability comes from the catalog, so a tool the
+    client cannot have never shows up as an option that silently does nothing.
+    """
+    from nanobot.agent.tools.catalog import CATALOG, ToolContext
+
+    ctx = ToolContext(
+        workspace=workspace,
+        bus=bus,
+        brave_api_key=brave_api_key,
+        exec_timeout=exec_timeout,
+        job_timeout=job_timeout,
+        restrict_to_workspace=restrict_to_workspace,
+        cron_service=cron_service,
+        user_id=user_id,
+        agent_id=agent_id,
+        skill_repo=skill_repo,
+        user_repo=user_repo,
+        memory_store=memory_store,
+        retriever_store=retriever_store,
+        integration_repo=integration_repo,
+        credential_repo=credential_repo,
+        work_item_repo=work_item_repo,
+        public_url=public_url,
+        active_integrations=set(active_integrations or ()),
+        display=bool(os.environ.get("DISPLAY")),
     )
-    from nanobot.agent.tools.message import MessageTool
-    from nanobot.agent.tools.report_page import PublishPageTool, PublishReportTool
-    from nanobot.agent.tools.shell import ExecTool
-    from nanobot.agent.tools.skill import ReadSkillTool, SaveSkillTool
-    from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 
+    granted = set(tools_enabled or ())
     registry = ToolRegistry()
-    allowed_dir = workspace if restrict_to_workspace else None
-
-    factories: dict[str, Any] = {
-        "read_file": lambda: ReadFileTool(workspace=workspace, allowed_dir=allowed_dir),
-        "write_file": lambda: WriteFileTool(workspace=workspace, allowed_dir=allowed_dir),
-        "edit_file": lambda: EditFileTool(workspace=workspace, allowed_dir=allowed_dir),
-        "list_dir": lambda: ListDirTool(workspace=workspace, allowed_dir=allowed_dir),
-        "exec": lambda: ExecTool(
-            working_dir=str(workspace),
-            timeout=exec_timeout,
-            restrict_to_workspace=restrict_to_workspace,
-        ),
-        "web_search": lambda: WebSearchTool(api_key=brave_api_key),
-        "web_fetch": lambda: WebFetchTool(),
-        "cnpj_lookup": lambda: CnpjLookupTool(),
-        "cct_search": lambda: CctSearchTool(),
-        "message": lambda: MessageTool(send_callback=bus.publish_outbound),
-        "save_skill": lambda: SaveSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace),
-        "read_skill": lambda: ReadSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace, builtin_dir=BUILTIN_SKILLS_DIR),
-        "publish_page": lambda: PublishPageTool(workspace=workspace, public_url=public_url),
-        "publish_report": lambda: PublishReportTool(workspace=workspace, public_url=public_url),
-    }
-
-    if user_repo:
-        from nanobot.agent.tools.mcp_config import SaveMCPServerTool
-        factories["save_mcp_server"] = lambda: SaveMCPServerTool(
-            user_id=user_id,
-            user_repo=user_repo,
-        )
-
-    if integration_repo and credential_repo and user_id:
-        from nanobot.agent.tools.azure_report import AzureReportTool
-        from nanobot.agent.tools.http_call import HttpCallTool
-        factories["http_call"] = lambda: HttpCallTool(
-            user_id=user_id,
-            integration_repo=integration_repo,
-            credential_repo=credential_repo,
-        )
-        factories["azure_devops_report"] = lambda: AzureReportTool(
-            user_id=user_id,
-            integration_repo=integration_repo,
-            credential_repo=credential_repo,
-            workspace=workspace,
-            public_url=public_url,
-        )
-
-    if memory_store:
-        from nanobot.agent.tools.memory import SaveMemoryTool, SearchMemoryTool
-        factories["save_memory"] = lambda: SaveMemoryTool(memory_store)
-        factories["search_memory"] = lambda: SearchMemoryTool(memory_store)
-
-    if retriever_store:
-        from nanobot.agent.tools.rag import RAGIngestTool, RAGSearchTool
-        factories["rag_search"] = lambda: RAGSearchTool(retriever_store)
-        factories["rag_ingest"] = lambda: RAGIngestTool(retriever_store)
-
-    if cron_service:
-        factories["cron"] = lambda: CronTool(cron_service)
-
-    if os.environ.get("DISPLAY"):
-        from nanobot.agent.tools.browser import BrowserTool
-        from nanobot.agent.tools.computer import ComputerTool
-        factories["computer"] = lambda: ComputerTool()
-        factories["browser"] = lambda: BrowserTool()
-
-    for name in tools_enabled:
-        factory = factories.get(name)
-        if factory:
-            tool = factory()
-            if tool is not None:
-                registry.register(tool)
-
-    if memory_store:
-        if not registry.has("save_memory"):
-            registry.register(SaveMemoryTool(memory_store))
-        if not registry.has("search_memory"):
-            registry.register(SearchMemoryTool(memory_store))
-
-    if retriever_store:
-        from nanobot.agent.tools.rag import RAGIngestTool, RAGSearchTool
-        if not registry.has("rag_search"):
-            registry.register(RAGSearchTool(retriever_store))
-        if not registry.has("rag_ingest"):
-            registry.register(RAGIngestTool(retriever_store))
-
-    if skill_repo and user_id and not registry.has("read_skill"):
-        registry.register(ReadSkillTool(user_id=user_id, skill_repo=skill_repo, workspace=workspace, builtin_dir=BUILTIN_SKILLS_DIR))
-
-    if not registry.has("publish_page"):
-        registry.register(PublishPageTool(workspace=workspace, public_url=public_url))
-
-    if not registry.has("publish_report"):
-        registry.register(PublishReportTool(workspace=workspace, public_url=public_url))
-
-    if integration_repo and credential_repo and user_id and not registry.has("azure_devops_report"):
-        from nanobot.agent.tools.azure_report import AzureReportTool
-        registry.register(AzureReportTool(
-            user_id=user_id, integration_repo=integration_repo,
-            credential_repo=credential_repo, workspace=workspace,
-            public_url=public_url,
-        ))
-
-    if os.environ.get("DISPLAY"):
-        from nanobot.agent.tools.screenshot import ScreenshotTool
-        registry.register(ScreenshotTool())
-
+    for spec in CATALOG:
+        if not spec.is_available(ctx):
+            continue
+        if spec.permission and spec.id not in granted:
+            continue
+        tool = spec.build(ctx)
+        if tool is not None:
+            registry.register(tool)
     return registry
 
 

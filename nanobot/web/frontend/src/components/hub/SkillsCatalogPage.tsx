@@ -9,6 +9,8 @@ import {
   Lock,
   Building2,
   User,
+  AlertTriangle,
+  Bot,
 } from "lucide-react";
 import { PageHeader } from "./PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
@@ -37,6 +39,7 @@ import {
   type CustomSkill,
 } from "@/lib/api";
 import { useStore } from "@/lib/store";
+import type { Agent } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
@@ -94,6 +97,9 @@ const SKILL_AUTHOR_TEMPLATE_ID = "skill_author";
 export function SkillsCatalogPage() {
   const setActiveView = useStore((s) => s.setActiveView);
   const systemAgents = useStore((s) => s.systemAgents);
+  const agents = useStore((s) => s.agents);
+  const loadAgents = useStore((s) => s.loadAgents);
+  const updateAgent = useStore((s) => s.updateAgent);
   const templates = useStore((s) => s.templates);
   const selectAgent = useStore((s) => s.selectAgent);
   const createAgent = useStore((s) => s.createAgent);
@@ -112,6 +118,10 @@ export function SkillsCatalogPage() {
   const [createName, setCreateName] = useState("");
   const [createNameError, setCreateNameError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+
+  useEffect(() => {
+    if (agents.length === 0) loadAgents();
+  }, [agents.length, loadAgents]);
 
   useEffect(() => {
     let cancelled = false;
@@ -256,7 +266,7 @@ export function SkillsCatalogPage() {
     try {
       const existing = systemAgents.find(
         (a) =>
-          (a.metadata as { template_id?: string } | undefined)?.template_id ===
+          (a.metadata as { template?: string } | undefined)?.template ===
           SKILL_AUTHOR_TEMPLATE_ID,
       );
       if (existing) {
@@ -281,11 +291,7 @@ export function SkillsCatalogPage() {
         name: tpl.name,
         role: tpl.role,
         description: tpl.description,
-        avatar: tpl.name.slice(0, 1),
-        tools_enabled: tpl.tools,
-        bootstrap: { "AGENTS.md": tpl.system_prompt },
-        agent_config: { rag: { enabled: tpl.rag_enabled } },
-        metadata: { template_id: SKILL_AUTHOR_TEMPLATE_ID, system: true },
+        metadata: { template: SKILL_AUTHOR_TEMPLATE_ID, system: true },
         status: "active",
       });
       if (!created) {
@@ -440,18 +446,37 @@ export function SkillsCatalogPage() {
                   </p>
                 </CardContent>
               </Card>
-            ) : selected.kind === "builtin" ? (
-              <BuiltinView skill={selected.skill} />
-            ) : draft ? (
-              <CustomEditor
-                draft={draft}
-                setDraft={setDraft}
-                isDirty={isDirty}
-                saving={saving}
-                onSave={handleSave}
-                onDelete={() => setConfirmDelete(true)}
-              />
-            ) : null}
+            ) : (
+              <div className="space-y-5">
+                {selected.kind === "builtin" ? (
+                  <BuiltinView skill={selected.skill} />
+                ) : draft ? (
+                  <CustomEditor
+                    draft={draft}
+                    setDraft={setDraft}
+                    isDirty={isDirty}
+                    saving={saving}
+                    onSave={handleSave}
+                    onDelete={() => setConfirmDelete(true)}
+                  />
+                ) : null}
+                {!draft?.isNew && (
+                  <SkillAgentsPanel
+                    skillName={selected.skill.name}
+                    agents={agents}
+                    onToggle={async (agent, enabled) => {
+                      const list = agent.agent_config?.skills_enabled ?? [];
+                      const next = enabled
+                        ? [...list, selected.skill.name]
+                        : list.filter((n) => n !== selected.skill.name);
+                      await updateAgent(agent.agent_id, {
+                        agent_config: { skills_enabled: next },
+                      });
+                    }}
+                  />
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -522,6 +547,97 @@ export function SkillsCatalogPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+interface SkillAgentsPanelProps {
+  skillName: string;
+  agents: Agent[];
+  onToggle: (agent: Agent, enabled: boolean) => Promise<void>;
+}
+
+function SkillAgentsPanel({ skillName, agents, onToggle }: SkillAgentsPanelProps) {
+  const [busy, setBusy] = useState<string | null>(null);
+
+  function seesSkill(agent: Agent): boolean {
+    const list = agent.agent_config?.skills_enabled;
+    if (list == null) return true;
+    return list.includes(skillName);
+  }
+
+  const usedBy = agents.filter(seesSkill);
+
+  async function toggle(agent: Agent, enabled: boolean) {
+    setBusy(agent.agent_id);
+    try {
+      await onToggle(agent, enabled);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-5 pt-5 space-y-3">
+        <div>
+          <h3 className="font-display font-bold text-text-primary">Quem usa esta skill</h3>
+          <p className="text-xs text-text-muted mt-0.5">
+            Uma skill só chega ao modelo nos agentes em que está habilitada.
+          </p>
+        </div>
+
+        {agents.length === 0 ? (
+          <p className="text-sm text-text-muted">Você ainda não tem agentes.</p>
+        ) : (
+          <>
+            {usedBy.length === 0 && (
+              <div className="flex items-start gap-2.5 rounded-xl bg-yellow-muted p-3">
+                <AlertTriangle className="w-4 h-4 text-yellow shrink-0 mt-0.5" />
+                <p className="text-xs font-medium text-text-secondary">
+                  Esta skill ainda não é usada por nenhum agente. Habilite abaixo no agente
+                  que deve executá-la.
+                </p>
+              </div>
+            )}
+            <ul className="space-y-1.5">
+              {agents.map((agent) => {
+                const open = agent.agent_config?.skills_enabled == null;
+                const on = seesSkill(agent);
+                return (
+                  <li
+                    key={agent.agent_id}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-border p-3"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-7 h-7 rounded-lg bg-surface-alt text-text-muted flex items-center justify-center shrink-0">
+                        <Bot className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-text-primary truncate">
+                          {agent.name}
+                        </p>
+                        <p className="text-[11px] text-text-muted truncate">
+                          {open ? "Usa todas as skills disponíveis" : agent.role || "Agente"}
+                        </p>
+                      </div>
+                    </div>
+                    {busy === agent.agent_id ? (
+                      <Loader2 className="w-4 h-4 text-purple animate-spin shrink-0" />
+                    ) : (
+                      <Switch
+                        checked={on}
+                        disabled={open}
+                        onCheckedChange={(v) => toggle(agent, v)}
+                      />
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

@@ -9,7 +9,6 @@ attaches auth, and performs the request.
 
 from __future__ import annotations
 
-import base64
 import json
 from typing import Any
 
@@ -20,6 +19,7 @@ from nanobot.integrations.catalog import (
     APIEndpoint,
     AuthSpec,
     IntegrationEntry,
+    build_auth_headers,
     get_integration,
 )
 from nanobot.utils import crypto
@@ -52,8 +52,9 @@ class HttpCallTool(Tool):
             "Faz uma chamada HTTP em uma das APIs integradas ao usuário. "
             "Use quando o usuário pedir uma ação em GitHub, Jira, Notion, "
             "Slack, Grafana, Google Workspace ou qualquer API cadastrada. "
-            "Consulte a lista de integrações ativas em /api/integrations "
-            "para descobrir integration_slug e endpoint_key disponíveis."
+            "Os integration_slug e endpoint_key disponíveis estão na seção "
+            "'Integrations & MCPs' do seu contexto. Identidade (tenant, empresa, "
+            "usuário) vem da credencial da integração — não a envie no body."
         )
 
     @property
@@ -172,7 +173,11 @@ class HttpCallTool(Tool):
 
         auth = self._apply_auth(entry.auth, credentials, headers)
 
-        query = kwargs.get("query") or {}
+        query = {
+            **(entry.api.default_query or {}),
+            **(endpoint.default_query or {}),
+            **(kwargs.get("query") or {}),
+        }
         if entry.auth.mode == "query_key" and entry.auth.query_param:
             secret = credentials.get(entry.auth.secret_field, "")
             if secret:
@@ -180,6 +185,7 @@ class HttpCallTool(Tool):
 
         body = kwargs.get("body")
         json_body = body if isinstance(body, (dict, list)) else None
+        json_body = self._inject_credential_body(entry, endpoint, credentials, json_body)
 
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -205,6 +211,33 @@ class HttpCallTool(Tool):
         )
 
     @staticmethod
+    def _inject_credential_body(
+        entry: IntegrationEntry,
+        endpoint: APIEndpoint,
+        credentials: dict[str, str],
+        body: Any,
+    ) -> Any:
+        """Overwrite body fields the integration binds to credential fields.
+
+        The credential wins over whatever the model sent: identity belongs to
+        the activated integration, not to the LLM. Credential fields that are
+        empty are left out so the API rejects the call instead of the agent
+        reporting a false success.
+        """
+        assert entry.api is not None
+        mapping = {**entry.api.body_from_credential, **endpoint.body_from_credential}
+        resolved = {
+            field_name: credentials[cred_key]
+            for field_name, cred_key in mapping.items()
+            if credentials.get(cred_key)
+        }
+        if not resolved:
+            return body
+        if isinstance(body, list):
+            return body
+        return {**(body if isinstance(body, dict) else {}), **resolved}
+
+    @staticmethod
     def _resolve_path(
         template: str, path_params: dict[str, Any], credentials: dict[str, str],
     ) -> str:
@@ -215,22 +248,8 @@ class HttpCallTool(Tool):
     def _apply_auth(
         spec: AuthSpec, credentials: dict[str, str], headers: dict[str, str],
     ) -> tuple[str, str] | None:
-        if spec.mode == "bearer":
-            secret = credentials.get(spec.secret_field, "")
-            if secret:
-                headers[spec.header_name] = f"{spec.header_prefix}{secret}"
-            return None
-        if spec.mode == "api_key_header":
-            secret = credentials.get(spec.secret_field, "")
-            if secret:
-                headers[spec.header_name] = secret
-            return None
-        if spec.mode == "basic":
-            username = credentials.get(spec.username_field, "") if spec.username_field else ""
-            password = credentials.get(spec.password_field, "")
-            token = base64.b64encode(f"{username}:{password}".encode()).decode()
-            headers["Authorization"] = f"Basic {token}"
-            return None
+        """Attach the credential to the request. Query-key auth is applied by the caller."""
+        headers.update(build_auth_headers(spec, credentials))
         return None
 
     @staticmethod

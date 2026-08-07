@@ -14,6 +14,7 @@ from nanobot.agent.skills import SkillsLoader
 
 if TYPE_CHECKING:
     from nanobot.db.repositories import IntegrationRepository, UserRepository
+    from nanobot.integrations.catalog import IntegrationEntry
 
 
 class ContextBuilder:
@@ -128,7 +129,7 @@ Skills with available="false" need dependencies installed first - you can try in
             self._user_id, enabled_only=True,
         )
 
-        from nanobot.integrations.catalog import CATALOG
+        from nanobot.integrations.catalog import CATALOG, get_integration
 
         lines = ["# Integrations & MCPs"]
 
@@ -142,11 +143,18 @@ Skills with available="false" need dependencies installed first - you can try in
                     lines.append(
                         f"- `{slug}` — {label} (MCP). Tools exposed as `mcp_{slug}_*`.",
                     )
+                elif kind == "cli":
+                    lines.append(
+                        f"- `{slug}` — {label} (CLI local). Não é chamável por "
+                        "`http_call`; é usada pela tool que a delega.",
+                    )
                 else:
                     lines.append(
                         f"- `{slug}` — {label} (API). Call via "
                         f"`http_call(integration_slug='{slug}', endpoint_key=...)`.",
                     )
+                    lines.extend(self._endpoint_lines(get_integration(
+                        row.get("system_integration_id") or "")))
         else:
             lines.append(
                 "\nNo integrations active yet for this client. "
@@ -169,6 +177,16 @@ Skills with available="false" need dependencies installed first - you can try in
             "catalog before or alongside creating the skill.",
         )
         return "\n".join(lines)
+
+    @staticmethod
+    def _endpoint_lines(entry: "IntegrationEntry | None") -> list[str]:
+        """Indented `endpoint_key — description` lines for an API integration."""
+        if not entry or not entry.api:
+            return []
+        return [
+            f"    - `{endpoint.key}` — {endpoint.description}"
+            for endpoint in entry.api.endpoints
+        ]
 
     def _get_desktop_section(self) -> str:
         """Return desktop environment section if a display is available."""

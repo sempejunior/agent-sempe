@@ -202,8 +202,13 @@ export interface CronJob {
   id: string;
   name: string;
   enabled: boolean;
+  agent_id?: string;
+  agent_name?: string;
   schedule_kind: string;
   schedule_expr: string;
+  schedule_label?: string;
+  every_days?: number | null;
+  at_time?: string | null;
   message: string;
   deliver?: boolean;
   channel?: string | null;
@@ -215,36 +220,40 @@ export interface CronJob {
   last_error?: string | null;
 }
 
-export async function listCronJobs(): Promise<CronJob[]> {
-  return request("/cron");
+export async function listCronJobs(agentId?: string): Promise<CronJob[]> {
+  const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return request(`/cron${query}`);
 }
 
-export interface CronSchedulePayload {
-  kind: "every" | "cron" | "at";
+export interface ScheduleBody {
+  kind: "every" | "interval" | "cron" | "at";
   every_seconds?: number;
+  every_days?: number;
+  at_time?: string;
+  anchor_ms?: number;
   expr?: string;
   tz?: string;
   at_ms?: number;
+  count?: number;
 }
 
+/** Kept as an alias: older callers import CronSchedulePayload. */
+export type CronSchedulePayload = ScheduleBody;
+
 export async function previewCronSchedule(
-  schedule: CronSchedulePayload,
+  schedule: ScheduleBody,
   count = 5,
-): Promise<{ next_runs: number[] }> {
+): Promise<{ next_runs: number[]; label?: string }> {
   return request("/cron/preview", {
     method: "POST",
-    body: JSON.stringify({ ...schedule, count }),
+    body: JSON.stringify({ count, ...schedule }),
   });
 }
 
-export async function addCronJob(data: {
+export async function addCronJob(data: ScheduleBody & {
   name: string;
   message: string;
-  kind: "every" | "cron" | "at";
-  every_seconds?: number;
-  expr?: string;
-  tz?: string;
-  at_ms?: number;
+  agent_id?: string;
   deliver?: boolean;
   channel?: string | null;
   to?: string | null;
@@ -761,7 +770,10 @@ export interface CatalogMcp {
 
 export interface CatalogEntry {
   id: string;
-  kind: "api" | "mcp";
+  kind: "api" | "mcp" | "cli";
+  /** Vendor this entry belongs to. Credentials are scoped to it, so the API and
+   *  the MCP server of the same vendor share one secret. */
+  provider: string;
   name: string;
   description: string;
   category: string;
@@ -785,7 +797,7 @@ export interface UserCredential {
 export interface UserIntegration {
   id: number;
   slug: string;
-  kind: "api" | "mcp";
+  kind: "api" | "mcp" | "cli";
   system_integration_id: string | null;
   label: string;
   enabled: boolean;
@@ -799,6 +811,40 @@ export async function getIntegrationsCatalog(): Promise<CatalogEntry[]> {
   return request("/integrations/catalog");
 }
 
+export type ToolCatalogEntry = {
+  id: string;
+  label: string;
+  category: string;
+  permission: boolean;
+  warn: string;
+  requires: string[];
+  integrations: string[];
+};
+
+export async function getToolsCatalog(): Promise<ToolCatalogEntry[]> {
+  return request("/tools/catalog");
+}
+
+export type CodeAgentCli = {
+  id: string;
+  binary: string;
+  path: string;
+  installed: boolean;
+  installable: boolean;
+  size_hint: string;
+  install_allowed: boolean;
+  status: "" | "installing" | "installed" | "error";
+  detail: string;
+};
+
+export async function getCodeAgents(): Promise<CodeAgentCli[]> {
+  return request("/code-agents");
+}
+
+export async function installCodeAgent(id: string): Promise<{ status: string }> {
+  return request(`/code-agents/${encodeURIComponent(id)}/install`, { method: "POST" });
+}
+
 export async function listIntegrations(): Promise<UserIntegration[]> {
   return request("/integrations");
 }
@@ -806,7 +852,7 @@ export async function listIntegrations(): Promise<UserIntegration[]> {
 export async function upsertIntegration(
   slug: string,
   data: {
-    kind?: "api" | "mcp";
+    kind?: "api" | "mcp" | "cli";
     system_integration_id?: string | null;
     label?: string;
     enabled?: boolean;
@@ -857,9 +903,42 @@ export async function deleteCredential(credentialId: number): Promise<{ ok: bool
 }
 
 // WebSocket
-export type WsMessageType = "response" | "progress" | "tool_hint" | "error" | "pong";
+export type WsMessageType =
+  | "response"
+  | "progress"
+  | "tool_hint"
+  | "trace"
+  | "error"
+  | "pong";
 
-export interface WsIncoming {
+/** One step of a turn's execution, as the loop saw it. Opt-in per turn: it
+ *  carries the assembled prompt and every tool result. */
+export interface TraceEvent {
+  kind: "turn" | "llm" | "tool_call" | "tool_result" | "delegation" | "limit";
+  iteration?: number;
+  model?: string;
+  tools?: string[];
+  max_iterations?: number;
+  system_prompt?: string;
+  user_message?: string;
+  history_messages?: number;
+  content?: string;
+  reasoning?: string;
+  usage?: Record<string, number>;
+  tool_calls?: string[];
+  tool?: string;
+  arguments?: string;
+  result?: string;
+  cli?: string;
+  repo?: string;
+  branch?: string;
+  prompt?: string;
+  timeout_s?: number;
+  iterations?: number;
+  tools_used?: string[];
+}
+
+export interface WsIncoming extends Partial<TraceEvent> {
   type: WsMessageType;
   content?: string;
   session_key?: string;

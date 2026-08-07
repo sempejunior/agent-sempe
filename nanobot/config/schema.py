@@ -315,6 +315,12 @@ class ToolsConfig(Base):
     rag: RAGConfig = Field(default_factory=RAGConfig)
     restrict_to_workspace: bool = False
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+    allow_runtime_install: bool = False
+    """Whether this instance may install an agent CLI from the web UI.
+
+    Installing means running a vendor script on the host that every client of this
+    instance shares, so it is an operator decision, not a client one: off by
+    default, on in dev. In the cloud, bake the CLI into the image instead."""
 
 
 class Config(BaseSettings):

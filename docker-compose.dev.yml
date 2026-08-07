@@ -1,11 +1,20 @@
 services:
   nanobot-gateway:
     entrypoint: []
+    build:
+      args:
+        # Dev image ships the code agent CLI: `make dev` should be able to
+        # delegate coding without a second setup step. Adds ~856 MB, downloaded
+        # once and then cached — the layer sits before the source COPY.
+        KIRO_CLI: "1"
     volumes:
-      - ./nanobot:/app/nanobot
+      - ./nanobot:/app/nanobot:ro
     environment:
       PYTHONPATH: /app
       DISPLAY: ":99"
+      # Dev is a single-tenant machine the operator owns, so installing an agent
+      # CLI from the UI is their call to make. Off by default everywhere else.
+      NANOBOT_TOOLS__ALLOW_RUNTIME_INSTALL: "true"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:18790/api/health"]
       interval: 10s

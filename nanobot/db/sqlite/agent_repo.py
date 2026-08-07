@@ -94,6 +94,7 @@ class SQLiteAgentRepository:
         return agent_id
 
     async def update_agent(self, user_id: str, agent_id: str, fields: dict[str, Any]) -> bool:
+        """Persist the given agent fields. The caller's dict is left untouched."""
         if not fields:
             return False
         allowed = {
@@ -105,6 +106,7 @@ class SQLiteAgentRepository:
         if bad:
             raise ValueError(f"Disallowed fields: {bad}")
 
+        fields = dict(fields)
         for key in ("agent_config", "bootstrap", "tools_enabled", "channel_configs", "metadata"):
             if key in fields and not isinstance(fields[key], str):
                 fields[key] = json.dumps(fields[key])
