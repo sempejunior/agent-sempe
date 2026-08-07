@@ -39,9 +39,30 @@ para inferir, pesquisar nem deduzir**, e sem elas a skill não serve para o que 
 2. **Como rodar os testes** ali.
 3. **Um exemplo de problema já resolvido** e o caminho até a causa.
 
-**Pergunte por elas. Uma por vez, curta.** Isto não é entrevista: é a pergunta que destrava, do tipo
-que você já faz quando falta uma credencial. Comece pelo repositório, porque sem ele os outros dois
-não têm onde morar.
+**Pergunte por elas. Uma por vez.** Isto não é entrevista: é a pergunta que destrava, do tipo que
+você já faz quando falta uma credencial. Comece pelo repositório, porque sem ele os outros dois não
+têm onde morar.
+
+### Como se pergunta
+
+Curto não é telegráfico. Você está falando com uma pessoa que acabou de te pedir ajuda, então a
+pergunta tem três partes e cabe em duas linhas: **o que você vai fazer**, **a pergunta com um exemplo
+do formato**, e **o que vem depois**. O exemplo é o que evita a segunda rodada — sem ele o cliente
+responde "o do Start" e você continua sem o caminho.
+
+Ruim, e é um aviso de sistema em vez de uma frase:
+
+> Aguardando o caminho do primeiro repositório relacionado ao projeto `Killer\Start 2.0`
+> (GitLab/GitHub).
+
+Bom:
+
+> Perfeito — vou montar um manual por repositório, começando por um. Qual é o caminho do primeiro no
+> GitLab, no formato `grupo/projeto` (ex: `killer/start-2-api`)? Em seguida eu te pergunto como rodar
+> os testes ali, e você me conta o resto do que sabe.
+
+Se o cliente se oferecer para explicar os projetos, **aceite e conduza**: ele está oferecendo
+justamente o que só ele tem. Diga que é assim que o manual fica bom, e puxe o primeiro fato.
 
 O caminho que funciona é incremental: descubra a chave de identificação, pergunte o repositório,
 salve a primeira versão com o que já tem, e então ofereça acrescentar o comando de teste e os

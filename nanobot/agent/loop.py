@@ -45,7 +45,11 @@ _COMPLETION_NUDGE = (
 )
 
 _FINAL_ANSWER_PROMPT = (
-    "Agora escreva a resposta final ao usuário: o que foi entregue e os números-chave. "
+    "Agora escreva a resposta final ao usuário. Se você entregou algo neste turno, "
+    "diga o que foi entregue e os números que importam. Se o turno termina numa "
+    "pergunta ou num impedimento, escreva só isso, em uma ou duas frases dirigidas "
+    "à pessoa — sem seções de resumo e sem métricas de coisas que não aconteceram "
+    "(\"itens processados: 0\" não informa nada). "
     "Se você publicou páginas neste turno, inclua o link markdown de TODAS elas; se não "
     "publicou nenhuma, não mencione páginas nem links. Não mencione COMPLETO nem "
     "esta verificação."
