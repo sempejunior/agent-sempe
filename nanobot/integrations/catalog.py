@@ -38,6 +38,31 @@ class AuthSpec:
     password_field: str = "password"
 
 
+def build_auth_headers(auth: AuthSpec, credential: dict) -> dict[str, str]:
+    """Compose the auth headers an AuthSpec asks for, from a decrypted credential.
+
+    Lives here because the AuthSpec does, and because both transports need it:
+    a REST call and a vendor-hosted MCP server authenticate the same way. The
+    ``query_key`` mode is not a header and is handled by the caller that has a
+    query string.
+    """
+    if auth.mode == "bearer":
+        secret = credential.get(auth.secret_field, "")
+        return {auth.header_name: f"{auth.header_prefix}{secret}"} if secret else {}
+    if auth.mode == "api_key_header":
+        secret = credential.get(auth.secret_field, "")
+        return {auth.header_name: str(secret)} if secret else {}
+    if auth.mode == "basic":
+        import base64
+        username = credential.get(auth.username_field, "") if auth.username_field else ""
+        password = credential.get(auth.password_field, "")
+        if not (username or password):
+            return {}
+        token = base64.b64encode(f"{username}:{password}".encode()).decode()
+        return {"Authorization": f"Basic {token}"}
+    return {}
+
+
 @dataclass(frozen=True)
 class APIEndpoint:
     """A single REST endpoint exposed via ``http_call``.
@@ -113,10 +138,17 @@ class MCPIntegration:
 
 @dataclass(frozen=True)
 class IntegrationEntry:
-    """A catalog entry — either a REST API or an MCP server."""
+    """One way of reaching one vendor: a REST API, an MCP server, or a local CLI.
+
+    ``provider`` is the vendor this entry belongs to, and it is what a credential
+    is scoped to. Two entries for the same vendor — the Azure DevOps REST API and
+    its MCP server, say — share one provider, so the client pastes the PAT once
+    and both transports use it. Without it the client is asked for the same secret
+    twice and ends up with two copies of it to rotate.
+    """
 
     id: str
-    kind: Literal["api", "mcp"]
+    kind: Literal["api", "mcp", "cli"]
     name: str
     description: str
     category: str
@@ -124,9 +156,15 @@ class IntegrationEntry:
     auth: AuthSpec = field(default_factory=AuthSpec)
     docs_url: str = ""
     setup_steps: tuple[str, ...] = ()
+    provider: str = ""
     api: APIIntegration | None = None
     mcp: MCPIntegration | None = None
     git: GitSpec | None = None
+
+    @property
+    def provider_id(self) -> str:
+        """The vendor this entry belongs to; itself, when it is the only entry."""
+        return self.provider or self.id
 
 
 CATALOG: tuple[IntegrationEntry, ...] = (
@@ -273,7 +311,7 @@ CATALOG: tuple[IntegrationEntry, ...] = (
     ),
     IntegrationEntry(
         id="kiro",
-        kind="api",
+        kind="cli",
         name="Kiro (agente de código)",
         description=(
             "Delega a escrita de código ao Kiro CLI rodando nesta máquina, dentro "
@@ -497,8 +535,37 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         ),
     ),
     IntegrationEntry(
+        id="mcp_atlassian",
+        kind="mcp",
+        provider="jira",
+        name="MCP · Atlassian (Rovo)",
+        description=(
+            "Servidor MCP oficial da Atlassian, hospedado por ela: Jira, "
+            "Confluence, JSM, Bitbucket e Compass. Só Atlassian Cloud."
+        ),
+        category="devtools",
+        docs_url="https://github.com/atlassian/atlassian-mcp-server",
+        setup_steps=(
+            "Só funciona com Atlassian Cloud. Jira Data Center e Server não são "
+            "atendidos por este servidor.",
+            "Um administrador precisa habilitar a autenticação por API token nas "
+            "configurações do Rovo MCP Server da organização.",
+            "Use o mesmo email e API token do Jira Cloud: a mesma credencial "
+            "serve para a API REST e para este servidor.",
+        ),
+        credential_fields=(
+            CredentialField("email", "Email do usuário", "text",
+                            hint="Email da sua conta Atlassian."),
+            CredentialField("api_token", "API Token", "password",
+                            hint="Gere em id.atlassian.com/manage-profile/security/api-tokens"),
+        ),
+        auth=AuthSpec(mode="basic", username_field="email", password_field="api_token"),
+        mcp=MCPIntegration(url="https://mcp.atlassian.com/v1/mcp"),
+    ),
+    IntegrationEntry(
         id="mcp_github",
         kind="mcp",
+        provider="github",
         name="MCP · GitHub",
         description="Servidor MCP oficial do GitHub (stdio via npx).",
         category="devtools",
@@ -523,6 +590,7 @@ CATALOG: tuple[IntegrationEntry, ...] = (
     IntegrationEntry(
         id="mcp_notion",
         kind="mcp",
+        provider="notion",
         name="MCP · Notion",
         description="Servidor MCP para Notion (stdio via npx).",
         category="productivity",
@@ -548,6 +616,7 @@ CATALOG: tuple[IntegrationEntry, ...] = (
     IntegrationEntry(
         id="mcp_slack",
         kind="mcp",
+        provider="slack",
         name="MCP · Slack",
         description="Servidor MCP para Slack (stdio via npx).",
         category="communication",
@@ -578,6 +647,7 @@ CATALOG: tuple[IntegrationEntry, ...] = (
     IntegrationEntry(
         id="mcp_azure_devops",
         kind="mcp",
+        provider="azure_devops",
         name="MCP · Azure DevOps",
         description=(
             "Servidor MCP de Azure DevOps: work items, repos, pipelines e wiki "

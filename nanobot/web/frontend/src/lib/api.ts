@@ -770,7 +770,10 @@ export interface CatalogMcp {
 
 export interface CatalogEntry {
   id: string;
-  kind: "api" | "mcp";
+  kind: "api" | "mcp" | "cli";
+  /** Vendor this entry belongs to. Credentials are scoped to it, so the API and
+   *  the MCP server of the same vendor share one secret. */
+  provider: string;
   name: string;
   description: string;
   category: string;
@@ -794,7 +797,7 @@ export interface UserCredential {
 export interface UserIntegration {
   id: number;
   slug: string;
-  kind: "api" | "mcp";
+  kind: "api" | "mcp" | "cli";
   system_integration_id: string | null;
   label: string;
   enabled: boolean;
@@ -849,7 +852,7 @@ export async function listIntegrations(): Promise<UserIntegration[]> {
 export async function upsertIntegration(
   slug: string,
   data: {
-    kind?: "api" | "mcp";
+    kind?: "api" | "mcp" | "cli";
     system_integration_id?: string | null;
     label?: string;
     enabled?: boolean;

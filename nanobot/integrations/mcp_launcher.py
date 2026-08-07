@@ -2,8 +2,9 @@
 
 Turns each enabled ``kind="mcp"`` user integration into an ``MCPServerConfig``,
 resolving the catalog entry and decrypting the linked credential into env vars
-(via the entry's ``env`` templates and ``env_from_credential`` map). The agent
-loop connects the resulting servers per user and exposes ``mcp_<slug>_*`` tools.
+(via the entry's ``env`` templates and ``env_from_credential`` map) or, for a
+server the vendor hosts, into auth headers. The agent loop connects the resulting
+servers per user and exposes ``mcp_<slug>_*`` tools.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from loguru import logger
 if TYPE_CHECKING:
     from nanobot.config.schema import MCPServerConfig
     from nanobot.db.factory import RepositoryFactory
+    from nanobot.integrations.catalog import AuthSpec, MCPIntegration
 
 
 def _resolve_env(mcp, credential: dict) -> dict[str, str]:
@@ -30,6 +32,26 @@ def _resolve_env(mcp, credential: dict) -> dict[str, str]:
         if field in credential:
             env[env_key] = str(credential[field])
     return env
+
+
+def _resolve_headers(mcp: "MCPIntegration", auth: "AuthSpec",
+                     credential: dict) -> dict[str, str]:
+    """Auth headers for a remote MCP server, from the credential.
+
+    A hosted MCP server (the vendor runs it, we connect over HTTP) authenticates
+    by header. Without this a remote entry would connect unauthenticated and fail
+    on the first call, which reads like a broken integration rather than a missing
+    secret.
+    """
+    from nanobot.integrations.catalog import build_auth_headers
+
+    headers = build_auth_headers(auth, credential)
+    headers.update({
+        header: str(credential[field])
+        for header, field in (mcp.header_from_credential or {}).items()
+        if field in credential
+    })
+    return headers
 
 
 async def build_user_mcp_servers(
@@ -71,6 +93,7 @@ async def build_user_mcp_servers(
             args=list(entry.mcp.args),
             env=_resolve_env(entry.mcp, credential),
             url=entry.mcp.url,
+            headers=_resolve_headers(entry.mcp, entry.auth, credential),
         )
         sig_parts.append(f"{slug}:{credential_id}")
 

@@ -1471,6 +1471,7 @@ form.addEventListener("submit", async (e) => {{
         base: dict[str, Any] = {
             "id": entry.id,
             "kind": entry.kind,
+            "provider": entry.provider_id,
             "name": entry.name,
             "description": entry.description,
             "category": entry.category,

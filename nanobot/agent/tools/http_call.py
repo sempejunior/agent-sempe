@@ -9,7 +9,6 @@ attaches auth, and performs the request.
 
 from __future__ import annotations
 
-import base64
 import json
 from typing import Any
 
@@ -20,6 +19,7 @@ from nanobot.integrations.catalog import (
     APIEndpoint,
     AuthSpec,
     IntegrationEntry,
+    build_auth_headers,
     get_integration,
 )
 from nanobot.utils import crypto
@@ -248,22 +248,8 @@ class HttpCallTool(Tool):
     def _apply_auth(
         spec: AuthSpec, credentials: dict[str, str], headers: dict[str, str],
     ) -> tuple[str, str] | None:
-        if spec.mode == "bearer":
-            secret = credentials.get(spec.secret_field, "")
-            if secret:
-                headers[spec.header_name] = f"{spec.header_prefix}{secret}"
-            return None
-        if spec.mode == "api_key_header":
-            secret = credentials.get(spec.secret_field, "")
-            if secret:
-                headers[spec.header_name] = secret
-            return None
-        if spec.mode == "basic":
-            username = credentials.get(spec.username_field, "") if spec.username_field else ""
-            password = credentials.get(spec.password_field, "")
-            token = base64.b64encode(f"{username}:{password}".encode()).decode()
-            headers["Authorization"] = f"Basic {token}"
-            return None
+        """Attach the credential to the request. Query-key auth is applied by the caller."""
+        headers.update(build_auth_headers(spec, credentials))
         return None
 
     @staticmethod

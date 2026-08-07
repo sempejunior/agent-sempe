@@ -143,6 +143,11 @@ Skills with available="false" need dependencies installed first - you can try in
                     lines.append(
                         f"- `{slug}` — {label} (MCP). Tools exposed as `mcp_{slug}_*`.",
                     )
+                elif kind == "cli":
+                    lines.append(
+                        f"- `{slug}` — {label} (CLI local). Não é chamável por "
+                        "`http_call`; é usada pela tool que a delega.",
+                    )
                 else:
                     lines.append(
                         f"- `{slug}` — {label} (API). Call via "

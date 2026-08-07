@@ -154,8 +154,14 @@ def test_code_agents_lists_the_clis(client):
     assert "kiro" in ids
 
 
-def test_installing_is_refused_when_the_instance_does_not_allow_it(client):
-    """Instalar roda um script do fornecedor na máquina compartilhada."""
+def test_installing_is_refused_when_the_instance_does_not_allow_it(client_factory):
+    """Instalar roda um script do fornecedor na máquina compartilhada.
+
+    A flag é fixada aqui em vez de herdada do ambiente: o container de dev
+    define NANOBOT_TOOLS__ALLOW_RUNTIME_INSTALL, e um teste que lê o default
+    do ambiente passa na CI e mente na máquina do dev.
+    """
+    client = client_factory(lambda c: setattr(c.tools, "allow_runtime_install", False))
     client.post("/api/auth/register", json={"user_id": "u1"})
 
     r = client.post("/api/code-agents/kiro/install", headers=_auth("u1"))

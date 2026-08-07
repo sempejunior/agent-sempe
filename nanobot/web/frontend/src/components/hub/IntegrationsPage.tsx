@@ -37,6 +37,230 @@ type ActivateTarget = {
   existing: UserIntegration | null;
 };
 
+type Provider = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  docs_url: string;
+  entries: CatalogEntry[];
+  needsCredential: boolean;
+};
+
+/** One card per vendor, its transports listed inside.
+ *
+ *  The catalog has one entry per way of reaching a vendor, and showing them as
+ *  separate cards made the same vendor look like two products — and asked for
+ *  the same secret twice. */
+function groupByProvider(catalog: CatalogEntry[]): Provider[] {
+  const byProvider = new Map<string, CatalogEntry[]>();
+  for (const entry of catalog) {
+    if (entry.kind === "cli") continue;
+    const list = byProvider.get(entry.provider) ?? [];
+    list.push(entry);
+    byProvider.set(entry.provider, list);
+  }
+  return [...byProvider.entries()].map(([id, entries]) => {
+    const canonical = entries.find((e) => e.id === id) ?? entries[0];
+    return {
+      id,
+      name: canonical.name.replace(/^MCP · /, ""),
+      description: canonical.description,
+      category: canonical.category,
+      docs_url: canonical.docs_url,
+      entries: [...entries].sort((a, b) => a.kind.localeCompare(b.kind)),
+      needsCredential: entries.some((e) => e.credential_fields.length > 0),
+    };
+  });
+}
+
+const TRANSPORT_LABEL: Record<string, string> = {
+  api: "API REST",
+  mcp: "Servidor MCP",
+  cli: "CLI local",
+};
+
+function transportDetail(entry: CatalogEntry): string {
+  if (entry.kind === "api" && entry.api) {
+    const count = entry.api.endpoints.length;
+    return count === 1 ? "1 endpoint" : `${count} endpoints`;
+  }
+  if (entry.kind === "mcp") {
+    return entry.mcp?.url ? "hospedado pelo fornecedor" : "stdio via npx";
+  }
+  return "";
+}
+
+function TransportRow({
+  entry,
+  transport,
+  active,
+  onActivate,
+}: {
+  entry: CatalogEntry;
+  transport?: string;
+  active: UserIntegration | null;
+  onActivate: () => void;
+}) {
+  const detail = transportDetail(entry);
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-xl border border-border p-2.5">
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-sm font-semibold text-text-primary">
+            {transport ?? TRANSPORT_LABEL[entry.kind] ?? entry.kind}
+          </span>
+          {active && <Badge variant="success">Ativa</Badge>}
+        </div>
+        {detail && <p className="text-[11px] text-text-muted">{detail}</p>}
+      </div>
+      <Button size="sm" variant={active ? "outline" : "subtle"} onClick={onActivate}>
+        {active ? "Editar" : "Ativar"}
+      </Button>
+    </div>
+  );
+}
+
+function ProviderCard({
+  provider,
+  activeBySystemId,
+  credentials,
+  onActivate,
+  onRegisterCredential,
+}: {
+  provider: Provider;
+  activeBySystemId: Record<string, UserIntegration>;
+  credentials: UserCredential[];
+  onActivate: (entry: CatalogEntry, existing: UserIntegration | null) => void;
+  onRegisterCredential: () => void;
+}) {
+  const providerCredentials = credentials.filter(
+    (c) => c.provider_key === provider.id,
+  );
+  const anyActive = provider.entries.some((e) => activeBySystemId[e.id]);
+
+  return (
+    <Card>
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between gap-2 mb-2">
+          <div className="min-w-0">
+            <h3 className="font-display font-bold text-base text-text-primary truncate">
+              {provider.name}
+            </h3>
+            <Badge variant="muted" className="mt-1">
+              {provider.category}
+            </Badge>
+          </div>
+          {anyActive && (
+            <Badge variant="success" className="gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-current" />
+              Ativa
+            </Badge>
+          )}
+        </div>
+        <p className="text-sm text-text-secondary leading-relaxed line-clamp-3 mb-3">
+          {provider.description}
+        </p>
+
+        {provider.needsCredential && (
+          <div className="mb-3 rounded-xl border border-border bg-surface-alt p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-text-primary">
+                Credencial
+              </span>
+              {providerCredentials.length === 0 && (
+                <Button size="sm" variant="subtle" onClick={onRegisterCredential}>
+                  <Plus className="w-3.5 h-3.5" /> Cadastrar
+                </Button>
+              )}
+            </div>
+            {providerCredentials.length > 0 ? (
+              <p className="text-[11px] text-text-muted mt-1">
+                {providerCredentials.map((c) => c.name).join(", ")} — serve para
+                todos os acessos abaixo.
+              </p>
+            ) : (
+              <p className="text-[11px] text-text-muted mt-1">
+                Nenhuma cadastrada. Uma só credencial atende a API e o MCP deste
+                fornecedor.
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {provider.entries.map((entry) => (
+            <TransportRow
+              key={entry.id}
+              entry={entry}
+              active={activeBySystemId[entry.id] ?? null}
+              onActivate={() => onActivate(entry, activeBySystemId[entry.id] ?? null)}
+            />
+          ))}
+        </div>
+
+        {provider.docs_url && (
+          <a
+            href={provider.docs_url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs text-text-muted hover:text-purple inline-flex items-center gap-1 mt-3"
+          >
+            Docs <ExternalLink className="w-3 h-3" />
+          </a>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CliBox({
+  cli,
+  installing,
+  onInstall,
+}: {
+  cli: CodeAgentCli;
+  installing: boolean;
+  onInstall: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-surface-alt p-3 mb-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-semibold text-text-primary">
+          Binário nesta máquina
+        </span>
+        {cli.installed ? (
+          <Badge variant="success">Instalada</Badge>
+        ) : (
+          <Badge variant="muted">Não instalada</Badge>
+        )}
+      </div>
+      {cli.installed ? (
+        <p className="text-[11px] text-text-muted font-mono break-all">{cli.path}</p>
+      ) : cli.install_allowed ? (
+        <>
+          <p className="text-[11px] text-text-muted">
+            Baixa e instala o {cli.binary} aqui
+            {cli.size_hint ? ` (${cli.size_hint})` : ""}. A instalação fica no
+            volume de dados, então sobrevive a um novo deploy.
+          </p>
+          <Button size="sm" variant="subtle" disabled={installing} onClick={onInstall}>
+            {installing ? "Instalando…" : "Instalar na máquina"}
+          </Button>
+        </>
+      ) : (
+        <p className="text-[11px] text-text-muted">
+          Instalação pela interface está desativada nesta instância. Suba a imagem
+          com a CLI embutida.
+        </p>
+      )}
+      {cli.status === "error" && (
+        <p className="text-[11px] text-text-secondary">{cli.detail.slice(-300)}</p>
+      )}
+    </div>
+  );
+}
+
 export function IntegrationsPage() {
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [integrations, setIntegrations] = useState<UserIntegration[]>([]);
@@ -46,6 +270,9 @@ export function IntegrationsPage() {
   const [installing, setInstalling] = useState<string | null>(null);
   const [activateTarget, setActivateTarget] = useState<ActivateTarget | null>(null);
   const [credentialDialogOpen, setCredentialDialogOpen] = useState(false);
+  const [credentialTarget, setCredentialTarget] = useState<
+    { providerKey: string } | null
+  >(null);
 
   const activeBySystemId = useMemo(() => {
     const map: Record<string, UserIntegration> = {};
@@ -54,6 +281,13 @@ export function IntegrationsPage() {
     }
     return map;
   }, [integrations]);
+
+  const cliEntries = useMemo(
+    () => catalog.filter((e) => e.kind === "cli"),
+    [catalog],
+  );
+
+  const providers = useMemo(() => groupByProvider(catalog), [catalog]);
 
   async function refresh() {
     setLoading(true);
@@ -136,108 +370,82 @@ export function IntegrationsPage() {
 
           <TabsContent value="catalog">
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 mt-4">
-              {catalog.map((entry) => {
-                const active = activeBySystemId[entry.id];
-                return (
-                  <Card key={entry.id}>
-                    <CardContent className="p-5">
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <div className="min-w-0">
-                          <h3 className="font-display font-bold text-base text-text-primary truncate">
-                            {entry.name}
-                          </h3>
-                          <div className="flex gap-1.5 mt-1">
-                            <Badge variant={entry.kind === "mcp" ? "outline" : "muted"}>
-                              {entry.kind.toUpperCase()}
-                            </Badge>
-                            <Badge variant="muted">{entry.category}</Badge>
-                          </div>
-                        </div>
-                        {active && (
-                          <Badge variant="success" className="gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-current" />
-                            Ativa
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="text-sm text-text-secondary leading-relaxed line-clamp-3 mb-4">
-                        {entry.description}
-                      </p>
-                      {cliById[entry.id] && (
-                        <div className="rounded-xl border border-border bg-surface-alt p-3 mb-4 space-y-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-xs font-semibold text-text-primary">
-                              CLI nesta máquina
-                            </span>
-                            {cliById[entry.id].installed ? (
-                              <Badge variant="success">Instalada</Badge>
-                            ) : (
-                              <Badge variant="muted">Não instalada</Badge>
-                            )}
-                          </div>
-                          {cliById[entry.id].installed ? (
-                            <p className="text-[11px] text-text-muted font-mono break-all">
-                              {cliById[entry.id].path}
-                            </p>
-                          ) : cliById[entry.id].install_allowed ? (
-                            <>
-                              <p className="text-[11px] text-text-muted">
-                                Baixa e instala o {cliById[entry.id].binary} aqui
-                                {cliById[entry.id].size_hint
-                                  ? ` (${cliById[entry.id].size_hint})`
-                                  : ""}
-                                . A instalação fica no volume de dados, então
-                                sobrevive a um novo deploy.
-                              </p>
-                              <Button
-                                size="sm"
-                                variant="subtle"
-                                disabled={installing === entry.id}
-                                onClick={() => install(entry.id)}
-                              >
-                                {installing === entry.id
-                                  ? "Instalando…"
-                                  : "Instalar na máquina"}
-                              </Button>
-                            </>
-                          ) : (
-                            <p className="text-[11px] text-text-muted">
-                              Instalação pela interface está desativada nesta
-                              instância. Suba a imagem com a CLI embutida.
-                            </p>
-                          )}
-                          {cliById[entry.id].status === "error" && (
-                            <p className="text-[11px] text-text-secondary">
-                              {cliById[entry.id].detail.slice(-300)}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                      <div className="flex items-center gap-2">
-                        <Button
-                          size="sm"
-                          onClick={() =>
-                            setActivateTarget({ entry, existing: active ?? null })
-                          }
-                        >
-                          {active ? "Editar" : "Ativar"}
-                        </Button>
-                        {entry.docs_url && (
-                          <a
-                            href={entry.docs_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-xs text-text-muted hover:text-purple inline-flex items-center gap-1"
-                          >
-                            Docs <ExternalLink className="w-3 h-3" />
-                          </a>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
+              {providers.map((provider) => (
+                <ProviderCard
+                  key={provider.id}
+                  provider={provider}
+                  activeBySystemId={activeBySystemId}
+                  credentials={credentials}
+                  onActivate={(entry, existing) =>
+                    setActivateTarget({ entry, existing })
+                  }
+                  onRegisterCredential={() =>
+                    setCredentialTarget({ providerKey: provider.id })
+                  }
+                />
+              ))}
             </div>
+
+            {cliEntries.length > 0 && (
+              <>
+                <div className="mt-8 mb-3">
+                  <h2 className="font-display font-bold text-text-primary">
+                    Agentes de código
+                  </h2>
+                  <p className="text-sm text-text-muted">
+                    CLIs instaladas nesta máquina, para as quais o agente delega a
+                    escrita de código. Não são APIs: precisam do binário aqui e de
+                    uma chave.
+                  </p>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {cliEntries.map((entry) => (
+                    <Card key={entry.id}>
+                      <CardContent className="p-5">
+                        <div className="flex items-start justify-between gap-2 mb-2">
+                          <div className="min-w-0">
+                            <h3 className="font-display font-bold text-base text-text-primary truncate">
+                              {entry.name}
+                            </h3>
+                            <div className="flex gap-1.5 mt-1">
+                              <Badge variant="outline">CLI</Badge>
+                              <Badge variant="muted">{entry.category}</Badge>
+                            </div>
+                          </div>
+                          {activeBySystemId[entry.id] && (
+                            <Badge variant="success" className="gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                              Ativa
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-sm text-text-secondary leading-relaxed line-clamp-3 mb-4">
+                          {entry.description}
+                        </p>
+                        {cliById[entry.id] && (
+                          <CliBox
+                            cli={cliById[entry.id]}
+                            installing={installing === entry.id}
+                            onInstall={() => install(entry.id)}
+                          />
+                        )}
+                        <TransportRow
+                          entry={entry}
+                          transport="Chave de API"
+                          active={activeBySystemId[entry.id] ?? null}
+                          onActivate={() =>
+                            setActivateTarget({
+                              entry,
+                              existing: activeBySystemId[entry.id] ?? null,
+                            })
+                          }
+                        />
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </>
+            )}
           </TabsContent>
 
           <TabsContent value="active">
@@ -259,7 +467,9 @@ export function IntegrationsPage() {
             <CredentialsList
               credentials={credentials}
               integrations={integrations}
+              catalog={catalog}
               onChange={refresh}
+              onRegister={(providerKey) => setCredentialTarget({ providerKey })}
             />
           </TabsContent>
         </Tabs>
@@ -289,6 +499,19 @@ export function IntegrationsPage() {
           onClose={() => setCredentialDialogOpen(false)}
           onSaved={() => {
             setCredentialDialogOpen(false);
+            refresh();
+          }}
+        />
+      )}
+
+      {credentialTarget && (
+        <CredentialDialog
+          catalog={catalog}
+          presetProviderKey={credentialTarget.providerKey}
+          lockProviderKey
+          onClose={() => setCredentialTarget(null)}
+          onSaved={() => {
+            setCredentialTarget(null);
             refresh();
           }}
         />
@@ -391,11 +614,15 @@ function ActiveList({
 function CredentialsList({
   credentials,
   integrations,
+  catalog,
   onChange,
+  onRegister,
 }: {
   credentials: UserCredential[];
   integrations: UserIntegration[];
+  catalog: CatalogEntry[];
   onChange: () => void;
+  onRegister: (providerKey: string) => void;
 }) {
   async function remove(c: UserCredential) {
     const used = integrations.filter((i) => i.credential_id === c.id);
@@ -412,36 +639,89 @@ function CredentialsList({
     }
   }
 
-  if (credentials.length === 0) {
-    return (
-      <Card className="mt-4">
-        <CardContent className="p-12 flex flex-col items-center text-center">
-          <Key className="w-8 h-8 text-text-muted mb-3" />
-          <p className="text-sm text-text-muted">
-            Nenhuma credencial cadastrada. Clique em <b>Nova credencial</b>.
-          </p>
-        </CardContent>
-      </Card>
-    );
+  const providerName = new Map<string, string>();
+  for (const provider of groupByProvider(catalog)) {
+    providerName.set(provider.id, provider.name);
+  }
+  for (const entry of catalog) {
+    if (entry.kind === "cli") providerName.set(entry.provider, entry.name);
   }
 
+  /** Vendors the platform already knows about and has no secret for yet.
+   *  An empty list plus a generic "new credential" button leaves the client
+   *  guessing what this product can even connect to. */
+  const missing = [...providerName.keys()].filter(
+    (id) =>
+      !credentials.some((c) => c.provider_key === id) &&
+      catalog.some((c) => c.provider === id && c.credential_fields.length > 0),
+  );
+
   return (
-    <div className="grid gap-3 mt-4">
-      {credentials.map((c) => (
-        <Card key={c.id}>
-          <CardContent className="p-4 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="font-display font-bold text-sm truncate">{c.name}</div>
-              <div className="text-xs text-text-muted">
-                {c.provider_key || "genérica"} · atualizada {new Date(c.updated_at).toLocaleString()}
-              </div>
-            </div>
-            <Button size="sm" variant="ghost" onClick={() => remove(c)}>
-              <Trash2 className="w-4 h-4" /> Excluir
-            </Button>
-          </CardContent>
-        </Card>
-      ))}
+    <div className="mt-4 space-y-6">
+      <div>
+        <h3 className="font-display font-bold text-text-primary mb-1">
+          Cadastradas ({credentials.length})
+        </h3>
+        {credentials.length === 0 ? (
+          <p className="text-sm text-text-muted">
+            Nenhuma ainda. Cadastre abaixo o fornecedor que você usa.
+          </p>
+        ) : (
+          <div className="grid gap-3">
+            {credentials.map((c) => {
+              const used = integrations.filter((i) => i.credential_id === c.id);
+              return (
+                <Card key={c.id}>
+                  <CardContent className="p-4 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-display font-bold text-sm truncate">
+                        {c.name}
+                      </div>
+                      <div className="text-xs text-text-muted">
+                        {providerName.get(c.provider_key) ??
+                          c.provider_key ??
+                          "genérica"}
+                        {used.length > 0
+                          ? ` · usada por ${used.map((i) => i.slug).join(", ")}`
+                          : " · não usada por nenhuma integração"}
+                      </div>
+                    </div>
+                    <Button size="sm" variant="ghost" onClick={() => remove(c)}>
+                      <Trash2 className="w-4 h-4" /> Excluir
+                    </Button>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {missing.length > 0 && (
+        <div>
+          <h3 className="font-display font-bold text-text-primary mb-1">
+            Fornecedores que a plataforma já conhece
+          </h3>
+          <p className="text-sm text-text-muted mb-3">
+            Cadastre o segredo uma vez por fornecedor — ele serve para a API, o
+            servidor MCP e o acesso aos repositórios dele.
+          </p>
+          <div className="grid gap-2 md:grid-cols-2">
+            {missing.map((id) => (
+              <Card key={id}>
+                <CardContent className="p-3 flex items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-text-primary truncate">
+                    {providerName.get(id) ?? id}
+                  </span>
+                  <Button size="sm" variant="subtle" onClick={() => onRegister(id)}>
+                    <Plus className="w-3.5 h-3.5" /> Cadastrar
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -476,7 +756,7 @@ function ActivateDialog({
   >(null);
 
   const matchingCredentials = credentials.filter(
-    (c) => !c.provider_key || c.provider_key === entry.id,
+    (c) => !c.provider_key || c.provider_key === entry.provider,
   );
   const needsCredential = entry.credential_fields.length > 0;
   const selectedCredential = credentials.find((c) => c.id === credentialId) ?? null;
@@ -624,7 +904,7 @@ function ActivateDialog({
       {credentialEditor && (
         <CredentialDialog
           catalog={catalog}
-          presetProviderKey={credentialEditor.mode === "create" ? entry.id : undefined}
+          presetProviderKey={credentialEditor.mode === "create" ? entry.provider : undefined}
           lockProviderKey={credentialEditor.mode === "create"}
           existing={credentialEditor.mode === "edit" ? credentialEditor.credential : undefined}
           onClose={() => setCredentialEditor(null)}
@@ -658,9 +938,20 @@ function CredentialDialog({
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
-  const selectedEntry = catalog.find((c) => c.id === providerKey);
-  const fields = selectedEntry?.credential_fields ?? [];
+  const providerEntries = catalog.filter((c) => c.provider === providerKey);
+  const selectedEntry =
+    providerEntries.find((c) => c.id === providerKey) ?? providerEntries[0];
+  /** Union across the vendor's transports: one credential answers all of them,
+   *  and the API may need a field the MCP server does not (a base URL). */
+  const fields = Array.from(
+    new Map(
+      providerEntries.flatMap((c) => c.credential_fields).map((f) => [f.key, f]),
+    ).values(),
+  );
   const providerLocked = lockProviderKey || isEdit;
+  const otherTransports = providerEntries
+    .filter((c) => c.id !== selectedEntry?.id)
+    .map((c) => c.name);
 
   async function save() {
     if (!name.trim()) {
@@ -723,7 +1014,7 @@ function CredentialDialog({
         </DialogHeader>
         <div className="space-y-4">
           <div>
-            <Label>Integração alvo</Label>
+            <Label>Fornecedor</Label>
             <select
               className="w-full mt-1 px-3 py-2 rounded-md border border-border bg-white text-sm disabled:opacity-60"
               value={providerKey}
@@ -734,14 +1025,27 @@ function CredentialDialog({
               }}
             >
               <option value="">Genérica (qualquer)</option>
+              {groupByProvider(catalog)
+                .filter((p) => p.needsCredential)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
               {catalog
-                .filter((c) => c.credential_fields.length > 0)
+                .filter((c) => c.kind === "cli" && c.credential_fields.length > 0)
                 .map((c) => (
-                  <option key={c.id} value={c.id}>
+                  <option key={c.id} value={c.provider}>
                     {c.name}
                   </option>
                 ))}
             </select>
+            {otherTransports.length > 0 && (
+              <p className="text-xs text-text-muted mt-1">
+                Esta credencial também atende: {otherTransports.join(", ")}. Você
+                cadastra o segredo uma vez.
+              </p>
+            )}
           </div>
 
           {selectedEntry && (!!selectedEntry.setup_steps?.length || !!selectedEntry.docs_url) && (
