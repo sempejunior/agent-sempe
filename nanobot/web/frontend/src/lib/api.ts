@@ -903,9 +903,42 @@ export async function deleteCredential(credentialId: number): Promise<{ ok: bool
 }
 
 // WebSocket
-export type WsMessageType = "response" | "progress" | "tool_hint" | "error" | "pong";
+export type WsMessageType =
+  | "response"
+  | "progress"
+  | "tool_hint"
+  | "trace"
+  | "error"
+  | "pong";
 
-export interface WsIncoming {
+/** One step of a turn's execution, as the loop saw it. Opt-in per turn: it
+ *  carries the assembled prompt and every tool result. */
+export interface TraceEvent {
+  kind: "turn" | "llm" | "tool_call" | "tool_result" | "delegation" | "limit";
+  iteration?: number;
+  model?: string;
+  tools?: string[];
+  max_iterations?: number;
+  system_prompt?: string;
+  user_message?: string;
+  history_messages?: number;
+  content?: string;
+  reasoning?: string;
+  usage?: Record<string, number>;
+  tool_calls?: string[];
+  tool?: string;
+  arguments?: string;
+  result?: string;
+  cli?: string;
+  repo?: string;
+  branch?: string;
+  prompt?: string;
+  timeout_s?: number;
+  iterations?: number;
+  tools_used?: string[];
+}
+
+export interface WsIncoming extends Partial<TraceEvent> {
   type: WsMessageType;
   content?: string;
   session_key?: string;

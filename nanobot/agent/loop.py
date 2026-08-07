@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
+from nanobot.agent import trace
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
@@ -384,6 +385,20 @@ class AgentLoop:
         messages = initial_messages
         iteration = 0
         final_content = None
+        await trace.emit(
+            "turn",
+            model=_model,
+            tools=[d["function"]["name"] for d in _tools.get_definitions()],
+            max_iterations=_max_iter,
+            system_prompt=trace.clip(next(
+                (m.get("content", "") for m in messages if m.get("role") == "system"), "",
+            )),
+            user_message=trace.clip(next(
+                (m.get("content", "") for m in reversed(messages)
+                 if m.get("role") == "user"), "",
+            ), 4_000),
+            history_messages=len(messages),
+        )
         tools_used: list[str] = []
         nudged = False
         post_nudge_tools = False
@@ -405,6 +420,16 @@ class AgentLoop:
                 logger.error("LLM provider failed (code={}, retryable={}): {}", e.code, e.retryable, e)
                 final_content = _PROVIDER_ERROR_MESSAGE
                 break
+
+            await trace.emit(
+                "llm",
+                iteration=iteration,
+                model=_model,
+                content=trace.clip(response.content or "", 4_000),
+                reasoning=trace.clip(response.reasoning_content or "", 6_000),
+                usage=response.usage,
+                tool_calls=[tc.name for tc in (response.tool_calls or ())],
+            )
 
             if usage_totals is not None:
                 usage_totals["prompt_tokens"] = (
@@ -441,8 +466,12 @@ class AgentLoop:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
+                    await trace.emit("tool_call", iteration=iteration,
+                                     tool=tool_call.name, arguments=trace.clip(args_str))
                 results = await _tools.execute_calls(response.tool_calls)
                 for tool_call, result in zip(response.tool_calls, results):
+                    await trace.emit("tool_result", iteration=iteration,
+                                     tool=tool_call.name, result=trace.clip(result))
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -481,6 +510,7 @@ class AgentLoop:
 
         if final_content is None and iteration >= _max_iter:
             logger.warning("Max iterations ({}) reached", _max_iter)
+            await trace.emit("limit", iterations=iteration, tools_used=tools_used)
             final_content = (
                 f"I reached the maximum number of tool call iterations ({_max_iter}) "
                 "without completing the task. You can try breaking the task into smaller steps."

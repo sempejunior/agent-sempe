@@ -34,6 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from nanobot.agent import trace
 from nanobot.agent.tools.base import Tool
 
 _DEFAULT_TIMEOUT_S = 1800
@@ -317,6 +318,8 @@ class CodeAgentTool(Tool):
             expected=expected, verify=verify, constraints=constraints,
         )
         log_path = self._log_path()
+        await trace.emit("delegation", cli=spec.binary, repo=str(local), branch=branch,
+                         prompt=trace.clip(prompt), timeout_s=self._timeout)
         started = time.monotonic()
         code, timed_out = await self._run(spec, prompt, local, secret, log_path)
         elapsed = int(time.monotonic() - started)

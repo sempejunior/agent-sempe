@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from starlette.websockets import WebSocketState
 
+from nanobot.agent import trace
+
 if TYPE_CHECKING:
     from nanobot.cron.types import CronSchedule
 
@@ -2090,13 +2092,24 @@ form.addEventListener("submit", async (e) => {{
                     continue
             return False
 
+        def _trace_sink(session_key: str):
+            """Deliver the turn's execution trace to the socket that asked for it.
+
+            Opt-in per turn: the trace carries the assembled prompt and every tool
+            result, which is a lot of bytes nobody wants when the panel is closed.
+            """
+            async def sink(event: dict[str, Any]) -> None:
+                await _deliver({"type": "trace", "session_key": session_key, **event})
+            return sink
+
         async def on_progress(text: str, *, tool_hint: bool = False) -> None:
             await _deliver({
                 "type": "tool_hint" if tool_hint else "progress",
                 "content": text,
             })
 
-        async def _handle_message(content: str, session_key: str, agent_id: str | None) -> None:
+        async def _handle_message(content: str, session_key: str, agent_id: str | None,
+                                  tracing: bool = False) -> None:
             """Run one agent turn and deliver the outcome.
 
             Runs as a background task so the receive loop keeps consuming
@@ -2106,6 +2119,7 @@ form.addEventListener("submit", async (e) => {{
             """
             error_payload: dict[str, Any] | None = None
             response: str | None = None
+            token = trace.install(_trace_sink(session_key) if tracing else None)
             try:
                 response = await asyncio.wait_for(
                     app.state.agent.process_direct(
@@ -2158,6 +2172,9 @@ form.addEventListener("submit", async (e) => {{
                     "session_key": session_key,
                 }
 
+            finally:
+                trace.reset(token)
+
             payload = error_payload if error_payload is not None else {
                 "type": "response",
                 "content": response,
@@ -2180,7 +2197,8 @@ form.addEventListener("submit", async (e) => {{
                         continue
 
                     task = asyncio.create_task(
-                        _handle_message(content, session_key, agent_id)
+                        _handle_message(content, session_key, agent_id,
+                                        tracing=bool(data.get("trace")))
                     )
                     ws_tasks.add(task)
                     task.add_done_callback(ws_tasks.discard)
