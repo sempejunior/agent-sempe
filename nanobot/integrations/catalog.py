@@ -321,16 +321,19 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         category="devtools",
         docs_url="https://kiro.dev/docs/cli/headless/",
         setup_steps=(
-            "Gere uma API key do Kiro (kiro.dev → sua conta). A chave de API está "
-            "disponível nos planos pagos (Pro e acima).",
-            "Cole a chave abaixo. Ela é guardada cifrada e vai só para o processo "
-            "do Kiro CLI — nunca aparece no chat.",
-            "O binário kiro-cli precisa estar instalado na máquina do agente; a "
-            "imagem já sobe com ele.",
+            "Entre em app.kiro.dev com uma conta Pro, Pro+, Pro Max ou Power — "
+            "chave de API não existe no plano gratuito.",
+            "Vá na seção API Keys, crie uma chave com um nome que lembre para que "
+            "ela serve, e copie na hora: o valor completo só aparece na criação.",
+            "Se a sua assinatura é gerida por um administrador, ele precisa "
+            "habilitar a geração de chaves antes (API key governance).",
+            "Cole a chave abaixo (começa com ksk_). Ela é guardada cifrada e vai "
+            "só para o processo do Kiro CLI — nunca aparece no chat.",
         ),
         credential_fields=(
             CredentialField("api_key", "API Key do Kiro", "password",
-                            hint="Usada como KIRO_API_KEY pelo kiro-cli."),
+                            hint="Começa com ksk_. Criada em app.kiro.dev → API Keys. "
+                                 "Vai como KIRO_API_KEY para o kiro-cli."),
         ),
         auth=AuthSpec(mode="none"),
     ),
