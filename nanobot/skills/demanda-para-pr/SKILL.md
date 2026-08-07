@@ -52,6 +52,35 @@ O id da demanda no nome é o que liga o PR à origem depois.
 Explore com as ferramentas de arquivo e com `exec` (`grep -rn`, `ls`, ler testes existentes). Edite
 com `edit_file` — mudança mínima que resolve o problema, no estilo do código que já está lá.
 
+### Quando delegar a escrita
+
+Se a tool `code_agent` estiver disponível, você pode entregar a escrita a um agente
+especialista de terminal, que trabalha no repositório clonado:
+
+- **Delegue** quando a mudança exige explorar o código: mais de dois ou três arquivos, um
+  padrão que você precisa descobrir antes de imitar, ou uma correção onde a causa não está
+  óbvia.
+- **Não delegue** ajuste de uma ou duas linhas que você já localizou. Você faz mais rápido,
+  mais barato, e com menos chance de mudança fora do escopo.
+
+A instrução que você escreve é o que determina a qualidade do resultado. Escreva como
+explicaria a um desenvolvedor que acabou de chegar: **o problema**, o **resultado esperado** e
+**como verificar**. Cite os arquivos em `focus` quando já souber onde olhar.
+
+```
+code_agent(repo=<caminho>, instruction="...", focus=["calc/desconto.py"])
+```
+
+O que voltar dela é **relato, não verdade**. A verdade é o `diff` e o teste — e vale
+desconfiar:
+
+- Leia o `diff` inteiro antes de aceitar. Mudança fora do escopo do pedido é motivo para
+  desfazer (`git checkout -- <arquivo>`) e delegar de novo com instrução mais precisa.
+- Se a saída disser que **não** conseguiu (falha de autenticação, configuração, teto de
+  tempo), trate como não feito. Não commite e não abra PR; relate o que aconteceu.
+- A delegação **não commita nem envia** — isso continua seu, com a tool `repo`, depois de os
+  testes passarem.
+
 Depois **rode a verificação que o repositório oferece**, com `exec`: a suíte de testes, o lint, o
 build. Descubra qual é (`package.json`, `pyproject.toml`, `Makefile`) em vez de supor.
 
@@ -86,6 +115,10 @@ Abrir o PR é `http_call` na origem, porque isso é a única parte específica d
 A descrição do PR precisa ter, nesta ordem: **o que estava errado**, **o que você mudou e por quê**,
 **como verificou** (comando e resultado, ou a declaração de que não verificou), e o **link da
 demanda**. Um revisor deve conseguir decidir sem abrir o código.
+
+**Se a escrita foi delegada, diga isso na descrição** — qual agente escreveu e que você revisou
+o diff. Quem revisa precisa saber quanto do código passou por julgamento humano antes de chegar
+ali.
 
 Por fim, comente na demanda com o link do PR (`add_work_item_comment`, `add_issue_comment` ou o
 equivalente) e, se fizer sentido, mova o estado dela.

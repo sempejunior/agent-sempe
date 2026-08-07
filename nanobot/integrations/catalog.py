@@ -272,6 +272,31 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         git=GitSpec("https://dev.azure.com/{organization}/_git/{path}", "azure", "pat"),
     ),
     IntegrationEntry(
+        id="kiro",
+        kind="api",
+        name="Kiro (agente de código)",
+        description=(
+            "Delega a escrita de código ao Kiro CLI rodando nesta máquina, dentro "
+            "do repositório clonado. O agente prepara o branch, o Kiro escreve, e "
+            "os testes decidem se vira pull request."
+        ),
+        category="devtools",
+        docs_url="https://kiro.dev/docs/cli/headless/",
+        setup_steps=(
+            "Gere uma API key do Kiro (kiro.dev → sua conta). A chave de API está "
+            "disponível nos planos pagos (Pro e acima).",
+            "Cole a chave abaixo. Ela é guardada cifrada e vai só para o processo "
+            "do Kiro CLI — nunca aparece no chat.",
+            "O binário kiro-cli precisa estar instalado na máquina do agente; a "
+            "imagem já sobe com ele.",
+        ),
+        credential_fields=(
+            CredentialField("api_key", "API Key do Kiro", "password",
+                            hint="Usada como KIRO_API_KEY pelo kiro-cli."),
+        ),
+        auth=AuthSpec(mode="none"),
+    ),
+    IntegrationEntry(
         id="gitlab",
         kind="api",
         name="GitLab",

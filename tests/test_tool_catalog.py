@@ -7,8 +7,8 @@ import pytest
 from nanobot.agent.tools.catalog import CATALOG, get_spec, serialize_catalog
 from nanobot.agent.user_context import build_tool_registry
 
-_PERMISSIONS = {"repo", "exec", "computer", "browser", "screenshot", "cron",
-                "message", "save_mcp_server"}
+_PERMISSIONS = {"repo", "code_agent", "exec", "computer", "browser", "screenshot",
+                "cron", "message", "save_mcp_server"}
 
 
 @pytest.fixture
@@ -101,6 +101,17 @@ def test_repo_tool_follows_the_git_capable_integrations(full_context):
         tools_enabled=["repo"], active_integrations={"gitlab"}, **full_context,
     )
     assert with_gitlab.has("repo")
+
+
+def test_code_agent_follows_the_cli_integration(full_context):
+    """A delegação só existe quando há um agente de código ativo."""
+    without = build_tool_registry(tools_enabled=["code_agent"], **full_context)
+    assert not without.has("code_agent")
+
+    with_kiro = build_tool_registry(
+        tools_enabled=["code_agent"], active_integrations={"kiro"}, **full_context,
+    )
+    assert with_kiro.has("code_agent")
 
 
 def test_repo_tool_needs_the_permission(full_context):

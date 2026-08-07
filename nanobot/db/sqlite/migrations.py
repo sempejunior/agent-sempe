@@ -757,6 +757,57 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
     await _consolidate_pdi_templates(db)
     await _refresh_pdi_prompt(db)
     await _enable_analise_desempenho_skill(db)
+    await _backfill_user_limits(db)
+
+
+async def _backfill_user_limits(db: "aiosqlite.Connection") -> None:
+    """Bring already-created users up to the current limit defaults.
+
+    ``_DEFAULT_LIMITS`` only applies when a user row is created, so existing
+    users keep whatever JSON was written back then — including a 30s exec ceiling
+    that kills a clone, an install or a test suite, and the dead
+    ``sandbox_memory``/``sandbox_cpu`` keys that never controlled anything.
+
+    A limit the user raised above the default is left alone; this only lifts
+    values that are still at or below an outdated default.
+    """
+    import json
+
+    from nanobot.db.sqlite.user_repo import _DEFAULT_LIMITS
+
+    outdated_ceilings = {"max_exec_timeout_s": 30}
+    dead_keys = ("sandbox_memory", "sandbox_cpu")
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+    )
+    if not await cursor.fetchone():
+        return
+
+    cursor = await db.execute("SELECT user_id, limits FROM users")
+    for user_id, raw in await cursor.fetchall():
+        try:
+            limits = json.loads(raw) if raw else {}
+        except (TypeError, ValueError):
+            limits = {}
+        if not isinstance(limits, dict):
+            limits = {}
+
+        updated = dict(limits)
+        for key in dead_keys:
+            updated.pop(key, None)
+        for key, default in _DEFAULT_LIMITS.items():
+            if key not in updated:
+                updated[key] = default
+            elif key in outdated_ceilings and updated[key] <= outdated_ceilings[key]:
+                updated[key] = default
+
+        if updated != limits:
+            await db.execute(
+                "UPDATE users SET limits = ? WHERE user_id = ?",
+                (json.dumps(updated), user_id),
+            )
+    await db.commit()
 
 
 async def _consolidate_pdi_templates(db: "aiosqlite.Connection") -> None:

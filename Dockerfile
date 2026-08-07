@@ -32,7 +32,8 @@ RUN apt-get update && \
     tesseract-ocr \
     tesseract-ocr-por \
     poppler-utils \
-    jq && \
+    jq \
+    unzip && \
     apt-get purge -y gnupg && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
@@ -48,6 +49,20 @@ RUN git config --system user.name "Solides Agent" && \
     printf '#!/bin/sh\nprintf %%s "$NANOBOT_GIT_PASSWORD"\n' \
       > /usr/local/bin/nanobot-git-askpass && \
     chmod 755 /usr/local/bin/nanobot-git-askpass
+
+# Kiro CLI: the code agent the platform delegates writing code to, headless.
+#
+# Two things to know before touching this. It adds ~856 MB to the image (three
+# binaries, kiro-cli-chat alone is ~700 MB), so it is behind the KIRO_CLI build
+# arg and off by default — turn it on for the image that actually runs code
+# delegation. And the vendor only ships an unpinned installer script: pin a
+# version as soon as they publish one, and treat this as a supply-chain dependency.
+ARG KIRO_CLI=0
+RUN if [ "$KIRO_CLI" = "1" ]; then \
+      curl -fsSL https://cli.kiro.dev/install | bash && \
+      /root/.local/bin/kiro-cli --version; \
+    fi
+ENV PATH="/root/.local/bin:${PATH}"
 
 # Tell Puppeteer to use system Chromium (non-headless, renders on Xvfb)
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium

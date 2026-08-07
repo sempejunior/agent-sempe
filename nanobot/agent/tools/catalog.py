@@ -42,6 +42,7 @@ class ToolContext:
     bus: Any = None
     brave_api_key: str | None = None
     exec_timeout: int = 30
+    job_timeout: int = 1800
     restrict_to_workspace: bool = True
     cron_service: Any = None
     skill_repo: Any = None
@@ -69,6 +70,12 @@ class ToolContext:
     @property
     def allowed_dir(self) -> Path | None:
         return self.agent_dir if self.restrict_to_workspace else None
+
+
+def _cli_integrations() -> tuple[str, ...]:
+    """Integration ids that provide a code agent CLI — derived from its specs."""
+    from nanobot.agent.tools.code_agent import cli_integrations
+    return cli_integrations()
 
 
 def _git_origins() -> tuple[str, ...]:
@@ -223,6 +230,13 @@ def _repo(ctx: ToolContext) -> "Tool":
                     credential_repo=ctx.credential_repo, agent_dir=ctx.agent_dir)
 
 
+def _code_agent(ctx: ToolContext) -> "Tool":
+    from nanobot.agent.tools.code_agent import CodeAgentTool
+    return CodeAgentTool(user_id=ctx.user_id, integration_repo=ctx.integration_repo,
+                         credential_repo=ctx.credential_repo, agent_dir=ctx.agent_dir,
+                         timeout=ctx.job_timeout)
+
+
 def _cron(ctx: ToolContext) -> "Tool":
     from nanobot.agent.tools.cron import CronTool
     return CronTool(ctx.cron_service)
@@ -288,6 +302,11 @@ CATALOG: tuple[ToolSpec, ...] = (
              permission=True, requires=("integrations",),
              integrations=_git_origins(),
              warn="Clona, comita e envia branches nos repositórios do cliente."),
+    ToolSpec("code_agent", "Agente de código no terminal", "Ambiente", _code_agent,
+             permission=True, requires=("integrations",),
+             integrations=_cli_integrations(),
+             warn="Delega a escrita do código a um agente externo, que edita "
+                  "arquivos e roda comandos no repositório."),
     ToolSpec("exec", "Executar comandos no terminal", "Ambiente", _exec,
              permission=True,
              warn="Roda comandos arbitrários no ambiente do agente."),

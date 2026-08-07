@@ -1,0 +1,370 @@
+"""Delegate writing code to an external agent CLI, inside an already cloned repo.
+
+The orchestrating agent can run a cheap model: it reads the demand, prepares the
+branch and judges the result. Writing the code is handed to a specialist CLI that
+runs headless — a prompt as argument, an exit code as answer. Driving an
+interactive TUI through a pty would break on the first layout change; headless
+mode is what the vendors document and what CI uses.
+
+Three things this module refuses to do, and each is a decision rather than an
+omission:
+
+- **No free-form command.** The caller gives a repository and an instruction; the
+  binary and its flags come from the spec below.
+- **No work on the default branch.** Same rule the ``repo`` tool enforces, so a
+  delegation can never write straight to main.
+- **No treating the CLI's text as truth.** Vendors do not document the output as
+  machine-readable. What actually happened is the exit code, the ``git diff`` and
+  the tests — the CLI's prose is context.
+
+The log goes to a file while the process runs, so a timeout still leaves evidence
+instead of discarding minutes of work, and the model gets the *tail* of it — an
+agent CLI writes its summary at the end.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import signal
+import time
+from dataclasses import dataclass, replace
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from nanobot.agent.tools.base import Tool
+
+_DEFAULT_TIMEOUT_S = 1800
+_LOG_TAIL_CHARS = 6_000
+_ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TERM")
+_EXTRA_BIN_DIRS = ("/root/.local/bin", "/usr/local/bin")
+"""Where vendor installers drop the binary. Their scripts install to the user's
+local bin and then ask you to fix PATH yourself, which a service process never
+reads — so look there directly instead of depending on the environment."""
+
+
+@dataclass(frozen=True)
+class CliSpec:
+    """How to invoke one agent CLI headlessly.
+
+    Everything vendor-specific lives here, so supporting another CLI is a new
+    entry rather than a branch in the code.
+    """
+
+    integration: str
+    binary: str
+    args: tuple[str, ...]
+    key_env: str
+    key_field: str = "api_key"
+    ok_codes: tuple[int, ...] = (0,)
+    failure_markers: tuple[str, ...] = ()
+    notes: str = ""
+
+
+CLI_SPECS: tuple[CliSpec, ...] = (
+    CliSpec(
+        integration="kiro",
+        binary="kiro-cli",
+        args=("chat", "--no-interactive",
+              "--trust-tools=fs_read,fs_write,execute_bash",
+              "--require-mcp-startup"),
+        key_env="KIRO_API_KEY",
+        failure_markers=("Authentication failed", "Failed to open URL",
+                         "--use-device-flow"),
+        notes=("exit 1 = falha geral; exit 3 = MCP não subiu. Atenção: na versão "
+               "2.16.2 ele sai com 0 mesmo em falha de autenticação, por isso a "
+               "saída também é inspecionada."),
+    ),
+)
+
+
+def cli_integrations() -> tuple[str, ...]:
+    """Integration ids that provide a code agent CLI — derived, not hand-written."""
+    return tuple(spec.integration for spec in CLI_SPECS)
+
+
+class CodeAgentTool(Tool):
+    """Hand a coding task to an agent CLI running in the cloned repository."""
+
+    def __init__(self, *, user_id: str, integration_repo: Any, credential_repo: Any,
+                 agent_dir: Path, timeout: int = _DEFAULT_TIMEOUT_S):
+        self._user_id = user_id
+        self._integration_repo = integration_repo
+        self._credential_repo = credential_repo
+        self._agent_dir = agent_dir
+        self._timeout = timeout or _DEFAULT_TIMEOUT_S
+
+    @property
+    def name(self) -> str:
+        return "code_agent"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Delega a escrita do código a um agente especialista de terminal, "
+            "dentro de um repositório já clonado com a tool repo. Use para "
+            "mudança que exige explorar o código; para ajuste de uma ou duas "
+            "linhas, edite você mesmo (é mais rápido e barato). Escreva a "
+            "instrução como você explicaria a um desenvolvedor: o problema, o "
+            "resultado esperado e como verificar. Ele edita arquivos e roda "
+            "comandos, mas NÃO commita nem envia — isso continua seu, com a "
+            "tool repo, depois de você revisar o diff e rodar os testes."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "repo": {
+                    "type": "string",
+                    "description": "Caminho do repositório devolvido por repo ensure.",
+                },
+                "instruction": {
+                    "type": "string",
+                    "description": "O que fazer, com contexto: o problema, o "
+                                   "resultado esperado e como verificar.",
+                },
+                "focus": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Arquivos ou diretórios onde olhar primeiro "
+                                   "(opcional, ajuda a CLI a começar certo).",
+                },
+            },
+            "required": ["repo", "instruction"],
+        }
+
+    async def execute(self, repo: str = "", instruction: str = "",
+                      focus: list[str] | None = None, **_: Any) -> str:
+        if not instruction.strip():
+            return "Error: instruction é obrigatória — descreva o que fazer."
+        try:
+            local = self._resolve_repo(repo)
+            spec, secret = await self._resolve_cli()
+        except _DelegationError as e:
+            return f"Error: {e}"
+
+        branch = await self._current_branch(local)
+        default = await self._default_branch(local)
+        if branch == default:
+            return (f"Error: o repositório está no branch default ('{branch}'). "
+                    "Crie um branch de trabalho com a tool repo antes de delegar.")
+
+        prompt = self._build_prompt(instruction, focus or [])
+        log_path = self._log_path()
+        started = time.monotonic()
+        code, timed_out = await self._run(spec, prompt, local, secret, log_path)
+        elapsed = int(time.monotonic() - started)
+
+        return await self._report(
+            spec=spec, local=local, branch=branch, log_path=log_path,
+            code=code, timed_out=timed_out, elapsed=elapsed, secret=secret,
+        )
+
+    def _resolve_repo(self, repo: str) -> Path:
+        if not repo:
+            raise _DelegationError("informe o repo devolvido por repo ensure")
+        local = Path(repo).expanduser().resolve()
+        root = self._agent_dir.resolve()
+        try:
+            local.relative_to(root)
+        except ValueError:
+            raise _DelegationError(f"repo {repo} está fora de {root}") from None
+        if not (local / ".git").is_dir():
+            raise _DelegationError(f"{repo} não é um repositório clonado")
+        return local
+
+    async def _resolve_cli(self) -> tuple[CliSpec, str]:
+        """Pick the first CLI whose integration is active and whose binary exists."""
+        from nanobot.utils.crypto import decrypt
+        missing_binary: list[str] = []
+        for spec in CLI_SPECS:
+            row = await self._integration_repo.get_integration(self._user_id, spec.integration)
+            if not row or not row.get("enabled") or not row.get("credential_id"):
+                continue
+            resolved = _which(spec.binary)
+            if not resolved:
+                missing_binary.append(spec.binary)
+                continue
+            cred = await self._credential_repo.get_credential(
+                self._user_id, row["credential_id"])
+            cipher = (cred or {}).get("secret_cipher", "")
+            if not cipher:
+                continue
+            try:
+                data = json.loads(decrypt(cipher))
+            except (ValueError, TypeError):
+                raise _DelegationError(
+                    f"credencial de '{spec.integration}' ilegível") from None
+            secret = str(data.get(spec.key_field, ""))
+            if not secret:
+                raise _DelegationError(
+                    f"credencial de '{spec.integration}' não tem o campo "
+                    f"'{spec.key_field}'")
+            return replace(spec, binary=resolved), secret
+        if missing_binary:
+            raise _DelegationError(
+                f"a integração está ativa mas o binário não está instalado nesta "
+                f"máquina ({', '.join(missing_binary)})"
+            )
+        raise _DelegationError(
+            "nenhum agente de código ativo. Ative um em Integrações "
+            f"({', '.join(cli_integrations())}) com a chave de API."
+        )
+
+    @staticmethod
+    def _build_prompt(instruction: str, focus: list[str]) -> str:
+        parts = [instruction.strip()]
+        if focus:
+            parts.append("Comece olhando: " + ", ".join(focus))
+        parts.append(
+            "Você está num repositório git, num branch de trabalho já criado. "
+            "Faça a mudança mínima que resolve o problema, no estilo do código "
+            "existente. NÃO faça commit, NÃO faça push e NÃO altere o histórico "
+            "— quem revisa e comita é o orquestrador."
+        )
+        return "\n\n".join(parts)
+
+    def _log_path(self) -> Path:
+        logs = self._agent_dir / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return logs / f"code-agent-{stamp}.log"
+
+    async def _run(self, spec: CliSpec, prompt: str, cwd: Path, secret: str,
+                   log_path: Path) -> tuple[int | None, bool]:
+        """Run the CLI, streaming output to a file. Returns (exit code, timed out)."""
+        env = {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
+        env[spec.key_env] = secret
+        with log_path.open("wb") as log:
+            process = await asyncio.create_subprocess_exec(
+                spec.binary, *spec.args, prompt,
+                stdout=log, stderr=asyncio.subprocess.STDOUT,
+                cwd=str(cwd), env=env, start_new_session=True,
+            )
+            try:
+                await asyncio.wait_for(process.wait(), timeout=self._timeout)
+            except asyncio.TimeoutError:
+                await _kill_group(process)
+                return None, True
+        return process.returncode, False
+
+    async def _report(self, *, spec: CliSpec, local: Path, branch: str, log_path: Path,
+                      code: int | None, timed_out: bool, elapsed: int,
+                      secret: str) -> str:
+        status = await self._git(["status", "--porcelain"], cwd=local)
+        stat = await self._git(["diff", "--stat"], cwd=local)
+        tail = _scrub(_tail(log_path, _LOG_TAIL_CHARS), secret)
+
+        failed_quietly = _has_marker(tail, spec.failure_markers)
+
+        if timed_out:
+            headline = (f"O agente de código foi interrompido depois de {elapsed}s "
+                        f"(teto de {self._timeout}s). O que ele já tinha feito está "
+                        "no repositório — revise o diff antes de decidir.")
+        elif failed_quietly:
+            headline = (f"O agente de código NÃO fez o trabalho: a saída indica "
+                        f"falha de autenticação ou de configuração, apesar do exit "
+                        f"{code}. Confira a chave da integração. Nada foi entregue.")
+        elif code in spec.ok_codes:
+            headline = f"O agente de código terminou em {elapsed}s."
+        else:
+            hint = f" {spec.notes}" if spec.notes else ""
+            headline = (f"O agente de código falhou (exit {code}) depois de "
+                        f"{elapsed}s.{hint}")
+
+        changed = status.strip() or "(nenhum arquivo alterado)"
+        return "\n\n".join([
+            headline,
+            f"Arquivos alterados:\n{changed}",
+            f"Diff:\n{stat.strip() or '(vazio)'}",
+            f"Branch de trabalho: {branch}",
+            f"Log completo: {log_path}",
+            f"Fim do log:\n{tail or '(vazio)'}",
+            "Revise o diff, rode os testes e só então comite com a tool repo. "
+            "Se o teste falhar, não abra PR.",
+        ])
+
+    async def _current_branch(self, local: Path) -> str:
+        return (await self._git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=local)).strip()
+
+    async def _default_branch(self, local: Path) -> str:
+        out = await self._git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+                              cwd=local)
+        if out.strip():
+            return out.strip().rsplit("/", 1)[-1]
+        for candidate in ("main", "master"):
+            if (await self._git(["rev-parse", "--verify", f"origin/{candidate}"],
+                                cwd=local)).strip():
+                return candidate
+        return "main"
+
+    @staticmethod
+    async def _git(args: list[str], *, cwd: Path) -> str:
+        env = {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
+        process = await asyncio.create_subprocess_exec(
+            "git", *args,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            cwd=str(cwd), env=env,
+        )
+        stdout, _ = await process.communicate()
+        return stdout.decode("utf-8", errors="replace") if process.returncode == 0 else ""
+
+
+class _DelegationError(Exception):
+    """Expected, explainable failure — reported to the model, never raised out."""
+
+
+def _which(binary: str) -> str | None:
+    """Resolve the binary on PATH, then in the directories installers use."""
+    import shutil
+    found = shutil.which(binary)
+    if found:
+        return found
+    if Path(binary).is_absolute():
+        return binary if Path(binary).is_file() else None
+    for directory in _EXTRA_BIN_DIRS:
+        candidate = Path(directory) / binary
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+async def _kill_group(process: asyncio.subprocess.Process) -> None:
+    """Kill the whole group: an agent CLI spawns children of its own."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if process.returncode is not None:
+            return
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5.0)
+            return
+        except asyncio.TimeoutError:
+            continue
+
+
+def _tail(path: Path, limit: int) -> str:
+    """Last ``limit`` characters — an agent CLI puts its summary at the end."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[-limit:] if len(text) > limit else text
+
+
+def _scrub(text: str, secret: str) -> str:
+    return text.replace(secret, "***") if secret else text
+
+
+def _has_marker(text: str, markers: tuple[str, ...]) -> bool:
+    """Detect a failure the CLI reported in prose while still exiting 0.
+
+    kiro-cli 2.16.2 exits 0 on an authentication failure, so the exit code alone
+    would report a false success — the worst outcome for an automated flow.
+    """
+    return any(marker in text for marker in markers)
