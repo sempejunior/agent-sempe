@@ -234,7 +234,7 @@ def _code_agent(ctx: ToolContext) -> "Tool":
     from nanobot.agent.tools.code_agent import CodeAgentTool
     return CodeAgentTool(user_id=ctx.user_id, integration_repo=ctx.integration_repo,
                          credential_repo=ctx.credential_repo, agent_dir=ctx.agent_dir,
-                         timeout=ctx.job_timeout)
+                         workspace=ctx.workspace, timeout=ctx.job_timeout)
 
 
 def _cron(ctx: ToolContext) -> "Tool":

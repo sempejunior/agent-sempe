@@ -142,3 +142,27 @@ def test_patch_channel_configs_does_not_disable_the_others(client):
     channels = r.json()["agent"]["channel_configs"]
     assert channels["telegram"]["enabled"] is True
     assert channels["slack"]["enabled"] is False
+
+
+def test_code_agents_lists_the_clis(client):
+    client.post("/api/auth/register", json={"user_id": "u1"})
+
+    r = client.get("/api/code-agents", headers=_auth("u1"))
+
+    assert r.status_code == 200, r.text
+    ids = [c["id"] for c in r.json()]
+    assert "kiro" in ids
+
+
+def test_installing_is_refused_when_the_instance_does_not_allow_it(client):
+    """Instalar roda um script do fornecedor na máquina compartilhada."""
+    client.post("/api/auth/register", json={"user_id": "u1"})
+
+    r = client.post("/api/code-agents/kiro/install", headers=_auth("u1"))
+
+    assert r.status_code == 403
+    assert "desativada" in r.json()["detail"]
+
+
+def test_code_agents_requires_auth(client):
+    assert client.get("/api/code-agents").status_code in (401, 403)

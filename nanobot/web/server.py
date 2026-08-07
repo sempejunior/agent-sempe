@@ -158,6 +158,12 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
     app = FastAPI(title="nanobot", docs_url=None, redoc_url=None)
 
+    # In-memory, and set here rather than in `startup`: that handler returns early
+    # when dependencies are injected (the gateway path), so anything initialized
+    # inside it never exists for the process that actually serves requests.
+    app.state.code_agent_installs = {}
+    app.state.code_agent_install_tasks = set()
+
 
     @app.on_event("startup")
     async def startup():
@@ -1496,6 +1502,79 @@ form.addEventListener("submit", async (e) => {{
             "created_at": row.get("created_at", ""),
             "updated_at": row.get("updated_at", ""),
         }
+
+    @app.get("/api/code-agents")
+    async def list_code_agents(request: Request):
+        """Which code agent CLIs exist, and whether the binary is on this machine.
+
+        The truth is always a live look at the filesystem — the in-memory status
+        only carries what happened during an install this process started.
+        """
+        await _require_user(request)
+        from nanobot.agent.tools.code_agent import CLI_SPECS, installed_binary
+
+        workspace = config.workspace_path
+        states = getattr(app.state, "code_agent_installs", {})
+        return [
+            {
+                "id": spec.integration,
+                "binary": spec.binary,
+                "path": installed_binary(spec, workspace) or "",
+                "installed": bool(installed_binary(spec, workspace)),
+                "installable": spec.install is not None,
+                "size_hint": spec.install.size_hint if spec.install else "",
+                "install_allowed": config.tools.allow_runtime_install,
+                "status": states.get(spec.integration, {}).get("status", ""),
+                "detail": states.get(spec.integration, {}).get("detail", ""),
+            }
+            for spec in CLI_SPECS
+        ]
+
+    @app.post("/api/code-agents/{agent_cli_id}/install")
+    async def install_code_agent(request: Request, agent_cli_id: str):
+        """Install an agent CLI on this machine, in the background.
+
+        Gated by ``tools.allow_runtime_install``: installing runs a vendor script
+        on the host that every client of this instance shares, so it is an
+        operator decision. In the cloud, bake the CLI into the image instead.
+        """
+        await _require_user(request)
+        from nanobot.agent.tools.code_agent import get_cli_spec, install_cli
+
+        if not config.tools.allow_runtime_install:
+            raise HTTPException(
+                403,
+                "Instalação em runtime está desativada nesta instância. Suba a "
+                "imagem com a CLI embutida (build arg KIRO_CLI=1) ou ligue "
+                "tools.allow_runtime_install.",
+            )
+        spec = get_cli_spec(agent_cli_id)
+        if not spec or not spec.install:
+            raise HTTPException(404, f"'{agent_cli_id}' não tem instalador declarado.")
+
+        states = app.state.code_agent_installs
+        if states.get(agent_cli_id, {}).get("status") == "installing":
+            return {"status": "installing"}
+
+        states[agent_cli_id] = {"status": "installing", "detail": ""}
+        workspace = config.workspace_path
+
+        async def _run_install() -> None:
+            try:
+                ok, log = await install_cli(spec, workspace)
+            except Exception as e:
+                ok, log = False, str(e)
+            states[agent_cli_id] = {
+                "status": "installed" if ok else "error",
+                "detail": log[-2000:],
+            }
+            logger.info("Instalação de '{}': {}", agent_cli_id,
+                        "ok" if ok else "falhou")
+
+        task = asyncio.create_task(_run_install())
+        app.state.code_agent_install_tasks.add(task)
+        task.add_done_callback(app.state.code_agent_install_tasks.discard)
+        return {"status": "installing"}
 
     @app.get("/api/tools/catalog")
     async def get_tools_catalog(request: Request):

@@ -23,6 +23,9 @@ import {
   createCredential,
   updateCredential,
   deleteCredential,
+  getCodeAgents,
+  installCodeAgent,
+  type CodeAgentCli,
   type CatalogEntry,
   type UserIntegration,
   type UserCredential,
@@ -39,6 +42,8 @@ export function IntegrationsPage() {
   const [integrations, setIntegrations] = useState<UserIntegration[]>([]);
   const [credentials, setCredentials] = useState<UserCredential[]>([]);
   const [loading, setLoading] = useState(true);
+  const [codeAgents, setCodeAgents] = useState<CodeAgentCli[]>([]);
+  const [installing, setInstalling] = useState<string | null>(null);
   const [activateTarget, setActivateTarget] = useState<ActivateTarget | null>(null);
   const [credentialDialogOpen, setCredentialDialogOpen] = useState(false);
 
@@ -53,14 +58,16 @@ export function IntegrationsPage() {
   async function refresh() {
     setLoading(true);
     try {
-      const [c, ints, creds] = await Promise.all([
+      const [c, ints, creds, clis] = await Promise.all([
         getIntegrationsCatalog(),
         listIntegrations(),
         listCredentials(),
+        getCodeAgents().catch(() => [] as CodeAgentCli[]),
       ]);
       setCatalog(c);
       setIntegrations(ints);
       setCredentials(creds);
+      setCodeAgents(clis);
     } catch (e) {
       toast("error", (e as Error).message);
     } finally {
@@ -71,6 +78,36 @@ export function IntegrationsPage() {
   useEffect(() => {
     refresh();
   }, []);
+
+  const cliById = useMemo(() => {
+    const map: Record<string, CodeAgentCli> = {};
+    for (const cli of codeAgents) map[cli.id] = cli;
+    return map;
+  }, [codeAgents]);
+
+  /** Installing downloads hundreds of MB, so the request only starts it. */
+  async function install(id: string) {
+    setInstalling(id);
+    try {
+      await installCodeAgent(id);
+      toast("success", "Instalação iniciada. Isso leva alguns minutos.");
+      const poll = setInterval(async () => {
+        const clis = await getCodeAgents().catch(() => null);
+        if (!clis) return;
+        setCodeAgents(clis);
+        const cli = clis.find((c) => c.id === id);
+        if (cli && cli.status !== "installing") {
+          clearInterval(poll);
+          setInstalling(null);
+          if (cli.installed) toast("success", `${cli.binary} instalado.`);
+          else toast("error", cli.detail || "A instalação falhou.");
+        }
+      }, 5000);
+    } catch (e) {
+      setInstalling(null);
+      toast("error", (e as Error).message);
+    }
+  }
 
   return (
     <div className="container-app">
@@ -126,6 +163,56 @@ export function IntegrationsPage() {
                       <p className="text-sm text-text-secondary leading-relaxed line-clamp-3 mb-4">
                         {entry.description}
                       </p>
+                      {cliById[entry.id] && (
+                        <div className="rounded-xl border border-border bg-surface-alt p-3 mb-4 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold text-text-primary">
+                              CLI nesta máquina
+                            </span>
+                            {cliById[entry.id].installed ? (
+                              <Badge variant="success">Instalada</Badge>
+                            ) : (
+                              <Badge variant="muted">Não instalada</Badge>
+                            )}
+                          </div>
+                          {cliById[entry.id].installed ? (
+                            <p className="text-[11px] text-text-muted font-mono break-all">
+                              {cliById[entry.id].path}
+                            </p>
+                          ) : cliById[entry.id].install_allowed ? (
+                            <>
+                              <p className="text-[11px] text-text-muted">
+                                Baixa e instala o {cliById[entry.id].binary} aqui
+                                {cliById[entry.id].size_hint
+                                  ? ` (${cliById[entry.id].size_hint})`
+                                  : ""}
+                                . A instalação fica no volume de dados, então
+                                sobrevive a um novo deploy.
+                              </p>
+                              <Button
+                                size="sm"
+                                variant="subtle"
+                                disabled={installing === entry.id}
+                                onClick={() => install(entry.id)}
+                              >
+                                {installing === entry.id
+                                  ? "Instalando…"
+                                  : "Instalar na máquina"}
+                              </Button>
+                            </>
+                          ) : (
+                            <p className="text-[11px] text-text-muted">
+                              Instalação pela interface está desativada nesta
+                              instância. Suba a imagem com a CLI embutida.
+                            </p>
+                          )}
+                          {cliById[entry.id].status === "error" && (
+                            <p className="text-[11px] text-text-secondary">
+                              {cliById[entry.id].detail.slice(-300)}
+                            </p>
+                          )}
+                        </div>
+                      )}
                       <div className="flex items-center gap-2">
                         <Button
                           size="sm"

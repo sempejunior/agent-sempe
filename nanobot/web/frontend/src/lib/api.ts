@@ -822,6 +822,26 @@ export async function getToolsCatalog(): Promise<ToolCatalogEntry[]> {
   return request("/tools/catalog");
 }
 
+export type CodeAgentCli = {
+  id: string;
+  binary: string;
+  path: string;
+  installed: boolean;
+  installable: boolean;
+  size_hint: string;
+  install_allowed: boolean;
+  status: "" | "installing" | "installed" | "error";
+  detail: string;
+};
+
+export async function getCodeAgents(): Promise<CodeAgentCli[]> {
+  return request("/code-agents");
+}
+
+export async function installCodeAgent(id: string): Promise<{ status: string }> {
+  return request(`/code-agents/${encodeURIComponent(id)}/install`, { method: "POST" });
+}
+
 export async function listIntegrations(): Promise<UserIntegration[]> {
   return request("/integrations");
 }

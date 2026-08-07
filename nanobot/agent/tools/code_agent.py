@@ -44,6 +44,22 @@ _EXTRA_BIN_DIRS = ("/root/.local/bin", "/usr/local/bin")
 local bin and then ask you to fix PATH yourself, which a service process never
 reads — so look there directly instead of depending on the environment."""
 
+_MANAGED_DIR = "tools"
+_INSTALL_TIMEOUT_S = 900
+
+
+@dataclass(frozen=True)
+class InstallSpec:
+    """How to install this CLI on the machine, when the image did not bake it in.
+
+    ``requires`` are binaries the installer itself needs — declared here so a
+    missing one is reported by name instead of failing deep inside a vendor script.
+    """
+
+    url: str
+    requires: tuple[str, ...] = ()
+    size_hint: str = ""
+
 
 @dataclass(frozen=True)
 class CliSpec:
@@ -61,6 +77,7 @@ class CliSpec:
     ok_codes: tuple[int, ...] = (0,)
     failure_markers: tuple[str, ...] = ()
     notes: str = ""
+    install: InstallSpec | None = None
 
 
 CLI_SPECS: tuple[CliSpec, ...] = (
@@ -76,6 +93,8 @@ CLI_SPECS: tuple[CliSpec, ...] = (
         notes=("exit 1 = falha geral; exit 3 = MCP não subiu. Atenção: na versão "
                "2.16.2 ele sai com 0 mesmo em falha de autenticação, por isso a "
                "saída também é inspecionada."),
+        install=InstallSpec(url="https://cli.kiro.dev/install", requires=("unzip",),
+                            size_hint="~856 MB"),
     ),
 )
 
@@ -85,15 +104,129 @@ def cli_integrations() -> tuple[str, ...]:
     return tuple(spec.integration for spec in CLI_SPECS)
 
 
+def get_cli_spec(integration: str) -> CliSpec | None:
+    for spec in CLI_SPECS:
+        if spec.integration == integration:
+            return spec
+    return None
+
+
+def managed_home(workspace: Path, integration: str) -> Path:
+    """Where a CLI installed by us lives.
+
+    Under the workspace on purpose: that path is a mounted volume, so an install
+    survives a container recreate. A button whose effect vanishes on the next
+    deploy would not solve anything.
+    """
+    return workspace / _MANAGED_DIR / integration
+
+
+def managed_binary(workspace: Path, spec: CliSpec) -> Path:
+    """The binary path a managed install produces (``$HOME/.local/bin``)."""
+    return managed_home(workspace, spec.integration) / ".local" / "bin" / spec.binary
+
+
+def resolve_binary(spec: CliSpec, workspace: Path | None = None) -> str | None:
+    """Find the CLI: PATH first (operator override), then our managed install."""
+    found = _which(spec.binary)
+    if found:
+        return found
+    if workspace:
+        candidate = managed_binary(workspace, spec)
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def installed_binary(spec: CliSpec, workspace: Path | None = None) -> str | None:
+    """Public alias for status endpoints — resolves without touching the model."""
+    return resolve_binary(spec, workspace)
+
+
+async def install_cli(spec: CliSpec, workspace: Path) -> tuple[bool, str]:
+    """Run the vendor installer into the managed directory.
+
+    Returns ``(ok, log)``. Success is the binary answering ``--version``, not the
+    installer's exit code — vendor scripts are not reliable about that.
+    """
+    if not spec.install:
+        return False, f"{spec.integration} não declara instalador."
+
+    missing = [dep for dep in spec.install.requires if not _which(dep)]
+    if missing:
+        ok, log = await _apt_install(missing)
+        if not ok:
+            return False, (
+                f"O instalador precisa de {', '.join(missing)} e não foi possível "
+                f"instalar automaticamente. Reconstrua a imagem (o Dockerfile já "
+                f"inclui essa dependência).\n{log}"
+            )
+
+    home = managed_home(workspace, spec.integration)
+    home.mkdir(parents=True, exist_ok=True)
+    script = home / "install.sh"
+
+    ok, log = await _run(["curl", "-fsSL", spec.install.url, "-o", str(script)],
+                         cwd=home, env={})
+    if not ok or not script.is_file():
+        return False, f"Falha ao baixar o instalador de {spec.install.url}.\n{log}"
+
+    ok, install_log = await _run(["bash", str(script)], cwd=home,
+                                 env={"HOME": str(home)})
+    log = f"{log}\n{install_log}".strip()
+
+    binary = managed_binary(workspace, spec)
+    if not binary.is_file():
+        return False, f"O instalador terminou mas o binário não apareceu.\n{log}"
+
+    ok, version = await _run([str(binary), "--version"], cwd=home, env={})
+    if not ok:
+        return False, f"O binário foi instalado mas não executa.\n{version}"
+    return True, f"{version.strip()}\n{log}"
+
+
+async def _apt_install(packages: list[str]) -> tuple[bool, str]:
+    """Install a declared dependency of the installer — never an arbitrary name."""
+    await _run(["apt-get", "update"], cwd=Path("/tmp"), env={"DEBIAN_FRONTEND": "noninteractive"})
+    return await _run(
+        ["apt-get", "install", "-y", "--no-install-recommends", *packages],
+        cwd=Path("/tmp"), env={"DEBIAN_FRONTEND": "noninteractive"},
+    )
+
+
+async def _run(args: list[str], *, cwd: Path, env: dict[str, str]) -> tuple[bool, str]:
+    """Run a command with a built environment, capped output. Returns (ok, output)."""
+    child_env = {key: os.environ[key] for key in _ENV_ALLOWLIST if key in os.environ}
+    child_env.update(env)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            cwd=str(cwd), env=child_env, start_new_session=True,
+        )
+    except FileNotFoundError:
+        return False, f"comando não encontrado: {args[0]}"
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(),
+                                          timeout=_INSTALL_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        await _kill_group(process)
+        return False, f"{args[0]} passou de {_INSTALL_TIMEOUT_S}s"
+    out = stdout.decode("utf-8", errors="replace")
+    return process.returncode == 0, out[-_LOG_TAIL_CHARS:]
+
+
 class CodeAgentTool(Tool):
     """Hand a coding task to an agent CLI running in the cloned repository."""
 
     def __init__(self, *, user_id: str, integration_repo: Any, credential_repo: Any,
-                 agent_dir: Path, timeout: int = _DEFAULT_TIMEOUT_S):
+                 agent_dir: Path, workspace: Path | None = None,
+                 timeout: int = _DEFAULT_TIMEOUT_S):
         self._user_id = user_id
         self._integration_repo = integration_repo
         self._credential_repo = credential_repo
         self._agent_dir = agent_dir
+        self._workspace = workspace
         self._timeout = timeout or _DEFAULT_TIMEOUT_S
 
     @property
@@ -184,7 +317,7 @@ class CodeAgentTool(Tool):
             row = await self._integration_repo.get_integration(self._user_id, spec.integration)
             if not row or not row.get("enabled") or not row.get("credential_id"):
                 continue
-            resolved = _which(spec.binary)
+            resolved = resolve_binary(spec, self._workspace)
             if not resolved:
                 missing_binary.append(spec.binary)
                 continue

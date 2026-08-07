@@ -258,3 +258,75 @@ def test_the_catalog_derives_the_cli_integrations():
 
     assert set(get_spec("code_agent").integrations) == set(cli_integrations())
     assert "kiro" in cli_integrations()
+
+
+def test_the_managed_install_lives_on_the_mounted_workspace(tmp_path):
+    """Instalar num diretório efêmero não resolveria nada: some no próximo deploy."""
+    from nanobot.agent.tools.code_agent import get_cli_spec, managed_binary, managed_home
+
+    spec = get_cli_spec("kiro")
+    home = managed_home(tmp_path, "kiro")
+
+    assert home == tmp_path / "tools" / "kiro"
+    assert managed_binary(tmp_path, spec) == home / ".local" / "bin" / "kiro-cli"
+
+
+def test_a_managed_binary_is_found_without_touching_path(tmp_path, monkeypatch):
+    from nanobot.agent.tools.code_agent import (
+        get_cli_spec,
+        managed_binary,
+        resolve_binary,
+    )
+
+    monkeypatch.setattr(mod, "_which", lambda binary: None)
+    spec = get_cli_spec("kiro")
+    assert resolve_binary(spec, tmp_path) is None
+
+    binary = managed_binary(tmp_path, spec)
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    assert resolve_binary(spec, tmp_path) == str(binary)
+
+
+def test_path_wins_over_the_managed_install(tmp_path, monkeypatch):
+    """O operador pode sobrepor o que instalamos."""
+    from nanobot.agent.tools.code_agent import get_cli_spec, resolve_binary
+
+    monkeypatch.setattr(mod, "_which", lambda binary: "/usr/bin/kiro-cli")
+
+    assert resolve_binary(get_cli_spec("kiro"), tmp_path) == "/usr/bin/kiro-cli"
+
+
+async def test_install_reports_a_failed_download(tmp_path, monkeypatch):
+    from nanobot.agent.tools.code_agent import CliSpec, InstallSpec, install_cli
+
+    spec = CliSpec(integration="kiro", binary="nada", args=(), key_env="X",
+                   install=InstallSpec(url="https://exemplo.invalido/x"))
+    monkeypatch.setattr(mod, "_which", lambda binary: "/bin/true")
+
+    ok, log = await install_cli(spec, tmp_path)
+
+    assert ok is False
+    assert "Falha ao baixar" in log
+
+
+async def test_install_fails_when_the_binary_does_not_appear(tmp_path, monkeypatch):
+    """O sucesso é o binário responder, não o instalador sair com 0."""
+    from nanobot.agent.tools.code_agent import CliSpec, InstallSpec, install_cli
+
+    spec = CliSpec(integration="kiro", binary="nunca-existe", args=(), key_env="X",
+                   install=InstallSpec(url="file:///dev/null"))
+    monkeypatch.setattr(mod, "_which", lambda binary: "/bin/true")
+
+    async def fake_run(args, *, cwd, env):
+        if args[0] == "curl":
+            (cwd / "install.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        return True, "tudo certo, disse o instalador"
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+
+    ok, log = await install_cli(spec, tmp_path)
+
+    assert ok is False
+    assert "binário não apareceu" in log
