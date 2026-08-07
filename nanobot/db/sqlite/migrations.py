@@ -6,7 +6,7 @@ inside a transaction so the database is always in a consistent state.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -754,6 +754,7 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
     await _backfill_template_guardrails(db)
     await _backfill_missing_templates(db)
     await _refresh_skill_author_prompt(db)
+    await _sync_skill_author_agents(db)
     await _consolidate_pdi_templates(db)
     await _refresh_pdi_prompt(db)
     await _enable_analise_desempenho_skill(db)
@@ -1165,6 +1166,93 @@ async def _refresh_pdi_prompt(db: "aiosqlite.Connection") -> None:
                 "UPDATE agents SET bootstrap = ? WHERE agent_id = ?",
                 (json.dumps(bootstrap, ensure_ascii=False), agent_id),
             )
+
+    await db.commit()
+
+
+_SKILL_AUTHOR_ANCHOR = "Você é o Criador de Skills do Agent Hub"
+
+
+def _compose_skill_author_prompt(tpl: dict[str, Any]) -> str:
+    """The same composition the create-agent endpoint applies to a template."""
+    sections = [tpl["system_prompt"]]
+    if tpl.get("guardrails"):
+        sections.append(f"## Guardrails\n{tpl['guardrails']}")
+    return "\n\n".join(sections)
+
+
+async def _sync_skill_author_agents(db: "aiosqlite.Connection") -> None:
+    """Keep the platform-owned skill_author agents tracking the seed template.
+
+    Unlike the agents a client creates, this one is instantiated by a button in
+    the Skills catalog and is hidden from the agent list — nobody edits it, so
+    the seed is its source of truth. Two things drifted: the frontend built the
+    bootstrap by hand and dropped the guardrails section, and it wrote
+    ``metadata.template_id`` while the backend reads ``metadata.template``,
+    leaving two keys for one concept.
+
+    Only agents whose ``AGENTS.md`` still carries the anchor of a prompt we
+    shipped are rewritten. Idempotent: a second run finds the composed prompt
+    already in place and writes nothing.
+    """
+    import json
+
+    from nanobot.db.sqlite.seed.agent_templates_solides import SOLIDES_TEMPLATES
+
+    tpl = next((t for t in SOLIDES_TEMPLATES if t["id"] == "skill_author"), None)
+    if not tpl or not tpl.get("system_prompt"):
+        return
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_templates'"
+    )
+    if await cursor.fetchone():
+        await db.execute(
+            "UPDATE agent_templates SET system_prompt = ?, guardrails = ? "
+            "WHERE id = 'skill_author' AND system_prompt LIKE ? AND system_prompt != ?",
+            (tpl["system_prompt"], tpl.get("guardrails", ""),
+             f"%{_SKILL_AUTHOR_ANCHOR}%", tpl["system_prompt"]),
+        )
+
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'"
+    )
+    if not await cursor.fetchone():
+        await db.commit()
+        return
+
+    target = _compose_skill_author_prompt(tpl)
+    cursor = await db.execute(
+        "SELECT agent_id, bootstrap, metadata FROM agents WHERE metadata LIKE ?",
+        ("%skill_author%",),
+    )
+    for agent_id, bootstrap_raw, metadata_raw in await cursor.fetchall():
+        try:
+            bootstrap = json.loads(bootstrap_raw) if bootstrap_raw else {}
+            metadata = json.loads(metadata_raw) if metadata_raw else {}
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(bootstrap, dict) or not isinstance(metadata, dict):
+            continue
+        if "skill_author" not in (metadata.get("template"), metadata.get("template_id")):
+            continue
+
+        updates: dict[str, str] = {}
+        if _SKILL_AUTHOR_ANCHOR in bootstrap.get("AGENTS.md", "") \
+                and bootstrap["AGENTS.md"] != target:
+            bootstrap["AGENTS.md"] = target
+            updates["bootstrap"] = json.dumps(bootstrap, ensure_ascii=False)
+        if metadata.pop("template_id", None) or metadata.get("template") != "skill_author":
+            metadata["template"] = "skill_author"
+            updates["metadata"] = json.dumps(metadata, ensure_ascii=False)
+        if not updates:
+            continue
+
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        await db.execute(
+            f"UPDATE agents SET {assignments} WHERE agent_id = ?",
+            (*updates.values(), agent_id),
+        )
 
     await db.commit()
 

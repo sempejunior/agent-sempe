@@ -249,12 +249,15 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const all = await listAgents();
       const isSystem = (a: Agent) =>
-        Boolean((a.metadata as { system?: boolean; template_id?: string } | undefined)?.system) ||
-        (a.metadata as { template_id?: string } | undefined)?.template_id === "skill_author";
+        Boolean((a.metadata as { system?: boolean } | undefined)?.system) ||
+        (a.metadata as { template?: string } | undefined)?.template === "skill_author";
       const systemAgents = all.filter(isSystem);
       const agents = all.filter((a) => !isSystem(a));
       const current = get().activeAgentId;
-      const active = agents.find((agent) => agent.agent_id === current)
+      // A system agent stays active if it is the one selected: reloading the list
+      // (which updateAgent, deleteAgent and login all do) must not pull the user
+      // out of a conversation with the Skill Author.
+      const active = all.find((agent) => agent.agent_id === current)
         ?? agents.find((agent) => agent.is_default)
         ?? agents[0]
         ?? null;

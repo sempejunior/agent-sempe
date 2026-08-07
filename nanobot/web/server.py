@@ -122,6 +122,38 @@ def _merge_patch(
     return merged
 
 
+_MAX_SKILL_DESCRIPTION_CHARS = 400
+_MAX_SKILL_CONTENT_CHARS = 60_000
+
+
+def _validate_skill_size(skill: dict[str, Any]) -> None:
+    """Cap the fields that cost tokens on every prompt.
+
+    Every enabled skill has its description listed in the system prompt, so a
+    long one is paid on each turn of each agent that sees it. The content is
+    only paid when ``read_skill`` loads it, hence the far looser ceiling.
+    """
+    description = str(skill.get("description") or "")
+    content = str(skill.get("content") or "")
+    if len(description) > _MAX_SKILL_DESCRIPTION_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"A description da skill tem {len(description)} caracteres e o limite é "
+                f"{_MAX_SKILL_DESCRIPTION_CHARS}. Ela entra no prompt de todo agente que "
+                "usa a skill — resuma os gatilhos e deixe o detalhe no conteúdo."
+            ),
+        )
+    if len(content) > _MAX_SKILL_CONTENT_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"O conteúdo da skill tem {len(content)} caracteres e o limite é "
+                f"{_MAX_SKILL_CONTENT_CHARS}."
+            ),
+        )
+
+
 async def _ensure_db(app_state: Any, data_dir: Path) -> bool:
     """Check DB health; reconnect if the connection died.
 
@@ -1318,6 +1350,7 @@ form.addEventListener("submit", async (e) => {{
             skill = {"name": name, "content": "", "description": "", "enabled": 1, "always_active": 0}
         skill["content"] = body.get("content", skill["content"])
         skill["description"] = body.get("description", skill.get("description", ""))
+        _validate_skill_size(skill)
         skill["always_active"] = body.get("always_active", skill.get("always_active", 0))
         skill["enabled"] = body.get("enabled", skill.get("enabled", 1))
         await app.state.repos.skills.save_skill(user["user_id"], skill)

@@ -1445,7 +1445,12 @@ _SKILL_AUTHOR: dict[str, Any] = {
         "Chame `read_skill(\"skill-creator\")` para carregar o guia oficial "
         "(nomeação, estrutura do SKILL.md, progressive disclosure, "
         "packaging). Ele é sua referência procedural — siga-o enquanto "
-        "trabalha, sem narrar o processo para o cliente.\n\n"
+        "trabalha, sem narrar o processo para o cliente.\n"
+        "Se o pedido for sobre trabalhar em um projeto ou repositório de "
+        "código — atender tasks de suporte ou sustentação, resolver bugs de um "
+        "sistema, ensinar quais são os repos de uma equipe — carregue também "
+        "`read_skill(\"skill-de-projeto\")` e siga o molde de lá. Para "
+        "qualquer outro tipo de skill, o guia acima já basta.\n\n"
 
         "## Como você trabalha\n"
         "1. **Entenda o objetivo em uma passada.** Em uma frase: o que a "

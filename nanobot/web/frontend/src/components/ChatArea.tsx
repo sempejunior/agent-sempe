@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import type { Agent } from "@/lib/api";
 import { ChatMessage } from "./ChatMessage";
-import { Bot, Eye, Mic, MessageSquarePlus, Paperclip, Send, Sparkles, Terminal } from "lucide-react";
+import { ArrowLeft, Bot, Eye, Mic, MessageSquarePlus, Paperclip, Send, Sparkles, Terminal } from "lucide-react";
 import { getIcon, ICON_CATALOG } from "@/lib/iconCatalog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,7 @@ const FALLBACK_COMMANDS = [
 export function ChatArea() {
   const {
     agents,
+    systemAgents,
     activeAgentId,
     templates,
     loadTemplates,
@@ -46,7 +47,9 @@ export function ChatArea() {
 
   const currentAgent =
     agents.find((agent) => agent.agent_id === activeAgentId) ??
+    systemAgents.find((agent) => agent.agent_id === activeAgentId) ??
     agents[0] ?? { agent_id: "", name: "Paulo", role: "Especialista em DP", avatar: "P" };
+  const isSystemAgent = systemAgents.some((a) => a.agent_id === activeAgentId);
   const templateId = (currentAgent as Agent).metadata?.template;
   const starters = templates.find((t) => t.id === templateId)?.starter_prompts ?? [];
   const quickCommands = starters.length > 0 ? starters : FALLBACK_COMMANDS;
@@ -73,25 +76,48 @@ export function ChatArea() {
               <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted leading-tight">
                 Falar com
               </span>
-              <Select
-                value={activeAgentId ?? ""}
-                onValueChange={(v) => selectAgent(v)}
-              >
-                <SelectTrigger className="h-8 w-auto min-w-[180px] text-sm font-semibold">
-                  <SelectValue placeholder="Selecionar agente" />
-                </SelectTrigger>
-                <SelectContent>
-                  {agents.map((a) => (
-                    <SelectItem key={a.agent_id} value={a.agent_id}>
-                      {a.name}
-                      {a.role ? ` · ${a.role}` : ""}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {isSystemAgent ? (
+                <span className="text-sm font-semibold text-text-primary leading-tight">
+                  {currentAgent.name}
+                  {currentAgent.role ? ` · ${currentAgent.role}` : ""}
+                </span>
+              ) : (
+                <Select
+                  value={activeAgentId ?? ""}
+                  onValueChange={(v) => selectAgent(v)}
+                >
+                  <SelectTrigger className="h-8 w-auto min-w-[180px] text-sm font-semibold">
+                    <SelectValue placeholder="Selecionar agente" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {agents.map((a) => (
+                      <SelectItem key={a.agent_id} value={a.agent_id}>
+                        {a.name}
+                        {a.role ? ` · ${a.role}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {isSystemAgent && agents.length > 0 && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  selectAgent(
+                    (agents.find((a) => a.is_default) ?? agents[0]).agent_id,
+                  )
+                }
+                title="Voltar a conversar com seus agentes de trabalho"
+              >
+                <ArrowLeft />
+                Voltar aos meus agentes
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"

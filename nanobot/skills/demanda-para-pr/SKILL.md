@@ -26,10 +26,20 @@ Leia o **título, a descrição e os comentários**. Se a demanda não diz o que
 você conseguir agir, **não invente**: comente na demanda pedindo o que falta e pare. Uma pergunta
 boa vale mais que um PR errado.
 
-## 2. Encontre o repositório
+## 2. Encontre o repositório pela skill do projeto
 
-Se a demanda não nomear o repositório, procure: `list_projects` na origem de código, `search_code`
-quando houver, ou pergunte. Não adivinhe entre dois candidatos.
+A demanda traz a chave de qual projeto ela é: `System.AreaPath`, `System.TeamProject`, as tags, o
+componente do Jira. **Procure no bloco `<skills>` do seu contexto a skill do projeto correspondente**
+— ela costuma citar a área e o repositório na própria description — e carregue com `read_skill`.
+
+Essa skill é o manual do projeto: diz o repositório, o comando de teste, a convenção de branch e as
+armadilhas dali. Siga o que ela manda no lugar de descobrir de novo.
+
+Se **não existe** skill para o projeto da demanda, diga isso em vez de chutar: "não tenho o manual
+deste projeto, quer me ensinar?" — o Criador de Skills escreve a skill do projeto conversando, e a
+partir dali toda demanda dessa área já sabe onde trabalhar. Se o cliente preferir seguir sem o
+manual, procure com `list_projects` na origem de código e **confirme com ele** antes de clonar. Não
+adivinhe entre dois candidatos.
 
 ```
 repo(action="ensure", origin="gitlab", path="grupo/subgrupo/projeto")
