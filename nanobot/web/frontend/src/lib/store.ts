@@ -476,6 +476,14 @@ export const useStore = create<AppState>((set, get) => ({
           });
         }
       } else if (data.type === "response") {
+        if (get().traceEnabled) {
+          set({
+            trace: [
+              ...get().trace,
+              { kind: "answer", content: data.content || "" } as TraceEvent,
+            ].slice(-400),
+          });
+        }
         const last = messages[messages.length - 1];
         if (last && last.role === "assistant" && last.isStreaming) {
           set({
@@ -500,6 +508,13 @@ export const useStore = create<AppState>((set, get) => ({
         get().loadSessions();
       } else if (data.type === "trace") {
         const { type: _type, session_key: _key, ...event } = data;
+        if (event.kind === "turn") {
+          // The loop reports the last user-role message it assembled, which is the
+          // runtime-context block, not what the person typed. The client knows the
+          // real question, so it labels the turn with it.
+          const asked = [...messages].reverse().find((m) => m.role === "user");
+          event.user_message = asked?.content ?? event.user_message;
+        }
         // Cap the buffer: a long turn emits hundreds of events, each carrying a
         // prompt or a tool result, and the panel only ever shows the recent tail.
         set({ trace: [...get().trace, event as TraceEvent].slice(-400) });
@@ -561,7 +576,6 @@ export const useStore = create<AppState>((set, get) => ({
       messages: [...messages, userMsg],
       sending: true,
       activeSessionKey: sessionKey,
-      trace: traceEnabled ? [] : get().trace,
     });
 
     ws.send(

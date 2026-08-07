@@ -917,7 +917,16 @@ export type WsMessageType =
 /** One step of a turn's execution, as the loop saw it. Opt-in per turn: it
  *  carries the assembled prompt and every tool result. */
 export interface TraceEvent {
-  kind: "turn" | "llm" | "tool_call" | "tool_result" | "delegation" | "limit";
+  kind:
+    | "turn"
+    | "llm"
+    | "tool_call"
+    | "tool_result"
+    | "delegation"
+    | "limit"
+    /** Not emitted by the loop: the client appends the delivered answer so a
+     *  turn in the panel has an end. */
+    | "answer";
   iteration?: number;
   model?: string;
   tools?: string[];

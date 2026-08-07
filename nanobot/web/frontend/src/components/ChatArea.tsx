@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "@/lib/store";
 import type { Agent, TraceEvent } from "@/lib/api";
 import { ChatMessage } from "./ChatMessage";
@@ -38,10 +38,21 @@ export function ChatArea() {
   const [input, setInput] = useState("");
   const [terminalOpen, setTerminalOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
+
+  /** Grow with the text instead of scrolling a single line sideways: explaining a
+   *  repository takes more than one line, and a field you cannot read back is a
+   *  field you cannot correct. */
+  useEffect(() => {
+    const field = inputRef.current;
+    if (!field) return;
+    field.style.height = "auto";
+    field.style.height = `${Math.min(field.scrollHeight, 200)}px`;
+  }, [input]);
 
   useEffect(() => {
     if (templates.length === 0) loadTemplates();
@@ -69,7 +80,7 @@ export function ChatArea() {
   return (
     <div className="flex h-full overflow-hidden bg-surface">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-[68px] shrink-0 items-center justify-between border-b border-border bg-surface px-6">
+        <div className="flex min-h-[68px] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-surface px-6 py-2">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-purple-muted text-purple">
               <Bot className="h-4 w-4" />
@@ -103,7 +114,7 @@ export function ChatArea() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {isSystemAgent && agents.length > 0 && (
               <Button
                 type="button"
@@ -325,6 +336,11 @@ const TRACE_STYLE: Record<
     color: "text-fuchsia-300",
     summary: (e) => `${e.cli ?? "cli"} em ${e.branch ?? "?"} (teto ${e.timeout_s ?? "?"}s)`,
   },
+  answer: {
+    label: "resposta",
+    color: "text-emerald-400",
+    summary: (e) => `${(e.content ?? "").length} chars entregues`,
+  },
   limit: {
     label: "teto",
     color: "text-red-400",
@@ -343,12 +359,21 @@ const TRACE_BLOCKS: { key: keyof TraceEvent; label: string }[] = [
   { key: "prompt", label: "prompt enviado à CLI" },
 ];
 
-function TraceEntry({ event, index }: { event: TraceEvent; index: number }) {
+function TraceEntry({
+  event,
+  index,
+  label,
+}: {
+  event: TraceEvent;
+  index: number;
+  label?: string;
+}) {
   const style = TRACE_STYLE[event.kind] ?? {
     label: event.kind,
     color: "text-slate-300",
     summary: () => "",
   };
+  const shown = label ?? style.label;
   const blocks = TRACE_BLOCKS.filter((b) => {
     const value = event[b.key];
     return typeof value === "string" && value.trim().length > 0;
@@ -356,9 +381,11 @@ function TraceEntry({ event, index }: { event: TraceEvent; index: number }) {
 
   return (
     <div className="border-b border-slate-800 pb-2">
-      <div className="flex items-baseline gap-1.5">
-        <span className="text-slate-600">{String(index).padStart(3, "0")}</span>
-        <span className={cn("font-bold", style.color)}>[{style.label}]</span>
+      <div className="flex flex-wrap items-baseline gap-x-1.5">
+        {index > 0 && (
+          <span className="text-slate-600">{String(index).padStart(3, "0")}</span>
+        )}
+        <span className={cn("font-bold", style.color)}>[{shown}]</span>
         <span className="min-w-0 break-all text-slate-400">{style.summary(event)}</span>
       </div>
       {blocks.map((block) => (
@@ -373,6 +400,79 @@ function TraceEntry({ event, index }: { event: TraceEvent; index: number }) {
         </details>
       ))}
     </div>
+  );
+}
+
+type TraceTurn = {
+  index: number;
+  header: TraceEvent | null;
+  steps: TraceEvent[];
+  answer: string | null;
+};
+
+/** Split the flat event stream into turns.
+ *
+ *  A ``turn`` event opens one and the answer closes it, so the panel reads the way
+ *  the conversation happened — your message, what the agent did, what it replied —
+ *  instead of a single log that loses where one turn ended. */
+function groupTurns(events: TraceEvent[]): TraceTurn[] {
+  const turns: TraceTurn[] = [];
+  for (const event of events) {
+    if (event.kind === "turn" || turns.length === 0) {
+      turns.push({
+        index: turns.length + 1,
+        header: event.kind === "turn" ? event : null,
+        steps: event.kind === "turn" ? [] : [event],
+        answer: null,
+      });
+      continue;
+    }
+    const current = turns[turns.length - 1];
+    if (event.kind === "answer") current.answer = event.content ?? "";
+    else current.steps.push(event);
+  }
+  return turns;
+}
+
+function TraceTurnBlock({ turn, open }: { turn: TraceTurn; open: boolean }) {
+  const header = turn.header;
+  const question = header?.user_message?.trim();
+  return (
+    <details open={open} className="rounded-lg border border-slate-800 bg-slate-900/40">
+      <summary className="cursor-pointer break-words px-2 py-1.5">
+        <span className="text-slate-600">{String(turn.index).padStart(2, "0")}</span>{" "}
+        <span className="text-slate-200">
+          {question ? question.slice(0, 90) : "(turno)"}
+          {question && question.length > 90 ? "…" : ""}
+        </span>
+        <span className="ml-1 text-slate-600">
+          · {turn.steps.length} {turn.steps.length === 1 ? "passo" : "passos"}
+        </span>
+      </summary>
+
+      <div className="space-y-2 px-2 pb-2">
+        {header && (
+          <TraceEntry
+            event={{ ...header, user_message: undefined }}
+            index={0}
+            label="contexto do turno"
+          />
+        )}
+        {turn.steps.map((event, i) => (
+          <TraceEntry key={i} event={event} index={i + 1} />
+        ))}
+        {turn.answer !== null && (
+          <details className="border-t border-slate-800 pt-1.5">
+            <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-emerald-400/80 hover:text-emerald-300">
+              resposta entregue ({turn.answer.length})
+            </summary>
+            <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-900 p-2 text-[10px] leading-relaxed text-slate-300">
+              {turn.answer}
+            </pre>
+          </details>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -393,10 +493,14 @@ function TracePanel({
     if (follow) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [trace.length, follow]);
 
-  const turn = trace.find((e) => e.kind === "turn");
+  const turns = useMemo(() => groupTurns(trace), [trace]);
+  const tools = useMemo(
+    () => [...trace].reverse().find((e) => e.kind === "turn")?.tools ?? [],
+    [trace],
+  );
 
   return (
-    <aside className="hidden w-[26rem] shrink-0 flex-col border-l border-border bg-slate-950 text-slate-300 lg:flex">
+    <aside className="hidden w-[21rem] shrink-0 flex-col border-l border-border bg-slate-950 text-slate-300 lg:flex xl:w-[26rem]">
       <div className="flex items-center gap-2 border-b border-slate-800 bg-slate-950/80 p-3">
         <Terminal className="h-4 w-4 text-purple" />
         <span className="text-xs font-bold text-slate-100">Execução do agente</span>
@@ -432,12 +536,12 @@ function TracePanel({
       <details className="border-b border-slate-800 bg-slate-900">
         <summary className="cursor-pointer p-3 text-[10px] font-bold uppercase tracking-wider text-yellow">
           Ferramentas de {agentName}
-          {turn?.tools?.length ? ` (${turn.tools.length})` : ""}
+          {tools.length ? ` (${tools.length})` : ""}
         </summary>
         <div className="max-h-32 overflow-y-auto px-3 pb-3">
-          {turn?.tools?.length ? (
+          {tools.length ? (
             <div className="flex flex-wrap gap-1.5">
-              {turn.tools.map((tool) => (
+              {tools.map((tool) => (
                 <Badge key={tool} variant="code">
                   {tool}
                 </Badge>
@@ -452,16 +556,20 @@ function TracePanel({
       </details>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3 font-mono text-[11px]">
-        {trace.length === 0 ? (
+        {turns.length === 0 ? (
           <p className="italic text-slate-600">
-            Nada ainda. O que acontecer no próximo turno aparece aqui: o prompt
-            montado, o raciocínio do modelo, cada chamada de ferramenta com seus
-            argumentos e o que voltou.
+            Nada ainda. O que acontecer no próximo turno aparece aqui, por turno: a
+            sua mensagem, o prompt montado, o raciocínio do modelo, cada chamada de
+            ferramenta com seus argumentos, e a resposta entregue.
           </p>
         ) : (
           <div className="space-y-2">
-            {trace.map((event, i) => (
-              <TraceEntry key={i} event={event} index={i + 1} />
+            {turns.map((turn) => (
+              <TraceTurnBlock
+                key={turn.index}
+                turn={turn}
+                open={turn.index === turns.length}
+              />
             ))}
           </div>
         )}
