@@ -217,6 +217,7 @@ async def build_user_context(
         retriever_store=retriever,
         integration_repo=repos.integrations,
         credential_repo=repos.credentials,
+        work_item_repo=repos.work_items,
         public_url=public_url,
         active_integrations=active_integrations,
     )
@@ -257,6 +258,7 @@ def build_tool_registry(
     retriever_store: Any | None = None,
     integration_repo: Any | None = None,
     credential_repo: Any | None = None,
+    work_item_repo: Any | None = None,
     public_url: str | None = None,
     active_integrations: set[str] | None = None,
 ) -> ToolRegistry:
@@ -285,6 +287,7 @@ def build_tool_registry(
         retriever_store=retriever_store,
         integration_repo=integration_repo,
         credential_repo=credential_repo,
+        work_item_repo=work_item_repo,
         public_url=public_url,
         active_integrations=set(active_integrations or ()),
         display=bool(os.environ.get("DISPLAY")),

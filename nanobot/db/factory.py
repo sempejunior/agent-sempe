@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         SessionRepository,
         SkillRepository,
         UserRepository,
+        WorkItemRepository,
     )
 
 
@@ -52,6 +53,7 @@ class RepositoryFactory:
     client_memories: ClientMemoryRepository
     credentials: CredentialRepository
     integrations: IntegrationRepository
+    work_items: WorkItemRepository
 
 
 def create_sqlite_factory(db) -> RepositoryFactory:
@@ -75,6 +77,7 @@ def create_sqlite_factory(db) -> RepositoryFactory:
     from nanobot.db.sqlite.skill_repo import SQLiteSkillRepository
     from nanobot.db.sqlite.template_repo import SQLiteAgentTemplateRepository
     from nanobot.db.sqlite.user_repo import SQLiteUserRepository
+    from nanobot.db.sqlite.work_item_repo import SQLiteWorkItemRepository
 
     return RepositoryFactory(
         users=SQLiteUserRepository(db),
@@ -93,4 +96,5 @@ def create_sqlite_factory(db) -> RepositoryFactory:
         client_memories=SQLiteClientMemoryRepository(db),
         credentials=SQLiteCredentialRepository(db),
         integrations=SQLiteIntegrationRepository(db),
+        work_items=SQLiteWorkItemRepository(db),
     )

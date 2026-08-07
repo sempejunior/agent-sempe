@@ -37,6 +37,14 @@ from typing import Any
 from nanobot.agent.tools.base import Tool
 
 _DEFAULT_TIMEOUT_S = 1800
+_BUDGET_SHARE = 0.6
+"""Fraction of the turn's budget one delegation may consume.
+
+The tool used to get the whole ``max_job_duration_s``, which is also the ceiling
+of the scheduled routine that drives it — so a single delegation could burn the
+entire budget and the run would be killed before the diff was reviewed, the tests
+run, the commit made and the PR opened. What is left over is for those steps."""
+
 _LOG_TAIL_CHARS = 6_000
 _ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TERM")
 _EXTRA_BIN_DIRS = ("/root/.local/bin", "/usr/local/bin")
@@ -227,7 +235,7 @@ class CodeAgentTool(Tool):
         self._credential_repo = credential_repo
         self._agent_dir = agent_dir
         self._workspace = workspace
-        self._timeout = timeout or _DEFAULT_TIMEOUT_S
+        self._timeout = int((timeout or _DEFAULT_TIMEOUT_S) * _BUDGET_SHARE)
 
     @property
     def name(self) -> str:
@@ -240,10 +248,12 @@ class CodeAgentTool(Tool):
             "dentro de um repositório já clonado com a tool repo. Use para "
             "mudança que exige explorar o código; para ajuste de uma ou duas "
             "linhas, edite você mesmo (é mais rápido e barato). Escreva a "
-            "instrução como você explicaria a um desenvolvedor: o problema, o "
-            "resultado esperado e como verificar. Ele edita arquivos e roda "
-            "comandos, mas NÃO commita nem envia — isso continua seu, com a "
-            "tool repo, depois de você revisar o diff e rodar os testes."
+            "instrução como você explicaria a um desenvolvedor: o problema em "
+            "instruction, e o resultado esperado, como verificar e as convenções "
+            "do projeto nos campos próprios — é o que determina a qualidade do "
+            "que ele escreve. Ele edita arquivos e roda comandos, mas NÃO "
+            "commita nem envia — isso continua seu, com a tool repo, depois de "
+            "você revisar o diff e rodar os testes."
         )
 
     @property
@@ -257,8 +267,24 @@ class CodeAgentTool(Tool):
                 },
                 "instruction": {
                     "type": "string",
-                    "description": "O que fazer, com contexto: o problema, o "
-                                   "resultado esperado e como verificar.",
+                    "description": "O problema a resolver, com o contexto da "
+                                   "demanda: o que está errado e em que situação.",
+                },
+                "expected": {
+                    "type": "string",
+                    "description": "O resultado esperado depois da mudança — como "
+                                   "fica o comportamento correto.",
+                },
+                "verify": {
+                    "type": "string",
+                    "description": "Como provar que funcionou: o comando de teste "
+                                   "do projeto, ou o cenário a reproduzir.",
+                },
+                "constraints": {
+                    "type": "string",
+                    "description": "Limites e convenções do projeto (o que não "
+                                   "mexer, padrão do código, armadilhas). Vem da "
+                                   "skill do projeto, quando existe.",
                 },
                 "focus": {
                     "type": "array", "items": {"type": "string"},
@@ -270,6 +296,7 @@ class CodeAgentTool(Tool):
         }
 
     async def execute(self, repo: str = "", instruction: str = "",
+                      expected: str = "", verify: str = "", constraints: str = "",
                       focus: list[str] | None = None, **_: Any) -> str:
         if not instruction.strip():
             return "Error: instruction é obrigatória — descreva o que fazer."
@@ -285,7 +312,10 @@ class CodeAgentTool(Tool):
             return (f"Error: o repositório está no branch default ('{branch}'). "
                     "Crie um branch de trabalho com a tool repo antes de delegar.")
 
-        prompt = self._build_prompt(instruction, focus or [])
+        prompt = self._build_prompt(
+            instruction, focus or [],
+            expected=expected, verify=verify, constraints=constraints,
+        )
         log_path = self._log_path()
         started = time.monotonic()
         code, timed_out = await self._run(spec, prompt, local, secret, log_path)
@@ -348,8 +378,16 @@ class CodeAgentTool(Tool):
         )
 
     @staticmethod
-    def _build_prompt(instruction: str, focus: list[str]) -> str:
-        parts = [instruction.strip()]
+    def _build_prompt(instruction: str, focus: list[str], *, expected: str = "",
+                      verify: str = "", constraints: str = "") -> str:
+        parts = [f"## Problema\n{instruction.strip()}"]
+        for title, value in (
+            ("Resultado esperado", expected),
+            ("Como verificar", verify),
+            ("Convenções e limites do projeto", constraints),
+        ):
+            if value.strip():
+                parts.append(f"## {title}\n{value.strip()}")
         if focus:
             parts.append("Comece olhando: " + ", ".join(focus))
         parts.append(
@@ -387,20 +425,23 @@ class CodeAgentTool(Tool):
     async def _report(self, *, spec: CliSpec, local: Path, branch: str, log_path: Path,
                       code: int | None, timed_out: bool, elapsed: int,
                       secret: str) -> str:
+        tail = _scrub(_tail(log_path, _LOG_TAIL_CHARS), secret)
+        failed_quietly = _has_marker(tail, spec.failure_markers)
+        reverted = await self._revert(local) if failed_quietly else False
+
         status = await self._git(["status", "--porcelain"], cwd=local)
         stat = await self._git(["diff", "--stat"], cwd=local)
-        tail = _scrub(_tail(log_path, _LOG_TAIL_CHARS), secret)
-
-        failed_quietly = _has_marker(tail, spec.failure_markers)
 
         if timed_out:
             headline = (f"O agente de código foi interrompido depois de {elapsed}s "
                         f"(teto de {self._timeout}s). O que ele já tinha feito está "
                         "no repositório — revise o diff antes de decidir.")
         elif failed_quietly:
+            undone = " O que tinha ficado na árvore foi revertido." if reverted else ""
             headline = (f"O agente de código NÃO fez o trabalho: a saída indica "
                         f"falha de autenticação ou de configuração, apesar do exit "
-                        f"{code}. Confira a chave da integração. Nada foi entregue.")
+                        f"{code}. Confira a chave da integração. Nada foi "
+                        f"entregue.{undone}")
         elif code in spec.ok_codes:
             headline = f"O agente de código terminou em {elapsed}s."
         else:
@@ -419,6 +460,20 @@ class CodeAgentTool(Tool):
             "Revise o diff, rode os testes e só então comite com a tool repo. "
             "Se o teste falhar, não abra PR.",
         ])
+
+    async def _revert(self, local: Path) -> bool:
+        """Undo what a delegation that never authenticated left behind.
+
+        A quiet auth failure means the CLI produced nothing of value, so anything
+        in the tree is noise that the next step could commit as if it were a fix.
+        A *timeout* is the opposite case — that work is real and is kept.
+        Untracked files are left alone: deleting files nobody asked us to delete
+        is worse than reporting them.
+        """
+        if not (await self._git(["status", "--porcelain"], cwd=local)).strip():
+            return False
+        await self._git(["checkout", "--", "."], cwd=local)
+        return True
 
     async def _current_branch(self, local: Path) -> str:
         return (await self._git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=local)).strip()

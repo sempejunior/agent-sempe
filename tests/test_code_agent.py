@@ -200,6 +200,65 @@ async def test_a_quiet_auth_failure_is_not_reported_as_success(tool, repo, fake_
     assert "terminou em" not in out
 
 
+async def test_the_delegation_leaves_budget_for_the_rest_of_the_chain(tool):
+    """Antes o teto era o mesmo da rotina: uma delegação consumia o orçamento todo."""
+    solo = CodeAgentTool(user_id="u1", integration_repo=None, credential_repo=None,
+                         agent_dir=tool._agent_dir, timeout=1800)
+
+    assert solo._timeout < 1800
+    assert solo._timeout >= 900
+
+
+def test_the_prompt_carries_the_expected_result_and_how_to_verify():
+    """O que determina a qualidade do código é o prompt ter essas partes."""
+    prompt = CodeAgentTool._build_prompt(
+        "lançamento retroativo é recusado", ["services/ponto/validacao.py"],
+        expected="aceitar lançamento de até 30 dias",
+        verify="pytest tests/test_ponto.py",
+        constraints="não mexer nas migrações",
+    )
+
+    assert "## Problema" in prompt
+    assert "aceitar lançamento de até 30 dias" in prompt
+    assert "pytest tests/test_ponto.py" in prompt
+    assert "não mexer nas migrações" in prompt
+    assert "services/ponto/validacao.py" in prompt
+
+
+def test_a_prompt_without_the_optional_fields_has_no_empty_sections():
+    prompt = CodeAgentTool._build_prompt("corrige o valor", [])
+
+    assert "## Problema" in prompt
+    assert "## Resultado esperado" not in prompt
+    assert "## Como verificar" not in prompt
+    assert "NÃO faça commit" in prompt
+
+
+async def test_a_quiet_failure_reverts_what_it_left_behind(tool, repo, fake_cli,
+                                                           monkeypatch):
+    """Autenticação falhou: nada de valor foi produzido, e o que sobrou mentiria."""
+    _, local = repo
+    await _on_branch(local)
+    monkeypatch.setattr(mod, "CLI_SPECS", (
+        CliSpec(integration="kiro", binary=str(fake_cli), args=(),
+                key_env="FAKE_KEY", failure_markers=("Authentication failed",)),
+    ))
+    fake_cli.write_text(
+        "#!/bin/sh\n"
+        "echo 'lixo parcial' > app.py\n"
+        "echo 'Authentication failed. Your API key may be invalid.'\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o755)
+
+    out = await tool.execute(repo=str(local), instruction="corrige o valor")
+
+    assert "NÃO fez o trabalho" in out
+    assert "revertido" in out
+    assert (local / "app.py").read_text(encoding="utf-8") == "valor = 1\n"
+
+
 async def test_a_timeout_still_reports_what_was_done(tool, repo, fake_cli):
     """Diferente do exec, que descarta a saída acumulada no estouro."""
     _, local = repo

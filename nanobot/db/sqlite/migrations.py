@@ -602,6 +602,37 @@ CREATE INDEX IF NOT EXISTS idx_template_knowledge_tpl ON agent_template_knowledg
 -- idempotent across divergent DBs.
 SELECT 1;
 """),
+
+    (11, """
+-- ===================== v11: work item ledger =====================
+-- What an autonomous routine already did, per demand. Without it a routine that
+-- sweeps a board every day re-works the same items and opens duplicate PRs: the
+-- conversation session is not a usable record (it is shared between routines,
+-- windowed, truncated, and lost entirely when a run hits its timeout).
+-- The UNIQUE index is the whole mechanism: claiming is an INSERT that either
+-- wins or tells you someone already has it.
+
+CREATE TABLE IF NOT EXISTS work_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    agent_id    TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    title       TEXT NOT NULL DEFAULT '',
+    state       TEXT NOT NULL DEFAULT 'claimed',
+    branch      TEXT NOT NULL DEFAULT '',
+    pr_url      TEXT NOT NULL DEFAULT '',
+    note        TEXT NOT NULL DEFAULT '',
+    attempts    INTEGER NOT NULL DEFAULT 1,
+    claimed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_key
+    ON work_items(user_id, source, external_id);
+CREATE INDEX IF NOT EXISTS idx_work_items_state
+    ON work_items(user_id, state, updated_at DESC);
+"""),
 ]
 
 async def _safe_add_column(db: "aiosqlite.Connection", table: str, column: str, definition: str) -> None:

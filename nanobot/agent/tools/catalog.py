@@ -51,6 +51,7 @@ class ToolContext:
     retriever_store: Any = None
     integration_repo: Any = None
     credential_repo: Any = None
+    work_item_repo: Any = None
     public_url: str | None = None
     active_integrations: set[str] = field(default_factory=set)
     display: bool = False
@@ -96,6 +97,7 @@ _REQUIREMENTS: dict[str, Callable[[ToolContext], bool]] = {
     "cron": lambda ctx: ctx.cron_service is not None,
     "bus": lambda ctx: ctx.bus is not None,
     "user_repo": lambda ctx: bool(ctx.user_repo and ctx.user_id),
+    "work_items": lambda ctx: bool(ctx.work_item_repo and ctx.user_id),
     "display": lambda ctx: ctx.display,
 }
 
@@ -237,6 +239,13 @@ def _code_agent(ctx: ToolContext) -> "Tool":
                          workspace=ctx.workspace, timeout=ctx.job_timeout)
 
 
+def _work_ledger(ctx: ToolContext) -> "Tool":
+    from nanobot.agent.tools.work_ledger import WorkLedgerTool
+    return WorkLedgerTool(user_id=ctx.user_id, work_item_repo=ctx.work_item_repo,
+                          agent_id=ctx.agent_id or "",
+                          stale_after_s=ctx.job_timeout)
+
+
 def _cron(ctx: ToolContext) -> "Tool":
     from nanobot.agent.tools.cron import CronTool
     return CronTool(ctx.cron_service)
@@ -307,6 +316,8 @@ CATALOG: tuple[ToolSpec, ...] = (
              integrations=_cli_integrations(),
              warn="Delega a escrita do código a um agente externo, que edita "
                   "arquivos e roda comandos no repositório."),
+    ToolSpec("work_ledger", "Registro de demandas trabalhadas", "Ambiente",
+             _work_ledger, requires=("work_items",)),
     ToolSpec("exec", "Executar comandos no terminal", "Ambiente", _exec,
              permission=True,
              warn="Roda comandos arbitrários no ambiente do agente."),
