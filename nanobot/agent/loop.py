@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Iterable
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -215,8 +216,10 @@ class AgentLoop:
         finally:
             self._mcp_connecting = False
 
-    async def _ensure_user_mcp(self, user_id: str, agent_id: str) -> dict[str, Any]:
-        """Connect the user's enabled catalog MCP servers and return their tools.
+    async def _ensure_user_mcp(
+        self, user_id: str, agent_id: str,
+    ) -> tuple[dict[str, Any], tuple[str, ...]]:
+        """Connect the user's enabled catalog MCP servers; return tools and server names.
 
         Servers are launched from the user's saved integration credentials and
         kept on a persistent exit stack for the process lifetime. A config
@@ -232,10 +235,10 @@ class AgentLoop:
         cache_key = f"{user_id}:{agent_id}"
         cached = self._user_mcp_cache.get(cache_key)
         if cached and cached[0] == signature:
-            return cached[1]
+            return cached[1], cached[2]
         if not servers:
-            self._user_mcp_cache[cache_key] = (signature, {})
-            return {}
+            self._user_mcp_cache[cache_key] = (signature, {}, ())
+            return {}, ()
 
         from nanobot.agent.tools.mcp import connect_mcp_servers
         if self._dyn_mcp_stack is None:
@@ -244,8 +247,22 @@ class AgentLoop:
         temp = ToolRegistry()
         await connect_mcp_servers(servers, temp, self._dyn_mcp_stack)
         tools = dict(temp._tools)
-        self._user_mcp_cache[cache_key] = (signature, tools)
-        return tools
+        names = tuple(servers)
+        self._user_mcp_cache[cache_key] = (signature, tools, names)
+        return tools, names
+
+    @staticmethod
+    def _mcp_server_of(tool_name: str, server_names: Iterable[str]) -> str:
+        """Which MCP server a ``mcp_<server>_<tool>`` name came from.
+
+        Longest name first: a server called ``azure`` must not claim a tool from
+        ``azure_devops``.
+        """
+        remainder = tool_name[len("mcp_"):]
+        for server in sorted(server_names, key=len, reverse=True):
+            if remainder.startswith(f"{server}_"):
+                return server
+        return remainder.split("_", 1)[0]
 
     def _set_tool_context(
         self, channel: str, chat_id: str, message_id: str | None = None,
@@ -325,30 +342,34 @@ class AgentLoop:
             public_url=self.public_url,
         )
 
+        agent_doc = await self._repos.agents.get_agent(user_id, uctx.agent_id)
+        mcp_enabled_raw = (agent_doc or {}).get("agent_config", {}).get("mcp_servers_enabled")
+        mcp_filter: set[str] | None = (
+            set(mcp_enabled_raw) if isinstance(mcp_enabled_raw, list) else None
+        )
+        """None means the agent was never configured for MCP and gets every server;
+        a list — including an empty one — is the client's explicit choice."""
+
+        def _allowed(tool_name: str, server_names: Iterable[str]) -> bool:
+            if mcp_filter is None:
+                return True
+            return self._mcp_server_of(tool_name, server_names) in mcp_filter
+
         if self._mcp_connected:
-            agent_doc = await self._repos.agents.get_agent(user_id, uctx.agent_id)
-            mcp_enabled_raw = (agent_doc or {}).get("agent_config", {}).get("mcp_servers_enabled")
-            mcp_filter: set[str] | None = (
-                set(mcp_enabled_raw) if isinstance(mcp_enabled_raw, list) else None
-            )
-            server_names = sorted(self._mcp_servers.keys(), key=len, reverse=True)
             for name, tool in self.tools._tools.items():
                 if not name.startswith("mcp_") or uctx.tools.has(name):
                     continue
-                if mcp_filter is not None:
-                    remainder = name[len("mcp_"):]
-                    server_name = next(
-                        (s for s in server_names if remainder.startswith(f"{s}_")),
-                        remainder.split("_", 1)[0],
-                    )
-                    if server_name not in mcp_filter:
-                        continue
-                uctx.tools.register(tool)
+                if _allowed(name, self._mcp_servers.keys()):
+                    uctx.tools.register(tool)
 
         try:
-            user_mcp_tools = await self._ensure_user_mcp(user_id, uctx.agent_id)
+            user_mcp_tools, user_mcp_servers = await self._ensure_user_mcp(
+                user_id, uctx.agent_id,
+            )
             for name, tool in user_mcp_tools.items():
-                if not uctx.tools.has(name):
+                if uctx.tools.has(name):
+                    continue
+                if _allowed(name, user_mcp_servers):
                     uctx.tools.register(tool)
         except Exception as e:
             logger.error("Failed to connect user MCP servers for {}: {}", user_id, e)
