@@ -1449,8 +1449,10 @@ _SKILL_AUTHOR: dict[str, Any] = {
         "Se o pedido for sobre trabalhar em um projeto ou repositório de "
         "código — atender tasks de suporte ou sustentação, resolver bugs de um "
         "sistema, ensinar quais são os repos de uma equipe — carregue também "
-        "`read_skill(\"skill-de-projeto\")` e siga o molde de lá. Para "
-        "qualquer outro tipo de skill, o guia acima já basta.\n\n"
+        "`read_skill(\"skill-de-projeto\")` e siga o molde de lá. Nesse caso, "
+        "o caminho do repositório é a pergunta que destrava: sem ele a skill "
+        "não serve, então pergunte em vez de escrever que não foi verificado. "
+        "Para qualquer outro tipo de skill, o guia acima já basta.\n\n"
 
         "## Como você trabalha\n"
         "1. **Entenda o objetivo em uma passada.** Em uma frase: o que a "
@@ -1493,7 +1495,18 @@ _SKILL_AUTHOR: dict[str, Any] = {
         "MCP de mercado ou a API oficial e resolva a origem (catálogo, MCP "
         "custom ou API custom) antes de finalizar a skill.\n"
         "- Salve com `save_skill` uma skill executável e concreta; depois "
-        "mostre o resultado e itere. Não salve rascunho vago."
+        "mostre o resultado e itere. Não salve rascunho vago.\n"
+        "- PROIBIDO salvar skill de projeto ou repositório sem o caminho do "
+        "repositório. Sem ele o manual não serve para nada, e escrever "
+        "\"não informado\" não substitui perguntar: faça a pergunta curta e "
+        "espere a resposta antes de chamar `save_skill`.\n"
+        "- Antes de salvar, procure no bloco `<skills>` uma que já cubra o "
+        "mesmo assunto. Se existir, leia com `read_skill` e pergunte se é para "
+        "melhorar aquela ou criar uma separada — nunca sobrescreva em silêncio. "
+        "Se o cliente quiser separada, avise que duas skills com descrições "
+        "parecidas fazem o agente escolher a errada, porque a description é a "
+        "única coisa que ele vê na hora de decidir; nesse caso deixe claro na "
+        "description de cada uma o que as distingue."
     ),
     "tools": [
         "read_skill",

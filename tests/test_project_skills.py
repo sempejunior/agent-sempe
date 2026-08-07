@@ -181,3 +181,39 @@ async def test_the_exact_name_still_returns_the_content(repos):
     tool = ReadSkillTool(skill_repo=repos.skills, user_id="u1")
 
     assert await tool.execute(skill_name="manual") == "o conteudo do manual"
+
+
+def test_the_author_must_ask_for_the_repository(client):
+    """Sem o repositório a skill de projeto não serve, e "não informado" não
+    substitui perguntar — o molde mandava e o modelo ignorava até isto virar
+    proibição nos guardrails."""
+    client.post("/api/auth/register", json={"user_id": "u1"})
+
+    r = client.get("/api/agents/templates/skill_author", headers=_auth("u1"))
+
+    guardrails = r.json()["guardrails"]
+    assert "PROIBIDO salvar skill de projeto" in guardrails
+    assert "caminho do repositório" in guardrails
+
+
+def test_the_author_must_not_overwrite_a_similar_skill_in_silence(client):
+    """Duas skills parecidas fazem o agente escolher pela description errada."""
+    client.post("/api/auth/register", json={"user_id": "u1"})
+
+    r = client.get("/api/agents/templates/skill_author", headers=_auth("u1"))
+
+    guardrails = r.json()["guardrails"]
+    assert "melhorar aquela ou criar uma separada" in guardrails
+    assert "escolher a errada" in guardrails
+
+
+async def test_the_mold_separates_asking_from_not_verified():
+    """O escape "registre como não verificado" virava desculpa para não perguntar."""
+    loader = SkillsLoader(workspace=BUILTIN_SKILLS_DIR.parent,
+                          builtin_skills_dir=BUILTIN_SKILLS_DIR)
+
+    content = await loader.load_skill("skill-de-projeto")
+
+    assert 'Nunca escreva "não verificado" no lugar de perguntar' in content
+    assert "Uma skill por repositório" in content
+    assert "já existe skill para este repositório" in content

@@ -10,21 +10,62 @@ Uma skill de projeto é o **manual de um repositório**. Quem a lê é um agente
 uma demanda e precisa saber onde trabalhar, como verificar o que fez, e o que já deu errado ali
 antes. É o que separa "procura o repo e adivinha" de "sabe exatamente o que fazer".
 
-Uma skill por projeto. Não junte dois repositórios numa skill: o agente carrega a errada e paga o
-conteúdo de um projeto que não interessa.
+**Uma skill por repositório.** Não junte dois repositórios numa skill, e não escreva uma skill "do
+time": o agente carrega a errada e paga o conteúdo de um projeto que não interessa. Se o cliente
+falar de um time com vários projetos, pergunte quais são e faça a primeira; depois ofereça a
+seguinte.
 
-## Antes de escrever: confirme com a API
+## Antes de tudo: já existe skill para este repositório?
 
-Você tem `http_call`. Use antes de salvar, para não gravar um manual que aponta para o lugar errado:
+Olhe o bloco `<skills>` do seu contexto. Se alguma já cobre este projeto ou repositório, leia com
+`read_skill` e **pergunte** ao cliente: melhorar a que existe, ou criar uma separada?
 
-- **O repositório existe?** `gitlab.get_project`, `github.get_repo`, ou o equivalente no Azure.
-  Confirme o path exato como a API o devolve, não como o cliente digitou de memória.
-- **A área/projeto do rastreador traz demandas?** `azure_devops.query_wiql` filtrando pelo
-  `System.AreaPath` informado, ou `jira.search_issues`. **Mostre um ou dois itens reais** ao cliente
-  e pergunte se é isso — um item de verdade na tela vale mais que qualquer confirmação verbal.
-- **O que você não conseguir verificar, escreva como não verificado.** O comando de teste é o caso
-  típico: conferir exigiria clonar e executar, o que você não faz. Registre o que o cliente disse e
-  marque com a palavra **não verificado**. Nunca faça o manual parecer mais confiável do que é.
+- **Melhorar** é quase sempre a resposta certa quando é o mesmo repositório. Diga o que a atual já
+  tem e o que você vai acrescentar.
+- **Separada** faz sentido quando são repositórios diferentes, ou quando o mesmo repositório tem dois
+  fluxos que não se confundem (atender bug ≠ subir release). Nesse caso, avise o cliente: duas skills
+  com descrição parecida fazem o agente **escolher a errada** — ele decide só pela description. As
+  duas descriptions precisam dizer, na primeira linha, o que separa uma da outra.
+
+Nunca sobrescreva uma skill existente sem perguntar. Reescrever o manual de alguém em silêncio é
+perder trabalho que você não viu.
+
+## Primeiro: os fatos que só o cliente tem
+
+Um manual sem o repositório não é um manual — é uma redação sobre um projeto. Três coisas **não dão
+para inferir, pesquisar nem deduzir**, e sem elas a skill não serve para o que existe:
+
+1. **O caminho do repositório** (`grupo/projeto` no GitLab, `owner/repo` no GitHub).
+2. **Como rodar os testes** ali.
+3. **Um exemplo de problema já resolvido** e o caminho até a causa.
+
+**Pergunte por elas. Uma por vez, curta.** Isto não é entrevista: é a pergunta que destrava, do tipo
+que você já faz quando falta uma credencial. Comece pelo repositório, porque sem ele os outros dois
+não têm onde morar.
+
+O caminho que funciona é incremental: descubra a chave de identificação, pergunte o repositório,
+salve a primeira versão com o que já tem, e então ofereça acrescentar o comando de teste e os
+exemplos. Cada volta deixa o manual melhor, e o cliente vê progresso em vez de um formulário.
+
+**Nunca escreva "não verificado" no lugar de perguntar.** Essa marca é só para o que o cliente te
+disse e você não pôde confirmar por API — não para o que você não perguntou.
+
+## Depois: confirme o que der, com o que estiver ativo
+
+Antes de salvar, confira o que as integrações ativas do cliente permitem conferir. Use o que estiver
+disponível — `http_call` nos endpoints da integração, ou as tools `mcp_*` do mesmo fornecedor; leia a
+seção `Integrations & MCPs` do seu contexto e escolha o que existe, sem preferência dogmática:
+
+- **O repositório existe?** Confirme o path exato como a API o devolve, não como o cliente digitou
+  de memória.
+- **A área/projeto do rastreador traz demandas?** Consulte filtrando pelo `System.AreaPath`
+  informado (WIQL no Azure, JQL no Jira). **Mostre um ou dois itens reais** ao cliente para ele
+  confirmar que é isso — um item de verdade na tela vale mais que qualquer confirmação verbal.
+- **Se a credencial falhar** (401, token expirado, integração inativa), diga qual e siga: isso não
+  impede a skill de existir, mas entra na seção de verificação como não confirmado.
+- **O comando de teste você não consegue verificar** — conferir exigiria clonar e executar. Registre
+  o que o cliente disse e marque como **não verificado**. Nunca faça o manual parecer mais confiável
+  do que é.
 
 ## As seções da skill que você vai escrever
 

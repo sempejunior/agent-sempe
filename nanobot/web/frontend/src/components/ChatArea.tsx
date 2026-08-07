@@ -364,7 +364,8 @@ function TraceEntry({ event, index }: { event: TraceEvent; index: number }) {
       {blocks.map((block) => (
         <details key={block.key} className="mt-1">
           <summary className="cursor-pointer text-[10px] uppercase tracking-wider text-slate-500 hover:text-slate-300">
-            {block.label} ({(event[block.key] as string).length})
+            {block.label} ({(event[block.key] as string).length}
+            {(event[block.key] as string).includes("[cortado,") ? "+" : ""})
           </summary>
           <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-900 p-2 text-[10px] leading-relaxed text-slate-300">
             {event[block.key] as string}
