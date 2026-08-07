@@ -60,7 +60,7 @@ function useSections(): SidebarSection[] {
       label: "Integrações",
       items: [
         { key: "channels", label: "Canais de Comunicação", icon: Send },
-        { key: "integrations", label: "MCPs & APIs", icon: Plug },
+        { key: "integrations", label: "MCPs, APIs e credenciais", icon: Plug },
         { key: "rag-manager", label: "Bases de Conhecimento", icon: BookOpen },
         { key: "dbs", label: "Bancos de Dados", icon: Database, soon: true },
       ],

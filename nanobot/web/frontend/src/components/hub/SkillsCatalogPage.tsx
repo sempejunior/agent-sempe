@@ -9,6 +9,8 @@ import {
   Lock,
   Building2,
   User,
+  Search,
+  Sparkles,
   AlertTriangle,
   Bot,
 } from "lucide-react";
@@ -48,6 +50,18 @@ type ListItem =
   | { kind: "custom"; skill: CustomSkill };
 
 type Filter = "all" | "mine" | "solides" | "builtin";
+
+/** Which agents actually see this skill.
+ *
+ *  A null ``skills_enabled`` is an open list and sees everything; any list is an
+ *  explicit choice. Used by the detail panel and by the list, so "nobody uses
+ *  this" means the same thing in both places. */
+function agentsUsing(skillName: string, agents: Agent[]): Agent[] {
+  return agents.filter((agent) => {
+    const list = agent.agent_config?.skills_enabled;
+    return list == null || list.includes(skillName);
+  });
+}
 
 function itemBucket(item: ListItem): "mine" | "solides" | "builtin" {
   if (item.kind === "builtin") {
@@ -118,6 +132,7 @@ export function SkillsCatalogPage() {
   const [createName, setCreateName] = useState("");
   const [createNameError, setCreateNameError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     if (agents.length === 0) loadAgents();
@@ -157,9 +172,50 @@ export function SkillsCatalogPage() {
     return c;
   }, [items]);
 
-  const visibleItems = useMemo(
-    () => (filter === "all" ? items : items.filter((it) => itemBucket(it) === filter)),
-    [items, filter],
+  const visibleItems = useMemo(() => {
+    const term = query.trim().toLowerCase();
+    return items.filter((it) => {
+      if (filter !== "all" && itemBucket(it) !== filter) return false;
+      if (!term) return true;
+      return (
+        it.skill.name.toLowerCase().includes(term) ||
+        (it.skill.description ?? "").toLowerCase().includes(term)
+      );
+    });
+  }, [items, filter, query]);
+
+  /** Groups only when nothing is narrowing the list — with a filter or a search
+   *  term the headers would just repeat what the user already asked for. */
+  const groups = useMemo(() => {
+    const labels: Record<string, string> = {
+      mine: "Minhas",
+      solides: "Sólides",
+      builtin: "Da ferramenta",
+    };
+    if (filter !== "all" || query.trim()) {
+      return [{ key: "flat", label: "", items: visibleItems }];
+    }
+    return (["mine", "solides", "builtin"] as const)
+      .map((key) => ({
+        key,
+        label: labels[key],
+        items: visibleItems.filter((it) => itemBucket(it) === key),
+      }))
+      .filter((g) => g.items.length > 0);
+  }, [visibleItems, filter, query]);
+
+  /** Skills that exist and reach no agent. Saving a skill does not enable it
+   *  anywhere, so created and in-use are different things.
+   *
+   *  Only yours and the Sólides ones: most platform builtins are unused on
+   *  purpose (nobody needs `tmux` enabled), and listing them would bury the
+   *  signal that matters — a skill you wrote that nothing runs. */
+  const orphans = useMemo(
+    () => (agents.length === 0 ? [] : items.filter(
+      (it) => itemBucket(it) !== "builtin"
+        && agentsUsing(it.skill.name, agents).length === 0,
+    )),
+    [items, agents],
   );
 
   function selectItem(item: ListItem) {
@@ -319,7 +375,7 @@ export function SkillsCatalogPage() {
       <PageHeader
         icon={Wrench}
         title="Minhas skills"
-        subtitle="Skills são compartilhadas entre todos os seus agentes. Para escolher quais um agente usa, edite o agente."
+        subtitle="Uma skill existe para o usuário e vale nos agentes em que você habilitar. Abra uma para ver o conteúdo e escolher quem a usa."
         action={
           <div className="flex items-center gap-2">
             <Button variant="subtle" onClick={openChat} disabled={startingChat}>
@@ -343,9 +399,18 @@ export function SkillsCatalogPage() {
           <Loader2 className="w-6 h-6 text-purple animate-spin" />
         </div>
       ) : (
-        <div className="grid gap-5 lg:grid-cols-[320px_1fr]">
-          <Card className="h-fit">
+        <div className="grid gap-5 lg:grid-cols-[340px_1fr] lg:items-start">
+          <Card className="lg:sticky lg:top-4">
             <CardContent className="p-3 pt-3">
+              <div className="relative mb-2">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted" />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Buscar por nome ou descrição"
+                  className="pl-8 h-9 text-sm"
+                />
+              </div>
               <FilterChips filter={filter} setFilter={setFilter} counts={counts} />
               {items.length === 0 ? (
                 <div className="text-center py-8 px-2">
@@ -361,91 +426,55 @@ export function SkillsCatalogPage() {
                 </div>
               ) : visibleItems.length === 0 ? (
                 <div className="text-center py-8 px-2 text-xs text-text-muted">
-                  Nenhuma skill neste filtro.
+                  {query.trim()
+                    ? `Nada encontrado para "${query.trim()}".`
+                    : "Nenhuma skill neste filtro."}
                 </div>
               ) : (
-                <ul className="space-y-1">
-                  {visibleItems.map((item) => {
-                    const isActive =
-                      selected?.kind === item.kind &&
-                      selected.skill.name === item.skill.name;
-                    const bucket = itemBucket(item);
-                    const isCustom = item.kind === "custom";
-                    const enabled = !isCustom
-                      ? (item.skill as BuiltinSkill).available
-                      : (item.skill as CustomSkill).enabled === 1;
-                    const Icon =
-                      bucket === "builtin" ? Lock : bucket === "solides" ? Building2 : User;
-                    const badgeLabel =
-                      bucket === "builtin"
-                        ? "Built-in"
-                        : bucket === "solides"
-                          ? "Sólides"
-                          : "Minha";
-                    return (
-                      <li key={`${item.kind}:${item.skill.name}`}>
-                        <button
-                          type="button"
-                          onClick={() => selectItem(item)}
-                          className={cn(
-                            "w-full text-left flex items-start gap-3 p-3 rounded-xl transition-colors border",
-                            isActive
-                              ? "border-purple bg-purple-muted"
-                              : "border-transparent hover:bg-surface-alt",
-                          )}
-                        >
-                          <div
-                            className={cn(
-                              "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
-                              bucket === "builtin"
-                                ? "bg-surface-alt text-text-muted"
-                                : bucket === "solides"
-                                  ? "bg-blue-muted text-blue"
-                                  : "bg-purple-muted text-purple",
-                            )}
-                          >
-                            <Icon className="w-4 h-4" />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-semibold text-text-primary truncate">
-                              {item.skill.name}
-                            </p>
-                            <p className="text-[11px] text-text-muted line-clamp-2">
-                              {item.skill.description || "Sem descrição."}
-                            </p>
-                            <div className="flex items-center gap-1 mt-1.5">
-                              <Badge variant={bucket === "builtin" ? "muted" : "default"}>
-                                {badgeLabel}
-                              </Badge>
-                              {enabled && isCustom && (
-                                <Badge variant="success">Ativa</Badge>
-                              )}
-                            </div>
-                          </div>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
+                <div className="max-h-[calc(100vh-19rem)] overflow-y-auto -mr-1 pr-1">
+                  {groups.map((group) => (
+                    <div key={group.key}>
+                      {group.label && (
+                        <p className="px-1 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-text-muted">
+                          {group.label} · {group.items.length}
+                        </p>
+                      )}
+                      <ul>
+                        {group.items.map((item) => (
+                          <li key={`${item.kind}:${item.skill.name}`}>
+                            <SkillRow
+                              item={item}
+                              active={
+                                selected?.kind === item.kind &&
+                                selected.skill.name === item.skill.name
+                              }
+                              unused={
+                                agents.length > 0 &&
+                                itemBucket(item) !== "builtin" &&
+                                agentsUsing(item.skill.name, agents).length === 0
+                              }
+                              onSelect={() => selectItem(item)}
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>
 
           <div className="min-w-0">
             {selected === null ? (
-              <Card>
-                <CardContent className="p-10 pt-10 text-center">
-                  <div className="w-14 h-14 rounded-2xl bg-purple-muted flex items-center justify-center text-purple mx-auto mb-3">
-                    <Wrench className="w-7 h-7" />
-                  </div>
-                  <h3 className="font-display font-bold text-lg text-text-primary">
-                    Selecione uma skill
-                  </h3>
-                  <p className="text-sm text-text-muted mt-1 max-w-sm mx-auto">
-                    Escolha uma skill à esquerda para ver o conteúdo, ou crie uma nova.
-                  </p>
-                </CardContent>
-              </Card>
+              <SkillsOverview
+                counts={counts}
+                orphans={orphans}
+                onSelect={selectItem}
+                onCreate={openCreate}
+                onChat={openChat}
+                startingChat={startingChat}
+              />
             ) : (
               <div className="space-y-5">
                 {selected.kind === "builtin" ? (
@@ -638,6 +667,187 @@ function SkillAgentsPanel({ skillName, agents, onToggle }: SkillAgentsPanelProps
         )}
       </CardContent>
     </Card>
+  );
+}
+
+interface SkillsOverviewProps {
+  counts: { all: number; mine: number; solides: number; builtin: number };
+  orphans: ListItem[];
+  onSelect: (item: ListItem) => void;
+  onCreate: () => void;
+  onChat: () => void;
+  startingChat: boolean;
+}
+
+/** What fills the right column before a skill is picked.
+ *
+ *  It used to be a small "select a skill" card in the middle of a large empty
+ *  area. The space is better spent on the one thing this screen can tell you and
+ *  the list cannot: which skills exist but reach no agent — saving a skill does
+ *  not enable it anywhere, so created and in-use are different things. */
+function SkillsOverview({
+  counts,
+  orphans,
+  onSelect,
+  onCreate,
+  onChat,
+  startingChat,
+}: SkillsOverviewProps) {
+  return (
+    <div className="space-y-5">
+      <Card>
+        <CardContent className="p-6 pt-6">
+          <div className="flex items-start gap-4">
+            <div className="w-11 h-11 rounded-2xl bg-purple-muted flex items-center justify-center text-purple shrink-0">
+              <Wrench className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="font-display font-bold text-lg text-text-primary">
+                Skills são o que seus agentes sabem fazer
+              </h3>
+              <p className="text-sm text-text-muted mt-1">
+                Cada skill é um procedimento em Markdown. O agente vê o nome e a
+                descrição sempre, e lê o conteúdo quando decide usar — então a
+                descrição é o que faz ele escolher a skill certa.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 mt-4">
+                <Button onClick={onCreate}>
+                  <Plus /> Nova skill
+                </Button>
+                <Button variant="subtle" onClick={onChat} disabled={startingChat}>
+                  {startingChat ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <MessageSquarePlus />
+                  )}
+                  Criar via conversa
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <Separator className="my-5" />
+
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: "Suas", value: counts.mine, hint: "criadas por você ou pelo agente" },
+              { label: "Sólides", value: counts.solides, hint: "vêm com os templates" },
+              { label: "Da ferramenta", value: counts.builtin, hint: "embutidas na plataforma" },
+            ].map((stat) => (
+              <div key={stat.label} className="rounded-xl border border-border p-3">
+                <p className="font-display font-bold text-2xl text-text-primary leading-none">
+                  {stat.value}
+                </p>
+                <p className="text-xs font-semibold text-text-primary mt-1.5">
+                  {stat.label}
+                </p>
+                <p className="text-[11px] text-text-muted leading-tight">{stat.hint}</p>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {orphans.length > 0 && (
+        <Card>
+          <CardContent className="p-5 pt-5">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-yellow" />
+              <h3 className="font-display font-bold text-text-primary">
+                {orphans.length === 1
+                  ? "1 skill que nenhum agente usa"
+                  : `${orphans.length} skills que nenhum agente usa`}
+              </h3>
+            </div>
+            <p className="text-xs text-text-muted mt-1 mb-3">
+              Salvar uma skill não a habilita em ninguém. Abra e escolha em quais
+              agentes ela deve valer.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {orphans.slice(0, 12).map((item) => (
+                <button
+                  key={`${item.kind}:${item.skill.name}`}
+                  type="button"
+                  onClick={() => onSelect(item)}
+                  className="rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-text-secondary hover:border-purple hover:text-purple transition-colors"
+                >
+                  {item.skill.name}
+                </button>
+              ))}
+              {orphans.length > 12 && (
+                <span className="px-2 py-1 text-xs text-text-muted">
+                  e mais {orphans.length - 12}
+                </span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+interface SkillRowProps {
+  item: ListItem;
+  active: boolean;
+  unused: boolean;
+  onSelect: () => void;
+}
+
+/** One line per skill.
+ *
+ *  Compact on purpose: with 40+ skills the old two-line rows made the column
+ *  taller than the page, so the editor scrolled out of sight. And only the
+ *  exceptions get a badge — an "Ativa" tag on every row carries no information;
+ *  "nenhum agente usa" does. */
+function SkillRow({ item, active, unused, onSelect }: SkillRowProps) {
+  const bucket = itemBucket(item);
+  const isCustom = item.kind === "custom";
+  const disabled = isCustom
+    ? (item.skill as CustomSkill).enabled !== 1
+    : !(item.skill as BuiltinSkill).available;
+  const Icon = bucket === "builtin" ? Lock : bucket === "solides" ? Building2 : User;
+
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      title={item.skill.description || item.skill.name}
+      className={cn(
+        "w-full text-left flex items-center gap-2.5 px-2 py-1.5 rounded-lg transition-colors border",
+        active
+          ? "border-purple bg-purple-muted"
+          : "border-transparent hover:bg-surface-alt",
+      )}
+    >
+      <div
+        className={cn(
+          "w-6 h-6 rounded-md flex items-center justify-center shrink-0",
+          bucket === "builtin"
+            ? "bg-surface-alt text-text-muted"
+            : bucket === "solides"
+              ? "bg-blue-muted text-blue"
+              : "bg-purple-muted text-purple",
+        )}
+      >
+        <Icon className="w-3 h-3" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-semibold text-text-primary truncate leading-tight">
+          {item.skill.name}
+        </p>
+        <p className="text-[11px] text-text-muted truncate leading-tight">
+          {item.skill.description || "Sem descrição."}
+        </p>
+      </div>
+      {disabled && <Badge variant="muted">Desligada</Badge>}
+      {!disabled && unused && (
+        <span
+          title="Nenhum agente usa esta skill"
+          className="w-1.5 h-1.5 rounded-full bg-yellow shrink-0"
+        />
+      )}
+    </button>
   );
 }
 
