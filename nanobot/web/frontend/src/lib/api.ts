@@ -778,6 +778,9 @@ export interface CatalogEntry {
   description: string;
   category: string;
   docs_url: string;
+  /** Deep link to the page where the secret is created. Empty for self-hosted
+   *  instances and paths that need an organization name. */
+  credential_url?: string;
   setup_steps?: string[];
   credential_fields: CatalogCredentialField[];
   auth_mode: string;

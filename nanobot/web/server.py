@@ -1478,6 +1478,7 @@ form.addEventListener("submit", async (e) => {{
             "description": entry.description,
             "category": entry.category,
             "docs_url": entry.docs_url,
+            "credential_url": entry.credential_url,
             "setup_steps": list(entry.setup_steps),
             "credential_fields": [
                 {

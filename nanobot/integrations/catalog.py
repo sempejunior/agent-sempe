@@ -155,6 +155,12 @@ class IntegrationEntry:
     credential_fields: tuple[CredentialField, ...] = ()
     auth: AuthSpec = field(default_factory=AuthSpec)
     docs_url: str = ""
+    credential_url: str = ""
+    """Where the client creates the secret — the exact page, not the docs.
+
+    Empty when no static URL can exist (a self-hosted instance, or a path that
+    needs the organization name). The setup steps carry the path in that case."""
+
     setup_steps: tuple[str, ...] = ()
     provider: str = ""
     api: APIIntegration | None = None
@@ -175,17 +181,25 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         description="Issues, pull requests, repos e workflows do GitHub.",
         category="devtools",
         docs_url="https://docs.github.com/rest",
+        credential_url="https://github.com/settings/tokens",
         setup_steps=(
-            "Acesse github.com/settings/tokens (Settings → Developer settings → "
-            "Personal access tokens → Tokens classic).",
-            "Clique em 'Generate new token (classic)' e marque os escopos "
-            "'repo' e 'read:org'.",
-            "Copie o token gerado (começa com ghp_) e cole no campo abaixo — "
-            "ele não é exibido de novo depois.",
+            "No GitHub, clique na sua foto (canto superior direito) → Settings → "
+            "Developer settings → Personal access tokens → Tokens (classic). O botão "
+            "abaixo abre essa página direto.",
+            "Clique em 'Generate new token' → 'Generate new token (classic)', dê um "
+            "nome que lembre para que serve e escolha a validade.",
+            "Marque os escopos 'repo' (ler e escrever nos repositórios) e 'read:org' "
+            "(ver os times da organização). Só isso — escopo a mais é risco a mais.",
+            "Clique em 'Generate token' e copie na hora: o GitHub mostra o valor uma "
+            "única vez. Ele começa com 'ghp_'.",
+            "Token com validade vence sem avisar o agente: quando as chamadas "
+            "começarem a falhar com 401, gere outro e edite esta credencial.",
         ),
         credential_fields=(
-            CredentialField("token", "Personal Access Token", "password",
-                            hint="Crie em github.com/settings/tokens. Escopo mínimo: repo, read:org."),
+            CredentialField("token", "Personal Access Token (classic)", "password",
+                            hint="Começa com ghp_. Escopos: repo e read:org. Um token "
+                                 "fine-grained também funciona, mas exige liberar "
+                                 "repositório por repositório."),
         ),
         auth=AuthSpec(mode="bearer", header_prefix="Bearer ", secret_field="token"),
         api=APIIntegration(
@@ -224,18 +238,27 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         description="Issues, projetos e sprints do Jira Cloud.",
         category="devtools",
         docs_url="https://developer.atlassian.com/cloud/jira/platform/rest/v3/",
+        credential_url="https://id.atlassian.com/manage-profile/security/api-tokens",
         setup_steps=(
-            "Descubra a Base URL da sua instância (ex: https://suaempresa.atlassian.net).",
-            "Acesse id.atlassian.com/manage-profile/security/api-tokens e clique "
-            "em 'Create API token'.",
-            "Use o email da sua conta Atlassian + o token gerado (autenticação básica).",
+            "A Base URL é o endereço que aparece quando você usa o Jira: "
+            "https://suaempresa.atlassian.net (sem /jira e sem barra no fim).",
+            "O botão abaixo abre id.atlassian.com → Security → API tokens. Clique em "
+            "'Create API token', dê um nome e escolha a validade.",
+            "Copie o token na hora — ele não é mostrado de novo. Diferente de outros "
+            "fornecedores, o token da Atlassian não tem prefixo reconhecível.",
+            "O login é o seu email da conta Atlassian + o token (autenticação básica). "
+            "O token herda as suas permissões: o agente vê o que você vê.",
+            "Só funciona em Jira Cloud. Data Center e Server usam outro tipo de token "
+            "e não são atendidos por esta integração.",
         ),
         credential_fields=(
-            CredentialField("base_url", "Base URL da instância", "url", hint="ex: https://minhaempresa.atlassian.net"),
-            CredentialField("email", "Email do usuário", "text",
-                            hint="Email da sua conta Atlassian."),
+            CredentialField("base_url", "Base URL da instância", "url",
+                            hint="ex: https://minhaempresa.atlassian.net — sem barra no fim."),
+            CredentialField("email", "Email da conta Atlassian", "text",
+                            hint="O mesmo email com que você entra no Jira."),
             CredentialField("api_token", "API Token", "password",
-                            hint="Gere em id.atlassian.com/manage-profile/security/api-tokens"),
+                            hint="Criado em id.atlassian.com → Security → API tokens. "
+                                 "Visível só na criação."),
         ),
         auth=AuthSpec(mode="basic", username_field="email", password_field="api_token"),
         api=APIIntegration(
@@ -320,6 +343,7 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         ),
         category="devtools",
         docs_url="https://kiro.dev/docs/cli/headless/",
+        credential_url="https://app.kiro.dev",
         setup_steps=(
             "Entre em app.kiro.dev com uma conta Pro, Pro+, Pro Max ou Power — "
             "chave de API não existe no plano gratuito.",
@@ -400,17 +424,26 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         name="Grafana",
         description="Dashboards, datasources e alerting via API HTTP.",
         category="observability",
-        docs_url="https://grafana.com/docs/grafana/latest/developers/http_api/",
+        docs_url="https://grafana.com/docs/grafana/latest/administration/service-accounts/",
         setup_steps=(
-            "No Grafana, vá em Administration → Users and access → Service accounts.",
-            "Crie um service account com a role adequada (ex: Viewer) e clique "
-            "em 'Add service account token'.",
-            "Copie o token gerado e informe a Base URL do seu Grafana abaixo.",
+            "A Base URL é o endereço com que você abre o Grafana, sem barra no fim "
+            "(ex: https://grafana.suaempresa.com). Não há link fixo aqui porque cada "
+            "Grafana tem o seu.",
+            "No Grafana, barra lateral → Administration → Users and access → Service "
+            "accounts. Precisa ser admin da organização.",
+            "Crie um service account, dê um nome e escolha a role: 'Viewer' se o agente "
+            "só vai consultar dashboards e alertas; 'Editor' se for criar algo.",
+            "Abra o service account criado e clique em 'Add service account token'. "
+            "Copie o valor na hora — começa com 'glsa_' e não é mostrado de novo.",
+            "Se você tinha uma API key antiga: elas foram descontinuadas e migradas "
+            "automaticamente para service accounts. Use o token novo.",
         ),
         credential_fields=(
-            CredentialField("base_url", "Base URL", "url", hint="ex: https://grafana.minhaempresa.com"),
+            CredentialField("base_url", "Base URL do Grafana", "url",
+                            hint="ex: https://grafana.suaempresa.com — sem barra no fim."),
             CredentialField("token", "Service Account Token", "password",
-                            hint="Administration → Service accounts → Add token."),
+                            hint="Começa com glsa_. Administration → Users and access → "
+                                 "Service accounts → Add service account token."),
         ),
         auth=AuthSpec(mode="bearer", header_prefix="Bearer ", secret_field="token"),
         api=APIIntegration(
@@ -435,16 +468,27 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         description="APIs REST do Google (Gmail, Calendar, Drive) com OAuth Bearer.",
         category="productivity",
         docs_url="https://developers.google.com/workspace",
+        credential_url="https://developers.google.com/oauthplayground",
         setup_steps=(
-            "Abra developers.google.com/oauthplayground.",
-            "Selecione os escopos desejados (Gmail, Calendar, Drive) e autorize "
-            "com sua conta Google.",
-            "Troque o código pelo access token e cole abaixo. "
-            "Atenção: o token expira (~1h) e precisa ser renovado manualmente por enquanto.",
+            "Leia isto antes: o Google não emite token de longa duração para este "
+            "caminho. O que você vai cadastrar aqui **expira em cerca de 1 hora** e "
+            "precisa ser trocado à mão. Serve para experimentar, não para uma rotina.",
+            "O botão abaixo abre o OAuth Playground. No painel da direita, clique na "
+            "engrenagem e marque 'Use your own OAuth credentials' se tiver um projeto "
+            "próprio; sem isso vale o app de teste do Google.",
+            "Na lista da esquerda, escolha os escopos das APIs que o agente vai usar "
+            "(Gmail, Calendar, Drive) e clique em 'Authorize APIs'. Autorize com a sua "
+            "conta Google.",
+            "Clique em 'Exchange authorization code for tokens' e copie o "
+            "'Access token' (começa com 'ya29.').",
+            "Quando o agente começar a receber 401, o token venceu: repita e edite esta "
+            "credencial. Um acesso durável exige OAuth com refresh, que esta plataforma "
+            "ainda não faz.",
         ),
         credential_fields=(
             CredentialField("access_token", "OAuth Access Token", "password",
-                            hint="Gere em developers.google.com/oauthplayground. Expira em ~1h."),
+                            hint="Começa com ya29. e EXPIRA EM ~1 HORA. Gere em "
+                                 "developers.google.com/oauthplayground."),
         ),
         auth=AuthSpec(mode="bearer", header_prefix="Bearer ", secret_field="access_token"),
         api=APIIntegration(
@@ -471,16 +515,27 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         name="Notion",
         description="Databases e páginas do Notion via integração interna.",
         category="productivity",
-        docs_url="https://developers.notion.com",
+        docs_url="https://developers.notion.com/guides/get-started/authorization",
+        credential_url="https://www.notion.so/my-integrations",
         setup_steps=(
-            "Acesse notion.so/my-integrations e clique em 'New integration'.",
-            "Dê um nome, associe ao workspace e copie o 'Internal Integration Secret'.",
-            "Importante: abra cada página/database no Notion → menu '...' → "
-            "'Connections' → conecte sua integração, senão ela não enxerga o conteúdo.",
+            "Você precisa ser owner do workspace para criar a integração. Se não for, "
+            "peça a quem é.",
+            "O botão abaixo abre notion.so/my-integrations. Clique em 'New integration', "
+            "dê um nome (é o nome que vai aparecer no Notion) e escolha o workspace.",
+            "Copie o token da aba de configuração — 'Internal Integration Secret'. "
+            "Tokens novos começam com 'ntn_'; os antigos, com 'secret_', continuam "
+            "valendo.",
+            "O passo que todo mundo esquece: a integração não vê nada até você "
+            "conectá-la às páginas. Abra cada página ou database → menu '...' (canto "
+            "superior direito) → 'Connections' → escolha a sua integração.",
+            "Se o agente disser que não encontra uma página que existe, quase sempre é "
+            "isso: a página não foi conectada.",
         ),
         credential_fields=(
-            CredentialField("token", "Internal Integration Token", "password",
-                            hint="Crie em notion.so/my-integrations e compartilhe as páginas com ela."),
+            CredentialField("token", "Internal Integration Secret", "password",
+                            hint="Começa com ntn_ (ou secret_, se for antigo). "
+                                 "notion.so/my-integrations → sua integração → "
+                                 "Configuration. Não esqueça de conectar as páginas."),
         ),
         auth=AuthSpec(mode="bearer", header_prefix="Bearer ", secret_field="token"),
         api=APIIntegration(
@@ -508,15 +563,26 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         description="Mensagens, canais e usuários via Web API do Slack.",
         category="communication",
         docs_url="https://api.slack.com/web",
+        credential_url="https://api.slack.com/apps",
         setup_steps=(
-            "Crie um app em api.slack.com/apps → 'Create New App' → 'From scratch'.",
-            "Em 'OAuth & Permissions', adicione os Bot Token Scopes necessários "
-            "(ex: chat:write, channels:read, channels:history, users:read).",
-            "Clique em 'Install to Workspace' e copie o 'Bot User OAuth Token' (xoxb-).",
+            "O botão abaixo abre api.slack.com/apps. Clique em 'Create New App' → "
+            "'From scratch', dê um nome e escolha o workspace.",
+            "No app criado, barra lateral → 'OAuth & Permissions' → seção 'Scopes' → "
+            "'Bot Token Scopes'. Adicione o que o agente precisa: 'chat:write' para "
+            "enviar mensagem, 'channels:read' para listar canais, 'channels:history' "
+            "para ler conversa, 'users:read' para resolver nomes.",
+            "Ainda em 'OAuth & Permissions', clique em 'Install to Workspace' e "
+            "autorize. Um admin do workspace pode precisar aprovar.",
+            "Copie o 'Bot User OAuth Token' — começa com 'xoxb-'. Esse é o token do "
+            "app, não o seu; ele continua valendo enquanto o app estiver instalado.",
+            "Último passo, dentro do Slack: convide o app no canal onde ele vai agir "
+            "(/invite @nome-do-app). Sem isso ele não enxerga o canal, mesmo com os "
+            "escopos certos.",
         ),
         credential_fields=(
             CredentialField("bot_token", "Bot User OAuth Token", "password",
-                            hint="Começa com xoxb-. Instale o app em api.slack.com/apps → OAuth & Permissions."),
+                            hint="Começa com xoxb-. api.slack.com/apps → seu app → "
+                                 "OAuth & Permissions → Install to Workspace."),
         ),
         auth=AuthSpec(mode="bearer", header_prefix="Bearer ", secret_field="bot_token"),
         api=APIIntegration(
@@ -548,19 +614,21 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         ),
         category="devtools",
         docs_url="https://github.com/atlassian/atlassian-mcp-server",
+        credential_url="https://id.atlassian.com/manage-profile/security/api-tokens",
         setup_steps=(
-            "Só funciona com Atlassian Cloud. Jira Data Center e Server não são "
-            "atendidos por este servidor.",
+            "Usa a mesma credencial do Jira — email + API token. Se você já cadastrou, "
+            "escolha ela na hora de ativar.",
             "Um administrador precisa habilitar a autenticação por API token nas "
-            "configurações do Rovo MCP Server da organização.",
-            "Use o mesmo email e API token do Jira Cloud: a mesma credencial "
-            "serve para a API REST e para este servidor.",
+            "configurações do Rovo MCP Server da organização; sem isso o servidor "
+            "recusa o token com 401.",
+            "Servidor remoto, hospedado pela Atlassian. Cobre Jira, Confluence, Jira "
+            "Service Management, Bitbucket e Compass — só em Atlassian Cloud.",
         ),
         credential_fields=(
-            CredentialField("email", "Email do usuário", "text",
-                            hint="Email da sua conta Atlassian."),
+            CredentialField("email", "Email da conta Atlassian", "text",
+                            hint="O mesmo email da credencial do Jira."),
             CredentialField("api_token", "API Token", "password",
-                            hint="Gere em id.atlassian.com/manage-profile/security/api-tokens"),
+                            hint="O mesmo token da credencial do Jira."),
         ),
         auth=AuthSpec(mode="basic", username_field="email", password_field="api_token"),
         mcp=MCPIntegration(url="https://mcp.atlassian.com/v1/mcp"),
@@ -570,25 +638,25 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         kind="mcp",
         provider="github",
         name="MCP · GitHub",
-        description="Servidor MCP oficial do GitHub (stdio via npx).",
+        description=(
+            "Servidor MCP oficial do GitHub, hospedado pela própria GitHub: issues, "
+            "pull requests, repositórios e workflows como tools."
+        ),
         category="devtools",
         docs_url="https://github.com/github/github-mcp-server",
+        credential_url="https://github.com/settings/tokens",
         setup_steps=(
-            "Requer o npx (Node.js) disponível no ambiente do servidor.",
-            "Crie um Personal Access Token em github.com/settings/tokens "
-            "(escopos: repo, read:org).",
-            "Cole o token abaixo — ele é injetado como GITHUB_PERSONAL_ACCESS_TOKEN.",
+            "Usa a mesma credencial do GitHub — se você já cadastrou o Personal "
+            "Access Token, escolha ela na hora de ativar.",
+            "O servidor é remoto (api.githubcopilot.com/mcp): não baixa nada nesta "
+            "máquina e o token vai no header, nunca no disco.",
         ),
         credential_fields=(
-            CredentialField("token", "Personal Access Token", "password",
-                            hint="Crie em github.com/settings/tokens. Escopos: repo, read:org."),
+            CredentialField("token", "Personal Access Token (classic)", "password",
+                            hint="O mesmo token da API do GitHub: escopos repo e read:org."),
         ),
-        auth=AuthSpec(mode="none", secret_field="token"),
-        mcp=MCPIntegration(
-            command="npx",
-            args=("-y", "@modelcontextprotocol/server-github"),
-            env_from_credential={"GITHUB_PERSONAL_ACCESS_TOKEN": "token"},
-        ),
+        auth=AuthSpec(mode="bearer", header_prefix="Bearer ", secret_field="token"),
+        mcp=MCPIntegration(url="https://api.githubcopilot.com/mcp/"),
     ),
     IntegrationEntry(
         id="mcp_notion",
@@ -598,53 +666,24 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         description="Servidor MCP para Notion (stdio via npx).",
         category="productivity",
         docs_url="https://github.com/makenotion/notion-mcp-server",
+        credential_url="https://www.notion.so/my-integrations",
         setup_steps=(
-            "Requer o npx (Node.js) disponível no ambiente do servidor.",
-            "Crie a integração em notion.so/my-integrations e copie o "
-            "'Internal Integration Secret'.",
-            "Conecte suas páginas/databases à integração (menu '...' → Connections), "
-            "senão ela não enxerga o conteúdo.",
+            "Usa a mesma credencial do Notion. Se você já cadastrou o Internal "
+            "Integration Secret, escolha ela na hora de ativar.",
+            "Servidor oficial da Notion (@notionhq/notion-mcp-server), sobe nesta "
+            "máquina via npx na primeira vez que um agente o usa.",
+            "Valem as mesmas regras de visibilidade da API: a integração só alcança as "
+            "páginas que você conectou a ela no Notion.",
         ),
         credential_fields=(
-            CredentialField("token", "Internal Integration Token", "password",
-                            hint="Crie em notion.so/my-integrations e compartilhe as páginas com ela."),
+            CredentialField("token", "Internal Integration Secret", "password",
+                            hint="O mesmo token da credencial do Notion."),
         ),
         auth=AuthSpec(mode="none", secret_field="token"),
         mcp=MCPIntegration(
             command="npx",
             args=("-y", "@notionhq/notion-mcp-server"),
             env_from_credential={"NOTION_TOKEN": "token"},
-        ),
-    ),
-    IntegrationEntry(
-        id="mcp_slack",
-        kind="mcp",
-        provider="slack",
-        name="MCP · Slack",
-        description="Servidor MCP para Slack (stdio via npx).",
-        category="communication",
-        docs_url="https://github.com/modelcontextprotocol/servers",
-        setup_steps=(
-            "Requer o npx (Node.js) disponível no ambiente do servidor.",
-            "Crie um app em api.slack.com/apps, adicione os Bot Token Scopes e "
-            "instale no workspace para obter o Bot Token (xoxb-).",
-            "O Team ID (começa com T) aparece na URL do Slack web ou em "
-            "'About this workspace'.",
-        ),
-        credential_fields=(
-            CredentialField("bot_token", "Bot Token (xoxb-)", "password",
-                            hint="Instale o app em api.slack.com/apps → OAuth & Permissions."),
-            CredentialField("team_id", "Team ID", "text", required=False,
-                            hint="Começa com T. Opcional."),
-        ),
-        auth=AuthSpec(mode="none"),
-        mcp=MCPIntegration(
-            command="npx",
-            args=("-y", "@modelcontextprotocol/server-slack"),
-            env_from_credential={
-                "SLACK_BOT_TOKEN": "bot_token",
-                "SLACK_TEAM_ID": "team_id",
-            },
         ),
     ),
     IntegrationEntry(
@@ -659,19 +698,20 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         category="devtools",
         docs_url="https://github.com/Tiberriver256/mcp-server-azure-devops",
         setup_steps=(
-            "A organização é o nome que aparece na URL: dev.azure.com/<organização>.",
-            "Crie um Personal Access Token em dev.azure.com/<org>/_usersSettings/tokens "
-            "(User settings → Personal access tokens → New Token). Escopos de leitura: "
-            "Work Items (Read), Code (Read), Project and Team (Read).",
-            "Reutilize a credencial de Azure DevOps que você já cadastrou "
-            "(organização + PAT) — o servidor MCP sobe automaticamente ao ativar.",
+            "Usa a mesma credencial do Azure DevOps — organização + PAT. Se você já "
+            "cadastrou, escolha ela na hora de ativar.",
+            "Sobe nesta máquina via npx na primeira vez que um agente o usa, e expõe "
+            "46 tools (work items, repos, pipelines, wiki). São 46 definições no "
+            "prompt de cada turno: ative só nos agentes que trabalham com Azure.",
+            "Este é o servidor da comunidade, e é proposital: o oficial da Microsoft "
+            "(@azure-devops/mcp) só autentica por login de navegador ou Azure CLI, o "
+            "que não funciona num serviço que roda sozinho.",
         ),
         credential_fields=(
             CredentialField("organization", "Organização", "text",
-                            hint="Nome na URL dev.azure.com/<organização>. ex: contoso"),
+                            hint="A mesma da credencial de Azure DevOps."),
             CredentialField("pat", "Personal Access Token", "password",
-                            hint="Crie em dev.azure.com/<org>/_usersSettings/tokens. "
-                                 "Escopos: Work Items (Read), Code (Read)."),
+                            hint="O mesmo PAT da credencial de Azure DevOps."),
         ),
         auth=AuthSpec(mode="none"),
         mcp=MCPIntegration(
@@ -695,14 +735,19 @@ CATALOG: tuple[IntegrationEntry, ...] = (
         ),
         category="hr",
         setup_steps=(
-            "Pegue a URL da API interna do seu Sólides Start, terminando em "
-            "/internal/v1 (ex: https://start.suaempresa.com.br/internal/v1).",
-            "Peça ao time que administra o Start a chave de integração "
-            "(X-Internal-Api-Key) do seu ambiente.",
-            "Informe o tenant (grupo econômico) e a empresa. O agente age sempre "
-            "em nome do usuário informado aqui — cadastre uma integração por "
-            "pessoa/papel quando quiser um agente para o colaborador e outro "
-            "para o gestor.",
+            "Esta é uma integração interna da Sólides: os dados não vêm de uma conta "
+            "pública, vêm da base do Start da sua empresa. Quem fornece tudo abaixo é "
+            "o time que administra o Start.",
+            "URL da API interna: termina em /internal/v1 "
+            "(ex: https://start.suaempresa.com.br/internal/v1).",
+            "Chave de integração: enviada no header X-Internal-Api-Key. Peça a do seu "
+            "ambiente — a de homologação não serve em produção.",
+            "Tenant é o grupo econômico e company é a empresa, os dois em UUID. Em "
+            "tenant de empresa única, company pode ficar vazio.",
+            "O user_id é a pessoa em nome de quem o agente age, e isso não é detalhe: "
+            "a identidade vem daqui, não do que o modelo escrever. Para um agente do "
+            "colaborador e outro do gestor, cadastre duas credenciais — mesma chave e "
+            "mesmo tenant, user_id diferente.",
         ),
         credential_fields=(
             CredentialField("base_url", "URL da API interna", "url",

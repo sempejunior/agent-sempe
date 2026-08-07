@@ -26,6 +26,7 @@ import {
   getCodeAgents,
   installCodeAgent,
   type CodeAgentCli,
+  type CatalogCredentialField,
   type CatalogEntry,
   type UserIntegration,
   type UserCredential,
@@ -835,13 +836,7 @@ function ActivateDialog({
                       Você ainda não cadastrou a credencial de {providerLabel}. Uma
                       só atende todos os acessos deste fornecedor.
                     </p>
-                    {!!entry.setup_steps?.length && (
-                      <ol className="list-decimal list-inside space-y-1 text-xs text-text-muted">
-                        {entry.setup_steps.map((step, i) => (
-                          <li key={i}>{step}</li>
-                        ))}
-                      </ol>
-                    )}
+                    <SetupGuide entry={entry} providerName={providerLabel} />
                     <Button
                       type="button"
                       size="sm"
@@ -884,27 +879,29 @@ function ActivateDialog({
                         </Button>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      className="text-xs text-purple hover:underline"
-                      onClick={() => setCredentialEditor({ mode: "create" })}
-                    >
-                      Cadastrar outra
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        className="text-xs text-purple hover:underline"
+                        onClick={() => setCredentialEditor({ mode: "create" })}
+                      >
+                        Cadastrar outra
+                      </button>
+                      {entry.credential_url && (
+                        <a
+                          href={entry.credential_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-purple"
+                        >
+                          Gerar nova chave em {providerLabel}
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
-            )}
-
-            {entry.docs_url && (
-              <a
-                href={entry.docs_url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-text-muted hover:text-purple inline-flex items-center gap-1"
-              >
-                Documentação de {providerLabel} <ExternalLink className="w-3 h-3" />
-              </a>
             )}
 
             <details className="rounded-xl border border-border">
@@ -966,6 +963,55 @@ function ActivateDialog({
   );
 }
 
+function providerLabelOf(entry: CatalogEntry): string {
+  return entry.name.replace(/^MCP · /, "");
+}
+
+/** The instructions for getting the secret, with a direct link to the page that
+ *  issues it. Shown wherever a client is asked for a credential — the steps are
+ *  useless one dialog away from the field. */
+function SetupGuide({
+  entry,
+  providerName,
+}: {
+  entry: CatalogEntry;
+  providerName: string;
+}) {
+  if (!entry.setup_steps?.length && !entry.docs_url && !entry.credential_url) return null;
+  return (
+    <div className="rounded-xl border border-border bg-surface-alt p-3 space-y-2.5">
+      <p className="text-xs font-semibold text-text-primary">
+        Como obter a credencial de {providerName}
+      </p>
+      {entry.credential_url && (
+        <a href={entry.credential_url} target="_blank" rel="noreferrer">
+          <Button type="button" size="sm" variant="subtle">
+            <ExternalLink className="w-3.5 h-3.5" />
+            Abrir a página da chave
+          </Button>
+        </a>
+      )}
+      {!!entry.setup_steps?.length && (
+        <ol className="list-decimal space-y-1.5 pl-4 text-xs leading-relaxed text-text-secondary">
+          {entry.setup_steps.map((step, i) => (
+            <li key={i}>{step}</li>
+          ))}
+        </ol>
+      )}
+      {entry.docs_url && (
+        <a
+          href={entry.docs_url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-xs text-purple hover:underline"
+        >
+          Documentação oficial de {providerName} <ExternalLink className="w-3 h-3" />
+        </a>
+      )}
+    </div>
+  );
+}
+
 function CredentialDialog({
   catalog,
   existing,
@@ -993,12 +1039,16 @@ function CredentialDialog({
   const selectedEntry =
     providerEntries.find((c) => c.id === providerKey) ?? providerEntries[0];
   /** Union across the vendor's transports: one credential answers all of them,
-   *  and the API may need a field the MCP server does not (a base URL). */
+   *  and the API may need a field the MCP server does not (a base URL). The
+   *  canonical entry is read first and wins, so a field keeps the vendor's own
+   *  wording instead of a transport's shorthand. */
   const fields = Array.from(
-    new Map(
-      providerEntries.flatMap((c) => c.credential_fields).map((f) => [f.key, f]),
-    ).values(),
-  );
+    [selectedEntry, ...providerEntries.filter((c) => c !== selectedEntry)]
+      .filter(Boolean)
+      .flatMap((c) => c!.credential_fields)
+      .reduce((acc, f) => (acc.has(f.key) ? acc : acc.set(f.key, f)), new Map())
+      .values(),
+  ) as CatalogCredentialField[];
   const providerLocked = lockProviderKey || isEdit;
   const otherTransports = providerEntries
     .filter((c) => c.id !== selectedEntry?.id)
@@ -1099,29 +1149,8 @@ function CredentialDialog({
             )}
           </div>
 
-          {selectedEntry && (!!selectedEntry.setup_steps?.length || !!selectedEntry.docs_url) && (
-            <div className="rounded-md border border-border bg-surface-alt p-3 space-y-2">
-              <p className="text-xs font-semibold text-text-primary">
-                Como obter as credenciais de {selectedEntry.name}
-              </p>
-              {!!selectedEntry.setup_steps?.length && (
-                <ol className="list-decimal list-inside space-y-1 text-xs text-text-muted">
-                  {selectedEntry.setup_steps.map((s, i) => (
-                    <li key={i}>{s}</li>
-                  ))}
-                </ol>
-              )}
-              {selectedEntry.docs_url && (
-                <a
-                  href={selectedEntry.docs_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-purple hover:underline inline-flex items-center gap-1"
-                >
-                  Documentação oficial <ExternalLink className="w-3 h-3" />
-                </a>
-              )}
-            </div>
+          {selectedEntry && (
+            <SetupGuide entry={selectedEntry} providerName={providerLabelOf(selectedEntry)} />
           )}
 
           <div>
@@ -1131,6 +1160,7 @@ function CredentialDialog({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="ex: github-main"
+              autoComplete="off"
             />
           </div>
 
@@ -1164,6 +1194,8 @@ function CredentialDialog({
                 value={values[f.key] || ""}
                 onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
                 placeholder={isEdit ? "•••••••• (deixe em branco para manter)" : ""}
+                autoComplete={f.kind === "password" ? "new-password" : "off"}
+                spellCheck={false}
               />
               {f.hint && <p className="text-xs text-text-muted mt-1">{f.hint}</p>}
             </div>

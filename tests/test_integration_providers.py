@@ -155,3 +155,66 @@ async def test_a_cli_integration_is_not_described_as_an_http_api(tmp_path):
     assert "`kiro`" in section
     assert "CLI local" in section
     assert "http_call(integration_slug='kiro'" not in section
+
+
+def test_every_credential_asks_with_instructions():
+    """Um campo de segredo sem instrução é o cliente adivinhando onde clicar."""
+    for entry in CATALOG:
+        if not entry.credential_fields:
+            continue
+        assert len(entry.setup_steps) >= 2, f"{entry.id} tem {len(entry.setup_steps)} passos"
+        for f in entry.credential_fields:
+            assert f.hint.strip(), f"{entry.id}.{f.key} sem hint"
+
+
+def test_an_entry_without_a_public_page_explains_who_provides_the_secret():
+    """Integração interna não tem página pública, e inventar uma URL é pior que
+    não ter. O que não pode é o cliente ficar sem saber a quem pedir."""
+    for entry in CATALOG:
+        if not entry.credential_fields:
+            continue
+        if entry.docs_url or entry.credential_url:
+            continue
+        assert len(entry.setup_steps) >= 3, entry.id
+        assert any("peça" in s.lower() or "time" in s.lower() or "administra" in s.lower()
+                   for s in entry.setup_steps), entry.id
+
+
+def test_a_credential_url_is_a_real_url():
+    for entry in CATALOG:
+        if entry.credential_url:
+            assert entry.credential_url.startswith("https://"), entry.id
+
+
+def test_the_canonical_entry_carries_the_instructions():
+    """Passos de credencial pertencem ao fornecedor; transporte só fala de transporte."""
+    by_provider: dict[str, list] = {}
+    for entry in CATALOG:
+        by_provider.setdefault(entry.provider_id, []).append(entry)
+
+    for provider, entries in by_provider.items():
+        if len(entries) < 2:
+            continue
+        canonical = next((e for e in entries if e.id == provider), entries[0])
+        assert len(canonical.setup_steps) >= 3, provider
+        for entry in entries:
+            if entry is canonical:
+                continue
+            assert len(entry.setup_steps) <= len(canonical.setup_steps), \
+                f"{entry.id} repete as instruções de {provider}"
+
+
+def test_no_mcp_entry_launches_a_deprecated_reference_server():
+    """@modelcontextprotocol/server-* foram arquivados: são interruptores mortos."""
+    for entry in CATALOG:
+        if not entry.mcp:
+            continue
+        args = " ".join(entry.mcp.args)
+        assert "@modelcontextprotocol/server-" not in args, entry.id
+
+
+def test_a_hosted_mcp_declares_how_it_authenticates():
+    """Sem AuthSpec o servidor remoto sobe sem credencial e falha na 1a chamada."""
+    for entry in CATALOG:
+        if entry.mcp and entry.mcp.url and entry.credential_fields:
+            assert entry.auth.mode != "none", entry.id
