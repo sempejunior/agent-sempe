@@ -759,10 +759,25 @@ function ActivateDialog({
     (c) => !c.provider_key || c.provider_key === entry.provider,
   );
   const needsCredential = entry.credential_fields.length > 0;
-  const selectedCredential = credentials.find((c) => c.id === credentialId) ?? null;
+  /** With a single candidate there is nothing to choose: asking the client to
+   *  pick it from a one-item list is a step that only exists to be clicked. */
+  const onlyCandidate =
+    matchingCredentials.length === 1 ? matchingCredentials[0].id : null;
+  const effectiveCredentialId = credentialId ?? onlyCandidate;
+  const selectedCredential =
+    credentials.find((c) => c.id === effectiveCredentialId) ?? null;
+  const providerLabel =
+    catalog.find((c) => c.id === entry.provider)?.name.replace(/^MCP · /, "") ??
+    entry.name;
+  const slugHint =
+    entry.kind === "api"
+      ? "Usado pelo agente ao chamar esta API (http_call)."
+      : entry.kind === "mcp"
+        ? "Prefixo das tools deste servidor: mcp_<identificador>_*."
+        : "Identifica esta CLI internamente.";
 
   async function save() {
-    if (needsCredential && !credentialId) {
+    if (needsCredential && !effectiveCredentialId) {
       toast("error", "Selecione uma credencial para esta integração.");
       return;
     }
@@ -773,7 +788,7 @@ function ActivateDialog({
         system_integration_id: entry.id,
         label: label.trim() || entry.name,
         enabled,
-        credential_id: credentialId,
+        credential_id: effectiveCredentialId,
         config: existing?.config ?? {},
       });
       toast("success", `Integração ${entry.name} salva.`);
@@ -791,106 +806,142 @@ function ActivateDialog({
     setCredentialEditor(null);
   }
 
+  const transport = TRANSPORT_LABEL[entry.kind] ?? entry.kind;
+
   return (
     <>
       <Dialog open onOpenChange={(v) => !v && onClose()}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{existing ? "Editar" : "Ativar"} · {entry.name}</DialogTitle>
+            <DialogTitle>
+              {existing ? "Editar" : "Ativar"} · {entry.name}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <Badge variant="outline">{transport}</Badge>
+              {transportDetail(entry) && (
+                <span className="text-xs text-text-muted">{transportDetail(entry)}</span>
+              )}
+            </div>
             <p className="text-sm text-text-secondary">{entry.description}</p>
 
-            <div>
-              <Label htmlFor="slug">Slug</Label>
-              <Input
-                id="slug"
-                value={slug}
-                disabled={!!existing}
-                onChange={(e) => setSlug(e.target.value)}
-                placeholder={entry.id}
-              />
-              <p className="text-xs text-text-muted mt-1">
-                Identificador único usado pela tool <code>http_call</code>.
-              </p>
-            </div>
-
-            <div>
-              <Label htmlFor="label">Nome amigável</Label>
-              <Input
-                id="label"
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder={entry.name}
-              />
-            </div>
-
             {needsCredential && (
-              <div>
-                <div className="flex items-center justify-between">
-                  <Label>Credencial</Label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setCredentialEditor({ mode: "create" })}
-                  >
-                    <Plus className="w-3.5 h-3.5" /> Nova
-                  </Button>
-                </div>
+              <div className="rounded-xl border border-border p-3 space-y-2">
+                <Label>Credencial</Label>
                 {matchingCredentials.length === 0 ? (
-                  <p className="text-xs text-text-muted mt-1">
-                    Nenhuma credencial compatível cadastrada. Clique em{" "}
-                    <b>Nova</b> para criar uma agora.
-                  </p>
-                ) : (
-                  <div className="flex items-center gap-2 mt-1">
-                    <select
-                      className="flex-1 px-3 py-2 rounded-md border border-border bg-white text-sm"
-                      value={credentialId ?? ""}
-                      onChange={(e) =>
-                        setCredentialId(e.target.value ? Number(e.target.value) : null)
-                      }
+                  <>
+                    <p className="text-xs text-text-muted">
+                      Você ainda não cadastrou a credencial de {providerLabel}. Uma
+                      só atende todos os acessos deste fornecedor.
+                    </p>
+                    {!!entry.setup_steps?.length && (
+                      <ol className="list-decimal list-inside space-y-1 text-xs text-text-muted">
+                        {entry.setup_steps.map((step, i) => (
+                          <li key={i}>{step}</li>
+                        ))}
+                      </ol>
+                    )}
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => setCredentialEditor({ mode: "create" })}
                     >
-                      <option value="">Selecione…</option>
-                      {matchingCredentials.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                    {selectedCredential && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        title="Editar credencial"
-                        onClick={() =>
-                          setCredentialEditor({
-                            mode: "edit",
-                            credential: selectedCredential,
-                          })
+                      <Plus className="w-3.5 h-3.5" /> Cadastrar credencial
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="flex-1 px-3 py-2 rounded-md border border-border bg-white text-sm"
+                        value={effectiveCredentialId ?? ""}
+                        onChange={(e) =>
+                          setCredentialId(e.target.value ? Number(e.target.value) : null)
                         }
                       >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </Button>
-                    )}
-                  </div>
+                        <option value="">Selecione…</option>
+                        {matchingCredentials.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      {selectedCredential && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          title="Editar credencial"
+                          onClick={() =>
+                            setCredentialEditor({
+                              mode: "edit",
+                              credential: selectedCredential,
+                            })
+                          }
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="text-xs text-purple hover:underline"
+                      onClick={() => setCredentialEditor({ mode: "create" })}
+                    >
+                      Cadastrar outra
+                    </button>
+                  </>
                 )}
-                <p className="text-xs text-text-muted mt-1">
-                  Campos requeridos: {entry.credential_fields.map((f) => f.key).join(", ")}
-                </p>
               </div>
             )}
 
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={enabled}
-                onChange={(e) => setEnabled(e.target.checked)}
-              />
-              Ativar imediatamente
-            </label>
+            {entry.docs_url && (
+              <a
+                href={entry.docs_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-text-muted hover:text-purple inline-flex items-center gap-1"
+              >
+                Documentação de {providerLabel} <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
+
+            <details className="rounded-xl border border-border">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-text-secondary">
+                Avançado
+              </summary>
+              <div className="px-3 pb-3 space-y-3">
+                <div>
+                  <Label htmlFor="label">Como aparece na sua lista</Label>
+                  <Input
+                    id="label"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    placeholder={entry.name}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="slug">Identificador</Label>
+                  <Input
+                    id="slug"
+                    value={slug}
+                    disabled={!!existing}
+                    onChange={(e) => setSlug(e.target.value)}
+                    placeholder={entry.id}
+                  />
+                  <p className="text-xs text-text-muted mt-1">{slugHint}</p>
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => setEnabled(e.target.checked)}
+                  />
+                  Disponível para os agentes
+                </label>
+              </div>
+            </details>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={onClose}>Cancelar</Button>
