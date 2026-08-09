@@ -12,16 +12,14 @@ who was not watching.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
 from nanobot.cron.types import CronJob
+from nanobot.jobs.delivery import WebPush, deliver_result, text_of
 
 _DEFAULT_JOB_TIMEOUT_S = 1800
-
-WebPush = Callable[[str, str, str], Awaitable[None]]
 
 
 def build_job_timeout(repos: Any | None) -> Callable[[CronJob], Awaitable[int | None]]:
@@ -51,7 +49,7 @@ def build_cron_callback(
 
     async def on_cron_job(job: CronJob) -> str | None:
         response = await _run_turn(job)
-        text = _text_of(response)
+        text = text_of(response)
         await _audit(job, text)
         await _deliver(job, text)
         return response
@@ -89,33 +87,16 @@ def build_cron_callback(
             logger.warning("Cron: falha ao auditar a rotina '{}': {}", job.name, e)
 
     async def _deliver(job: CronJob, text: str) -> None:
-        if not job.payload.deliver or not text.strip():
+        if not job.payload.deliver:
             return
         channel = job.payload.channel or ""
-        if (not channel or channel == "web") and job.user_id:
-            if push_web:
-                await push_web(job.user_id, job.id, text)
-            return
-        if not channel or not job.payload.to:
-            return
-        from nanobot.bus.events import OutboundMessage
-        await bus.publish_outbound(OutboundMessage(
-            channel=channel,
-            chat_id=job.payload.to,
-            content=text,
-            metadata={"_owner_id": job.user_id, "_agent_id": job.agent_id or ""},
-        ))
+        to = job.payload.to or ""
+        await deliver_result(
+            bus=bus, push_web=push_web,
+            user_id=job.user_id or "", agent_id=job.agent_id or "",
+            channel=channel, to=to,
+            session_key=f"{channel or 'system'}:{to or f'web:{job.user_id}'}",
+            ref=job.id, text=text,
+        )
 
     return on_cron_job
-
-
-def _text_of(response: Any) -> str:
-    """The delivered text, whether the loop returned a message or a string."""
-    content = getattr(response, "content", None)
-    if content:
-        return str(content)
-    if response is None:
-        return ""
-    if isinstance(response, (dict, list)):
-        return json.dumps(response, ensure_ascii=False)
-    return str(response)

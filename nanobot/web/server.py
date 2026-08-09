@@ -17,14 +17,21 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from starlette.websockets import WebSocketState
 
-from nanobot.agent import trace
+from nanobot.agent import notes, trace
 
 if TYPE_CHECKING:
     from nanobot.cron.types import CronSchedule
 
 _STATIC_DIR = Path(__file__).parent / "frontend" / "static"
 
-_WEB_CHAT_TIMEOUT_S = 180
+_WEB_CHAT_SOFT_TIMEOUT_S = 180
+"""When a turn passes this, the person is told it will take longer and the chat
+is handed back to them. The turn is not cancelled: killing it here is how a
+delegation already under way lost its work with nothing recorded."""
+
+_WEB_CHAT_HARD_TIMEOUT_S = 1800
+"""The real ceiling, matching ``max_job_duration_s``. Past it the turn is stuck
+rather than slow, and cancelling is the only honest answer."""
 
 # Umbrella families that group the finer template categories in the catalog UI.
 _TEMPLATE_GROUPS = {
@@ -41,6 +48,65 @@ _TEMPLATE_GROUPS = {
 
 def _template_group(category: str) -> str:
     return _TEMPLATE_GROUPS.get(category or "", "Geral")
+
+
+def _alert_line(text: str, limit: int = 120) -> str:
+    """First line of an answer, for a toast that has to fit on one."""
+    line = next((part.strip() for part in text.splitlines() if part.strip()), "")
+    return line if len(line) <= limit else f"{line[:limit - 1]}…"
+
+
+def _refuse_partial_integration(body: dict[str, Any], current: dict[str, Any]) -> None:
+    """Reject a body that would silently drop what the integration already has."""
+    dropped = [
+        field for field in ("system_integration_id", "credential_id")
+        if current.get(field) and not body.get(field)
+    ]
+    if dropped:
+        raise HTTPException(
+            400,
+            f"Partial update would clear {', '.join(dropped)}. Send the whole "
+            "integration, or use the field you meant to change.",
+        )
+
+
+_TITLE_MAX_CHARS = 60
+
+
+def _chat_key(session_key: str, agent_prefix: str) -> str:
+    """The key the chat UI knows, or empty when this is not a chat session.
+
+    Storage prefixes the agent and the client layer may add a ``client:<id>:``
+    infix, but what the panel created and can reopen is the ``web:`` part. A
+    ``system:web:`` key is work resumed by a job or a routine, not a conversation
+    someone opened, so it does not belong in the list.
+    """
+    key = session_key[len(agent_prefix):] if session_key.startswith(agent_prefix) else session_key
+    if key.startswith("client:"):
+        key = key.split(":", 2)[-1]
+    return key if key.startswith("web:") else ""
+
+
+def _session_title(asked: str) -> str:
+    """Name a conversation after what the person asked first."""
+    text = " ".join(asked.split())
+    if not text:
+        return "Conversa sem pergunta"
+    if len(text) <= _TITLE_MAX_CHARS:
+        return text
+    return f"{text[:_TITLE_MAX_CHARS]}…"
+
+
+def _origin_chat_id(session_key: str, fallback: str) -> str:
+    """The chat id that brings a background result back to this conversation.
+
+    Work parked in a job or in a pending question resumes through
+    ``jobs.resume.session_key_of``, which rebuilds the session key as
+    ``channel:chat_id``. Handing it the user id instead pointed every resumed
+    turn at ``web:<user_id>`` — a conversation nobody has open.
+    """
+    prefix = "web:"
+    return session_key[len(prefix):] if session_key.startswith(prefix) else fallback
 
 
 # Skills a template recommends and pre-selects — including built-in skills (montar-pdi,
@@ -199,6 +265,62 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
     app.state.code_agent_install_tasks = set()
 
 
+    async def _push_frame(user_id: str, payload: dict[str, Any]) -> None:
+        for socket in list(ws_clients.get(user_id, [])):
+            try:
+                await socket.send_json(payload)
+            except Exception:
+                continue
+
+    async def _push_to_web_clients(
+        *, user_id: str, session_key: str, ref: str, text: str,
+    ) -> None:
+        """Nudge live sockets with the result; the session is the record.
+
+        Nobody asked for this turn, so it also raises an alert: the person may be
+        on another page, and a result that only lands in a conversation they are
+        not looking at is a result they never see.
+        """
+        await _push_frame(user_id, {
+            "type": "response", "content": text,
+            "session_key": session_key,
+            "cron_job_id": ref,
+        })
+        await _push_frame(user_id, {
+            "type": "notice", "kind": "done", "content": _alert_line(text),
+            "session_key": session_key,
+        })
+
+    async def _wire_background_work() -> None:
+        """Wire the JobRunner and the QuestionService, on both startup paths.
+
+        The gateway injects its dependencies, so ``startup`` returns early there.
+        Anything wired only after that branch exists for `uvicorn nanobot.web.server:app`
+        and not for the process that actually serves the product.
+        """
+        repos = getattr(app.state, "repos", None)
+        agent = getattr(app.state, "agent", None)
+        if not repos or not agent:
+            return
+        bus = getattr(app.state, "bus", None)
+
+        if getattr(repos, "jobs", None) is not None:
+            from nanobot.jobs.runner import JobRunner
+
+            runner = JobRunner(
+                repos=repos, agent=agent, bus=bus, push_web=_push_to_web_clients,
+            )
+            agent.job_runner = runner
+            app.state.jobs = runner
+            await runner.reap_orphans()
+
+        if getattr(repos, "questions", None) is not None:
+            from nanobot.questions.service import QuestionService
+
+            app.state.questions = QuestionService(
+                repos=repos, agent=agent, bus=bus, push_web=_push_to_web_clients,
+            )
+
     @app.on_event("startup")
     async def startup():
         from nanobot.utils.crypto import ensure_master_key
@@ -207,6 +329,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
         if hasattr(app.state, "agent"):
             logger.info("Using injected dependencies for web server")
+            await _wire_background_work()
             return
 
         from nanobot.bus.queue import MessageBus
@@ -242,18 +365,6 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
 
         from nanobot.cron.runner import build_cron_callback, build_job_timeout
 
-        async def _push_to_web_clients(user_id: str, job_id: str, text: str) -> None:
-            """Nudge live sockets with the result; the session is the record."""
-            for socket in list(ws_clients.get(user_id, [])):
-                try:
-                    await socket.send_json({
-                        "type": "response", "content": text,
-                        "session_key": f"system:web:{user_id}",
-                        "cron_job_id": job_id,
-                    })
-                except Exception:
-                    continue
-
         cron.on_job = build_cron_callback(
             agent=agent, bus=bus, repos=repos, push_web=_push_to_web_clients,
         )
@@ -266,6 +377,7 @@ def create_app(*, config: Any, provider: Any, data_dir: Path) -> FastAPI:
         app.state.agent = agent
         app.state.cron = cron
         app.state.bus = bus
+        await _wire_background_work()
         logger.info("Web server started — DB at {}", db_path)
 
     @app.on_event("shutdown")
@@ -900,87 +1012,101 @@ form.addEventListener("submit", async (e) => {{
 
     @app.get("/api/sessions")
     async def list_sessions(request: Request):
-        user, agent = await _require_agent(request)
+        """Every conversation the person has, across all of their agents.
+
+        A conversation belongs to the agent that held it, so the history is not
+        scoped to whoever is selected right now: hiding the other agents' threads
+        would make most of someone's own history invisible depending on a
+        dropdown.
+
+        Only conversations held in the chat: an agent also accumulates sessions
+        from embedded widgets, routines and resumed work, and those are records
+        of machine activity, nobody can reopen and continue them.
+        """
+        user = await _require_user(request)
         uid = user["user_id"]
         repos = app.state.repos
-        sessions = await repos.sessions.list_sessions(uid, agent_id=agent["agent_id"])
-        result = []
-        key_prefix = f"agent:{agent['agent_id']}:"
-        for s in sessions:
-            session_key = s["session_key"]
-            if isinstance(session_key, str) and session_key.startswith(key_prefix):
-                session_key = session_key[len(key_prefix):]
-            title = "New Chat"
-            try:
-                msgs = await repos.messages.get_messages(s["id"], limit=1)
-                if msgs:
-                    content = msgs[0].get("content", "")
-                    title = content[:60] + ("..." if len(content) > 60 else "")
-            except Exception:
-                pass
-            result.append({
-                "session_key": session_key,
-                "title": title,
+        names = {
+            a["agent_id"]: a.get("name", "")
+            for a in await repos.agents.list_agents(uid)
+        }
+        for a in await repos.agents.list_agents(uid, status="deleted"):
+            names.setdefault(a["agent_id"], f"{a.get('name', '')} (excluído)")
+        conversations = []
+        for s in await repos.sessions.list_sessions(uid):
+            agent_id = s.get("agent_id") or ""
+            chat_key = _chat_key(s.get("session_key", ""), f"agent:{agent_id}:")
+            if chat_key:
+                conversations.append({**s, "chat_key": chat_key})
+        asked = await repos.messages.first_asked([s["id"] for s in conversations])
+        return [
+            {
+                "session_key": s["chat_key"],
+                "title": _session_title(asked.get(s["id"], "")),
+                "agent_id": s.get("agent_id") or "",
+                "agent_name": names.get(s.get("agent_id") or "", "Agente removido"),
                 "message_count": s.get("message_count", 0),
                 "updated_at": s.get("updated_at", ""),
-            })
-        return result
+            }
+            for s in conversations
+        ]
 
-    async def _find_session_by_suffix(
-        uid: str, agent_id: str, session_key: str,
-    ) -> dict[str, Any] | None:
-        """Match a session whose stored key gained a client prefix.
+    async def _resolve_session(uid: str, session_key: str) -> dict[str, Any] | None:
+        """Find a conversation by the key the chat knows, whatever agent held it.
 
-        The client layer rewrites web session keys to
-        ``agent:<id>:client:<cid>:web:<uuid>`` while the studio UI only knows
-        the ``web:<uuid>`` suffix it created.
+        Storage prefixes the agent and the client layer may add its own infix,
+        so the stored key is never what the panel created. Resolving across the
+        person's agents is what lets them open a conversation of an agent that is
+        not the one currently selected — the agent follows the conversation, not
+        the other way around.
         """
-        sessions = await app.state.repos.sessions.list_sessions(uid, agent_id=agent_id)
+        sessions = await app.state.repos.sessions.list_sessions(uid)
         suffix = f":{session_key}"
         return next(
-            (s for s in sessions if s.get("session_key", "").endswith(suffix)),
+            (
+                s for s in sessions
+                if s.get("session_key") == session_key
+                or s.get("session_key", "").endswith(suffix)
+            ),
             None,
         )
 
     @app.get("/api/sessions/{session_key:path}/messages")
     async def get_messages(request: Request, session_key: str):
-        user, agent = await _require_agent(request)
-        uid = user["user_id"]
+        """The whole conversation, including what the agent did.
+
+        The tool calls and their results were always on disk and were filtered
+        out here, which is why reopening a conversation showed the answers and
+        never the work behind them.
+        """
+        user = await _require_user(request)
         repos = app.state.repos
-        db_session_key = f"agent:{agent['agent_id']}:{session_key}"
-        session = await repos.sessions.get(uid, db_session_key, agent["agent_id"])
-        if not session:
-            session = await repos.sessions.get(uid, session_key, agent["agent_id"])
-        if not session:
-            session = await _find_session_by_suffix(uid, agent["agent_id"], session_key)
+        session = await _resolve_session(user["user_id"], session_key)
         if not session:
             return []
-        msgs = await repos.messages.get_messages(session["id"], limit=200)
-        result = []
-        for m in msgs:
-            role = m.get("role", "")
-            if role == "user":
-                result.append({"role": "user", "content": m.get("content", "")})
-            elif role == "assistant" and not m.get("tool_calls"):
-                content = (m.get("content") or "").strip()
-                if content:
-                    result.append({"role": "assistant", "content": content})
-        return result
+        msgs = await repos.messages.get_messages(session["id"], limit=500)
+        return [
+            {
+                "role": m.get("role", ""),
+                "content": m.get("content") or "",
+                "tool_calls": m.get("tool_calls") or [],
+                "tool_call_id": m.get("tool_call_id") or "",
+                "name": m.get("name") or "",
+                "timestamp": m.get("timestamp") or "",
+            }
+            for m in msgs
+        ]
 
     @app.delete("/api/sessions/{session_key:path}")
     async def delete_session(request: Request, session_key: str):
-        user, agent = await _require_agent(request)
+        user = await _require_user(request)
         uid = user["user_id"]
-        db_session_key = f"agent:{agent['agent_id']}:{session_key}"
-        ok = await app.state.repos.sessions.delete(uid, db_session_key, agent["agent_id"])
-        if not ok:
-            ok = await app.state.repos.sessions.delete(uid, session_key, agent["agent_id"])
-        if not ok:
-            match = await _find_session_by_suffix(uid, agent["agent_id"], session_key)
-            if match:
-                ok = await app.state.repos.sessions.delete(
-                    uid, match["session_key"], agent["agent_id"],
-                )
+        session = await _resolve_session(uid, session_key)
+        if not session:
+            return {"ok": False}
+        ok = await app.state.repos.sessions.delete(
+            uid, session["session_key"], session.get("agent_id"),
+        )
         return {"ok": ok}
 
     @app.get("/api/cron")
@@ -1089,6 +1215,97 @@ form.addEventListener("submit", async (e) => {{
         if not ok:
             raise HTTPException(404, "Job not found or could not be run")
         return {"ok": True}
+
+    @app.get("/api/jobs")
+    async def list_jobs(request: Request):
+        user = await _require_user(request)
+        state = request.query_params.get("state", "")
+        jobs = await app.state.repos.jobs.list_jobs(
+            user["user_id"], state=state or None,
+        )
+        return {"jobs": jobs}
+
+    @app.get("/api/jobs/{job_id}/log")
+    async def get_job_log(request: Request, job_id: str):
+        """The tail of a delegation's log, so it can be read without a shell.
+
+        The file on disk is whatever the CLI printed and was never scrubbed —
+        only the excerpt the tool showed in chat was. Serving it raw would hand
+        out the credential the delegation ran with, so the same scrub is applied
+        here, with the secret resolved the way the tool resolves it.
+        """
+        from nanobot.agent.tools.code_agent import read_delegation_log
+
+        user = await _require_user(request)
+        job = await app.state.repos.jobs.get(user["user_id"], job_id)
+        if not job:
+            raise HTTPException(404, "Tarefa não encontrada")
+        if not job.get("log_path"):
+            raise HTTPException(404, "Esta tarefa não tem log")
+        text = await read_delegation_log(
+            job["log_path"],
+            user_id=user["user_id"],
+            integration_repo=app.state.repos.integrations,
+            credential_repo=app.state.repos.credentials,
+        )
+        return {"job_id": job_id, "log": text}
+
+    @app.delete("/api/jobs/{job_id}")
+    async def cancel_job(request: Request, job_id: str):
+        user = await _require_user(request)
+        runner = getattr(app.state, "jobs", None)
+        if not runner:
+            raise HTTPException(503, "Background jobs are not running")
+        if not await runner.cancel(user["user_id"], job_id):
+            raise HTTPException(404, "Job not running")
+        return {"ok": True}
+
+    @app.get("/api/activity")
+    async def get_activity(request: Request):
+        """Everything the agents are waiting on, running, or have delivered."""
+        from nanobot.activity.service import build_activity
+        user = await _require_user(request)
+        return await build_activity(app.state.repos, user["user_id"])
+
+    @app.get("/api/questions")
+    async def list_questions(request: Request):
+        user = await _require_user(request)
+        state = request.query_params.get("state", "open")
+        questions = await app.state.repos.questions.list_questions(
+            user["user_id"], state=state or None,
+        )
+        return {"questions": questions}
+
+    @app.post("/api/questions/{question_id}/answer")
+    async def answer_question(request: Request, question_id: int):
+        user = await _require_user(request)
+        service = getattr(app.state, "questions", None)
+        if not service:
+            raise HTTPException(503, "Pendências não estão disponíveis")
+        body = await request.json()
+        answer = str(body.get("answer", "")).strip()
+        if not answer:
+            raise HTTPException(400, "Escreva a resposta antes de enviar")
+        row = await service.answer_from_human(user["user_id"], question_id, answer)
+        if not row:
+            raise HTTPException(404, "Esta pendência já foi respondida ou não existe")
+        return {"ok": True, "question": row}
+
+    @app.delete("/api/questions/{question_id}")
+    async def cancel_question(request: Request, question_id: int):
+        user = await _require_user(request)
+        if not await app.state.repos.questions.cancel(user["user_id"], question_id):
+            raise HTTPException(404, "Esta pendência não está aberta")
+        return {"ok": True}
+
+    @app.get("/api/work-items")
+    async def list_work_items(request: Request):
+        user = await _require_user(request)
+        state = request.query_params.get("state", "")
+        items = await app.state.repos.work_items.list_items(
+            user["user_id"], state=state or None,
+        )
+        return {"items": items}
 
     @app.get("/api/config")
     async def get_config(request: Request):
@@ -1638,12 +1855,23 @@ form.addEventListener("submit", async (e) => {{
 
     @app.put("/api/integrations/{slug}")
     async def upsert_user_integration(request: Request, slug: str):
+        """Create or replace one integration.
+
+        The body describes the whole integration, so a partial one is refused
+        rather than merged: sending ``{"enabled": true}`` used to wipe the
+        credential and the catalog entry of a working integration, and the only
+        symptom was the agent losing an access it had.
+        """
         from nanobot.integrations.catalog import get_integration as get_catalog_entry
         user = await _require_user(request)
         body = await request.json()
         kind = body.get("kind")
         system_id = body.get("system_integration_id")
         credential_id = body.get("credential_id")
+
+        current = await app.state.repos.integrations.get_integration(user["user_id"], slug)
+        if current:
+            _refuse_partial_integration(body, current)
 
         if system_id:
             entry = get_catalog_entry(system_id)
@@ -2103,11 +2331,55 @@ form.addEventListener("submit", async (e) => {{
                 await _deliver({"type": "trace", "session_key": session_key, **event})
             return sink
 
-        async def on_progress(text: str, *, tool_hint: bool = False) -> None:
-            await _deliver({
-                "type": "tool_hint" if tool_hint else "progress",
-                "content": text,
-            })
+        def _note_sink(turn_id: str, session_key: str):
+            """Deliver one turn's progress notes and alerts to the person waiting.
+
+            A ``note`` belongs to the bubble of its turn, so it carries the turn
+            id; an alert is about the session as a whole and carries the session
+            key, because the person may be looking at another page when it fires.
+            """
+            async def sink(kind: str, text: str) -> None:
+                if kind == "note":
+                    await _deliver({
+                        "type": "progress", "turn_id": turn_id, "content": text,
+                    })
+                    return
+                await _deliver({
+                    "type": "notice", "kind": kind, "content": text,
+                    "session_key": session_key,
+                })
+            return sink
+
+        async def _run_turn(content: str, session_key: str, agent_id: str | None,
+                            turn_id: str, tracing: bool) -> str:
+            """One agent turn, with its trace and note channels installed.
+
+            Both sinks are installed here rather than around the awaiting code so
+            they belong to this turn's context: two turns of the same socket run
+            concurrently and must not write into each other's bubble.
+            """
+            async def on_progress(text: str, *, tool_hint: bool = False) -> None:
+                await _deliver({
+                    "type": "tool_hint" if tool_hint else "progress",
+                    "turn_id": turn_id,
+                    "content": text,
+                })
+
+            trace_token = trace.install(_trace_sink(session_key) if tracing else None)
+            note_token = notes.install(_note_sink(turn_id, session_key))
+            try:
+                return await app.state.agent.process_direct(
+                    content,
+                    session_key=session_key,
+                    channel="web",
+                    chat_id=_origin_chat_id(session_key, uid),
+                    on_progress=on_progress,
+                    user_id=uid,
+                    agent_id=agent_id,
+                )
+            finally:
+                notes.reset(note_token)
+                trace.reset(trace_token)
 
         async def _handle_message(content: str, session_key: str, agent_id: str | None,
                                   tracing: bool = False) -> None:
@@ -2117,25 +2389,38 @@ form.addEventListener("submit", async (e) => {{
             frames during long turns — otherwise uvicorn pauses reading
             (backpressure), keepalive pongs stop being read and the socket
             is killed mid-turn.
+
+            Past the soft ceiling the person gets the chat back and the turn
+            keeps going: a demand that needs a code delegation legitimately runs
+            for minutes, and cancelling it there destroyed the work without
+            recording anything. The answer still arrives in the same bubble.
             """
             error_payload: dict[str, Any] | None = None
             response: str | None = None
-            token = trace.install(_trace_sink(session_key) if tracing else None)
+            turn_id = uuid.uuid4().hex[:12]
+            turn = asyncio.create_task(
+                _run_turn(content, session_key, agent_id, turn_id, tracing)
+            )
             try:
+                done, _ = await asyncio.wait({turn}, timeout=_WEB_CHAT_SOFT_TIMEOUT_S)
+                if not done:
+                    logger.info("Chat turn {} for {} went background", turn_id, uid)
+                    await _deliver({
+                        "type": "handoff",
+                        "turn_id": turn_id,
+                        "content": (
+                            "Isso vai levar mais tempo. Sigo trabalhando em segundo "
+                            "plano e te aviso aqui quando terminar — pode continuar "
+                            "conversando."
+                        ),
+                        "session_key": session_key,
+                    })
                 response = await asyncio.wait_for(
-                    app.state.agent.process_direct(
-                        content,
-                        session_key=session_key,
-                        channel="web",
-                        chat_id=uid,
-                        on_progress=on_progress,
-                        user_id=uid,
-                        agent_id=agent_id,
-                    ),
-                    timeout=_WEB_CHAT_TIMEOUT_S,
+                    turn, timeout=_WEB_CHAT_HARD_TIMEOUT_S - _WEB_CHAT_SOFT_TIMEOUT_S,
                 )
             except asyncio.TimeoutError:
-                logger.warning("Chat timed out for {} after {}s", uid, _WEB_CHAT_TIMEOUT_S)
+                logger.warning("Chat timed out for {} after {}s", uid,
+                               _WEB_CHAT_HARD_TIMEOUT_S)
                 error_payload = {
                     "type": "error",
                     "code": "timeout",
@@ -2172,15 +2457,15 @@ form.addEventListener("submit", async (e) => {{
                     "content": f"Erro interno: {e}",
                     "session_key": session_key,
                 }
-
             finally:
-                trace.reset(token)
+                turn.cancel()
 
             payload = error_payload if error_payload is not None else {
                 "type": "response",
                 "content": response,
                 "session_key": session_key,
             }
+            payload["turn_id"] = turn_id
             if not await _deliver(payload):
                 logger.warning("WS closed before response for {}", uid)
 

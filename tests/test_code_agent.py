@@ -1,5 +1,6 @@
 """Testes da delegação a uma CLI de código, com um binário de mentira (sem rede)."""
 
+import asyncio
 import json
 import os
 import subprocess
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from nanobot.agent.tools import code_agent as mod
-from nanobot.agent.tools.code_agent import CliSpec, CodeAgentTool
+from nanobot.agent.tools.code_agent import CliSpec, CodeAgentTool, CredentialKey
 from nanobot.utils import crypto
 
 _SECRET = "ksk-chave-secreta-do-kiro"
@@ -42,7 +43,7 @@ def fake_cli(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "_which", lambda binary: str(script))
     monkeypatch.setattr(mod, "CLI_SPECS", (
         CliSpec(integration="kiro", binary=str(script), args=("--headless",),
-                key_env="FAKE_KEY", notes="exit 1 = falha geral"),
+                keys=(CredentialKey("api_key", "FAKE_KEY"),), notes="exit 1 = falha geral"),
     ))
     return script
 
@@ -70,9 +71,7 @@ def repo(tmp_path):
     return agent_dir, local
 
 
-@pytest.fixture
-def tool(repo, fake_cli):
-    agent_dir, _ = repo
+def _tool_with(agent_dir: Path, **extra) -> CodeAgentTool:
     integration_repo = AsyncMock()
     integration_repo.get_integration.return_value = {
         "slug": "kiro", "enabled": True, "credential_id": 1,
@@ -83,7 +82,13 @@ def tool(repo, fake_cli):
     }
     return CodeAgentTool(user_id="u1", integration_repo=integration_repo,
                          credential_repo=credential_repo, agent_dir=agent_dir,
-                         timeout=30)
+                         timeout=30, **extra)
+
+
+@pytest.fixture
+def tool(repo, fake_cli):
+    agent_dir, _ = repo
+    return _tool_with(agent_dir)
 
 
 async def _on_branch(local: Path, name: str = "fix/valor"):
@@ -144,12 +149,24 @@ async def test_the_full_log_is_kept_on_disk(tool, repo):
     assert str(logs[0]) in out
 
 
+async def test_two_delegations_never_share_a_log_file(tool, repo):
+    """Duas delegações no mesmo segundo davam o mesmo arquivo, aberto truncando:
+    a segunda apagava o log da primeira e as duas relatavam a mesma saída."""
+    agent_dir, local = repo
+    await _on_branch(local)
+
+    paths = {tool._log_path() for _ in range(50)}
+
+    assert len(paths) == 50
+    assert all(path.parent == agent_dir / "logs" for path in paths)
+
+
 async def test_the_default_branch_is_refused(tool, repo):
     _, local = repo
 
     out = await tool.execute(repo=str(local), instruction="corrige o valor")
 
-    assert "branch default" in out
+    assert "branch protegido" in out
     assert (local / "app.py").read_text(encoding="utf-8") == "valor = 1\n"
 
 
@@ -186,7 +203,7 @@ async def test_a_quiet_auth_failure_is_not_reported_as_success(tool, repo, fake_
     await _on_branch(local)
     monkeypatch.setattr(mod, "CLI_SPECS", (
         CliSpec(integration="kiro", binary=str(fake_cli), args=(),
-                key_env="FAKE_KEY", failure_markers=("Authentication failed",)),
+                keys=(CredentialKey("api_key", "FAKE_KEY"),), failure_markers=("Authentication failed",)),
     ))
     fake_cli.write_text(
         "#!/bin/sh\necho 'Authentication failed. Your API key may be invalid.'\nexit 0\n",
@@ -231,7 +248,8 @@ def test_a_prompt_without_the_optional_fields_has_no_empty_sections():
     assert "## Problema" in prompt
     assert "## Resultado esperado" not in prompt
     assert "## Como verificar" not in prompt
-    assert "NÃO faça commit" in prompt
+    assert "NÃO faça push" in prompt
+    assert "comite nesse branch" in prompt
 
 
 async def test_a_quiet_failure_reverts_what_it_left_behind(tool, repo, fake_cli,
@@ -241,7 +259,7 @@ async def test_a_quiet_failure_reverts_what_it_left_behind(tool, repo, fake_cli,
     await _on_branch(local)
     monkeypatch.setattr(mod, "CLI_SPECS", (
         CliSpec(integration="kiro", binary=str(fake_cli), args=(),
-                key_env="FAKE_KEY", failure_markers=("Authentication failed",)),
+                keys=(CredentialKey("api_key", "FAKE_KEY"),), failure_markers=("Authentication failed",)),
     ))
     fake_cli.write_text(
         "#!/bin/sh\n"
@@ -275,6 +293,198 @@ async def test_a_timeout_still_reports_what_was_done(tool, repo, fake_cli):
     assert "interrompido" in out
     assert "comecei o trabalho" in out
     assert (local / "app.py").read_text(encoding="utf-8") == "valor = 2\n"
+
+
+async def test_a_cancelled_delegation_kills_the_whole_group(tool, repo, fake_cli):
+    """Quem corta a tool é o registry, por fora, com cancelamento — não com timeout.
+
+    Sem tratar isso, a CLI ficava órfã editando o repositório enquanto o
+    orquestrador já tinha seguido para o commit.
+    """
+    _, local = repo
+    await _on_branch(local)
+    fake_cli.write_text(
+        "#!/bin/sh\n"
+        "echo 'comecei o trabalho'\n"
+        "( sleep 2; echo 'valor = 99' > app.py ) &\n"
+        "sleep 30\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o755)
+
+    task = asyncio.create_task(tool.execute(repo=str(local), instruction="corrige"))
+    await asyncio.sleep(0.5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.sleep(2.5)
+    assert (local / "app.py").read_text(encoding="utf-8") == "valor = 1\n"
+
+
+async def test_a_delegation_that_stops_to_ask_is_its_own_outcome(tool, repo, fake_cli):
+    """A CLI roda sem poder perguntar; sem essa saída, decisão que falta vira chute."""
+    _, local = repo
+    await _on_branch(local)
+    fake_cli.write_text(
+        "#!/bin/sh\n"
+        "mkdir -p .nanobot\n"
+        "printf '{\"status\":\"blocked\",\"question\":\"o campo aceita nulo?\"}' "
+        "> .nanobot/delegation.json\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o755)
+
+    out = await tool.execute(repo=str(local), instruction="corrige o valor")
+
+    assert "PAROU e devolveu uma pergunta" in out
+    assert "o campo aceita nulo?" in out
+    assert "NÃO abra PR" in out
+    assert "terminou em" not in out
+
+
+async def test_the_blocked_report_does_not_stay_in_the_working_tree(tool, repo,
+                                                                   fake_cli):
+    """O arquivo mora dentro do repo: deixado ali, entraria no commit."""
+    _, local = repo
+    await _on_branch(local)
+    fake_cli.write_text(
+        "#!/bin/sh\n"
+        "mkdir -p .nanobot\n"
+        "printf '{\"status\":\"blocked\",\"question\":\"qual regra?\"}' "
+        "> .nanobot/delegation.json\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o755)
+
+    await tool.execute(repo=str(local), instruction="corrige o valor")
+
+    assert not (local / ".nanobot").exists()
+
+
+async def test_a_blocked_delegation_reverts_the_half_done_tree(tool, repo, fake_cli):
+    """Ela parou porque não sabia — o que sobrou não é correção, é ruído."""
+    _, local = repo
+    await _on_branch(local)
+    fake_cli.write_text(
+        "#!/bin/sh\n"
+        "echo 'valor = 77' > app.py\n"
+        "mkdir -p .nanobot\n"
+        "printf '{\"status\":\"blocked\",\"question\":\"77 ou 99?\"}' "
+        "> .nanobot/delegation.json\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o755)
+
+    out = await tool.execute(repo=str(local), instruction="corrige o valor")
+
+    assert "revertido" in out
+    assert (local / "app.py").read_text(encoding="utf-8") == "valor = 1\n"
+
+
+async def test_a_report_without_the_blocked_status_is_not_a_question(tool, repo,
+                                                                    fake_cli):
+    _, local = repo
+    await _on_branch(local)
+    fake_cli.write_text(
+        "#!/bin/sh\n"
+        "echo 'valor = 2' > app.py\n"
+        "mkdir -p .nanobot\n"
+        "printf '{\"status\":\"done\"}' > .nanobot/delegation.json\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o755)
+
+    out = await tool.execute(repo=str(local), instruction="corrige o valor")
+
+    assert "terminou em" in out
+    assert "PAROU" not in out
+
+
+def test_the_prompt_sends_the_cli_to_the_house_rules_first():
+    """Um patch que ignora as regras do repositório é retrabalho, mesmo funcionando."""
+    prompt = CodeAgentTool._build_prompt("corrige o desconto", [], branch="fix/1")
+
+    assert "AGENTS.md" in prompt
+    assert "CLAUDE.md" in prompt
+    assert "Antes de editar qualquer arquivo" in prompt
+
+
+def test_the_prompt_tells_the_cli_to_ask_instead_of_guessing():
+    prompt = CodeAgentTool._build_prompt("corrige o valor", [])
+
+    assert ".nanobot/delegation.json" in prompt
+    assert "NÃO adivinhe" in prompt
+
+
+async def test_the_declared_ceiling_is_what_the_registry_will_honour(tool):
+    """De nada adianta calcular o orçamento se o registry não souber dele."""
+    assert tool.timeout_s == tool._timeout
+
+
+async def test_without_a_job_runner_the_background_option_is_not_offered(tool):
+    """Opção que não funciona no ambiente não deve aparecer para o modelo."""
+    assert "background" not in tool.parameters["properties"]
+
+
+async def test_background_hands_the_work_to_a_job_and_answers_at_once(repo, fake_cli):
+    agent_dir, local = repo
+    await _on_branch(local)
+    runner = AsyncMock()
+    runner.submit.return_value = "code_7f2a11"
+    tool = _tool_with(agent_dir, job_runner=runner)
+
+    assert "background" in tool.parameters["properties"]
+
+    out = await tool.execute(repo=str(local), instruction="corrige o valor",
+                             background=True)
+
+    assert "code_7f2a11" in out
+    assert "NÃO espere aqui" in out
+    assert (local / "app.py").read_text(encoding="utf-8") == "valor = 1\n"
+    runner.submit.assert_awaited_once()
+    kwargs = runner.submit.await_args.kwargs
+    assert kwargs["kind"] == "code_agent"
+    assert kwargs["timeout_s"] > tool._timeout
+
+
+async def test_the_job_carries_the_origin_so_the_answer_comes_back(repo, fake_cli):
+    agent_dir, local = repo
+    await _on_branch(local)
+    runner = AsyncMock()
+    runner.submit.return_value = "code_1"
+    tool = _tool_with(agent_dir, job_runner=runner)
+    tool.set_origin(channel="web", chat_id="abc123", user_id="u1", agent_id="a1")
+
+    await tool.execute(repo=str(local), instruction="corrige", background=True)
+
+    kwargs = runner.submit.await_args.kwargs
+    assert kwargs["origin_channel"] == "web"
+    assert kwargs["origin_chat_id"] == "abc123"
+    assert kwargs["agent_id"] == "a1"
+
+
+async def test_the_work_the_job_runs_delegates_for_real(repo, fake_cli):
+    """O que vai para o job tem de ser a delegação, não uma promessa vazia."""
+    agent_dir, local = repo
+    await _on_branch(local)
+    runner = AsyncMock()
+    runner.submit.return_value = "code_1"
+    tool = _tool_with(agent_dir, job_runner=runner)
+
+    await tool.execute(repo=str(local), instruction="corrige", background=True)
+
+    work = runner.submit.await_args.kwargs["run"]
+    out = await work("code_1")
+
+    assert "terminou em" in out
+    assert (local / "app.py").read_text(encoding="utf-8") == "valor = 2\n"
+    runner.attach_process.assert_awaited_once()
+    assert runner.attach_process.await_args.kwargs["pid"] > 0
 
 
 async def test_a_repo_outside_the_agent_directory_is_refused(tool):
@@ -360,7 +570,7 @@ def test_path_wins_over_the_managed_install(tmp_path, monkeypatch):
 async def test_install_reports_a_failed_download(tmp_path, monkeypatch):
     from nanobot.agent.tools.code_agent import CliSpec, InstallSpec, install_cli
 
-    spec = CliSpec(integration="kiro", binary="nada", args=(), key_env="X",
+    spec = CliSpec(integration="kiro", binary="nada", args=(), keys=(CredentialKey("api_key", "X"),),
                    install=InstallSpec(url="https://exemplo.invalido/x"))
     monkeypatch.setattr(mod, "_which", lambda binary: "/bin/true")
 
@@ -374,7 +584,7 @@ async def test_install_fails_when_the_binary_does_not_appear(tmp_path, monkeypat
     """O sucesso é o binário responder, não o instalador sair com 0."""
     from nanobot.agent.tools.code_agent import CliSpec, InstallSpec, install_cli
 
-    spec = CliSpec(integration="kiro", binary="nunca-existe", args=(), key_env="X",
+    spec = CliSpec(integration="kiro", binary="nunca-existe", args=(), keys=(CredentialKey("api_key", "X"),),
                    install=InstallSpec(url="file:///dev/null"))
     monkeypatch.setattr(mod, "_which", lambda binary: "/bin/true")
 
@@ -389,3 +599,105 @@ async def test_install_fails_when_the_binary_does_not_appear(tmp_path, monkeypat
 
     assert ok is False
     assert "binário não apareceu" in log
+
+
+async def test_the_subscription_token_is_used_when_it_is_the_filled_field(repo,
+                                                                         tmp_path,
+                                                                         monkeypatch):
+    """Assinatura e API key não são intercambiáveis: variável e flags diferem."""
+    agent_dir, local = repo
+    await _on_branch(local)
+    script = tmp_path / "bin" / "claude-de-mentira"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "#!/bin/sh\necho \"args: $*\"\necho \"oauth: ${CLAUDE_CODE_OAUTH_TOKEN:-vazio}\"\n"
+        "echo \"apikey: ${ANTHROPIC_API_KEY:-vazio}\"\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr(mod, "_which", lambda binary: str(script))
+    monkeypatch.setattr(mod, "CLI_SPECS", (
+        CliSpec(integration="claude_code", binary=str(script),
+                args=("--print", "--model", "sonnet"),
+                keys=(CredentialKey("oauth_token", "CLAUDE_CODE_OAUTH_TOKEN"),
+                      CredentialKey("api_key", "ANTHROPIC_API_KEY", args=("--bare",)))),
+    ))
+    integration_repo = AsyncMock()
+    integration_repo.get_integration.return_value = {
+        "slug": "claude_code", "enabled": True, "credential_id": 1,
+    }
+    credential_repo = AsyncMock()
+    credential_repo.get_credential.return_value = {
+        "secret_cipher": crypto.encrypt(json.dumps({"oauth_token": "tok-assinatura"})),
+    }
+    tool = CodeAgentTool(user_id="u1", integration_repo=integration_repo,
+                         credential_repo=credential_repo, agent_dir=agent_dir,
+                         timeout=30)
+
+    out = await tool.execute(repo=str(local), instruction="corrige")
+
+    assert "apikey: vazio" in out
+    assert "--bare" not in out
+    assert "--model sonnet" in out
+
+
+async def test_the_api_key_path_adds_the_strict_auth_flag(repo, tmp_path, monkeypatch):
+    """--bare lê a credencial só da variável — quebraria o token de assinatura."""
+    agent_dir, local = repo
+    await _on_branch(local)
+    script = tmp_path / "bin" / "claude-de-mentira"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("#!/bin/sh\necho \"args: $*\"\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setattr(mod, "_which", lambda binary: str(script))
+    monkeypatch.setattr(mod, "CLI_SPECS", (
+        CliSpec(integration="claude_code", binary=str(script), args=("--print",),
+                keys=(CredentialKey("oauth_token", "CLAUDE_CODE_OAUTH_TOKEN"),
+                      CredentialKey("api_key", "ANTHROPIC_API_KEY", args=("--bare",)))),
+    ))
+    integration_repo = AsyncMock()
+    integration_repo.get_integration.return_value = {
+        "slug": "claude_code", "enabled": True, "credential_id": 1,
+    }
+    credential_repo = AsyncMock()
+    credential_repo.get_credential.return_value = {
+        "secret_cipher": crypto.encrypt(json.dumps({"api_key": "sk-ant-x"})),
+    }
+    tool = CodeAgentTool(user_id="u1", integration_repo=integration_repo,
+                         credential_repo=credential_repo, agent_dir=agent_dir,
+                         timeout=30)
+
+    out = await tool.execute(repo=str(local), instruction="corrige")
+
+    assert "--bare" in out
+
+
+async def test_a_protected_branch_blocks_the_delegation(tool, repo):
+    """A delegação agora comita — então 'não é branch protegido' virou pré-condição."""
+    _, local = repo
+    _git("checkout", "-q", "-B", "develop", cwd=local)
+
+    out = await tool.execute(repo=str(local), instruction="corrige o valor")
+
+    assert "branch protegido" in out
+    assert (local / "app.py").read_text(encoding="utf-8") == "valor = 1\n"
+
+
+def test_the_prompt_lets_it_commit_but_never_push_or_switch_branch():
+    prompt = CodeAgentTool._build_prompt("corrige", [], branch="fix/41234")
+
+    assert "fix/41234" in prompt
+    assert "comite nesse branch" in prompt
+    assert "NÃO faça push" in prompt
+    assert "NÃO troque de branch" in prompt
+    assert "main, master ou develop" in prompt
+
+
+def test_the_claude_spec_pins_sonnet():
+    """Decisão do fluxo, não do modelo: sempre Sonnet nessas delegações."""
+    spec = mod.get_cli_spec("claude_code")
+
+    assert spec is not None
+    assert "--model" in spec.args
+    assert spec.args[spec.args.index("--model") + 1] == "sonnet"
+    assert "bypassPermissions" not in spec.args

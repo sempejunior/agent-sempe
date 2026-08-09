@@ -246,6 +246,30 @@ class SQLiteMessageRepository:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def first_asked(self, session_ids: list[int]) -> dict[int, str]:
+        """The first thing a person actually asked, per session.
+
+        Messages a machine wrote are excluded: a conversation resumed by a job
+        or by an answered question starts with a ``[sistema]`` prompt, and
+        naming the conversation after it hides what the person came for.
+        """
+        if not session_ids:
+            return {}
+        placeholders = ",".join("?" for _ in session_ids)
+        cursor = await self._db.execute(
+            f"""SELECT session_id, content FROM messages
+                 WHERE id IN (
+                     SELECT MIN(id) FROM messages
+                      WHERE session_id IN ({placeholders})
+                        AND role = 'user'
+                        AND content IS NOT NULL AND content != ''
+                        AND content NOT LIKE '[sistema]%'
+                      GROUP BY session_id
+                 )""",
+            session_ids,
+        )
+        return {row["session_id"]: row["content"] for row in await cursor.fetchall()}
+
     async def delete_all(self, session_id: int) -> int:
         cursor = await self._db.execute(
             "DELETE FROM messages WHERE session_id = ?", (session_id,)

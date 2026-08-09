@@ -31,5 +31,7 @@ retrabalho/defeitos), **reorganize esses dados você mesmo** e monte a visão co
 (visual rico garantido; você só estrutura o conteúdo) — não fique preso ao formato padrão. Se o pedido
 for uma **análise de desempenho** interpretada (leitura de gestão, por pessoa e do time), use
 `read_skill("analise-desempenho")`. Se a ferramenta não achar itens, confirme o nome do projeto. Para
-consultas pontuais fora do relatório, os tools `mcp_azure_devops_*` seguem disponíveis. Nunca
+consultas pontuais fora do relatório, as tools MCP do Azure seguem disponíveis — o nome exato
+delas está na seção `Integrations & MCPs` do seu contexto, e depende do slug que o cliente deu à
+integração. Nunca
 invente dados — use só o que a ferramenta trouxe.

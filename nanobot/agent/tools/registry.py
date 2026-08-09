@@ -67,6 +67,10 @@ class ToolRegistry:
     ) -> list[str | list[dict[str, Any]]]:
         """Execute a batch of tool calls, each bounded by ``timeout``.
 
+        A tool that declares its own ``timeout_s`` is bounded by that instead —
+        otherwise a tool driving a long external process would be cancelled here
+        long before its own ceiling applied.
+
         Independent calls run concurrently; results keep the input order (the
         chat API requires one tool result per call, in order). A call whose
         tool declares ``parallel_safe = False`` forces the whole batch to run
@@ -84,12 +88,13 @@ class ToolRegistry:
     async def _execute_bounded(
         self, call: "ToolCallRequest", timeout: float,
     ) -> str | list[dict[str, Any]]:
+        limit = getattr(self._tools.get(call.name), "timeout_s", None) or timeout
         try:
-            return await asyncio.wait_for(self.execute(call.name, call.arguments), timeout)
+            return await asyncio.wait_for(self.execute(call.name, call.arguments), limit)
         except asyncio.TimeoutError:
-            logger.warning("Tool call {} timed out after {}s", call.name, timeout)
+            logger.warning("Tool call {} timed out after {}s", call.name, limit)
             return (
-                f"Error: tool '{call.name}' timed out after {int(timeout)}s. "
+                f"Error: tool '{call.name}' timed out after {int(limit)}s. "
                 "Try a different approach or a smaller request."
             )
 
@@ -97,6 +102,11 @@ class ToolRegistry:
     def tool_names(self) -> list[str]:
         """Get list of registered tool names."""
         return list(self._tools.keys())
+
+    @property
+    def tools(self) -> list[Tool]:
+        """Registered instances, for callers that configure tools per turn."""
+        return list(self._tools.values())
 
     def __len__(self) -> int:
         return len(self._tools)

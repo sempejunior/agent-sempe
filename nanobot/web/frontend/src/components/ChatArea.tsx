@@ -28,6 +28,7 @@ export function ChatArea() {
     templates,
     loadTemplates,
     messages,
+    activeSessionKey,
     sending,
     sendMessage,
     updateAgent,
@@ -66,6 +67,7 @@ export function ChatArea() {
   const templateId = (currentAgent as Agent).metadata?.template;
   const starters = templates.find((t) => t.id === templateId)?.starter_prompts ?? [];
   const quickCommands = starters.length > 0 ? starters : FALLBACK_COMMANDS;
+  const isSavedConversation = Boolean(activeSessionKey);
   const lastMsg = messages[messages.length - 1];
   const needsThinkingBubble =
     sending && (!lastMsg || lastMsg.role !== "assistant" || !lastMsg.isStreaming);
@@ -87,10 +89,13 @@ export function ChatArea() {
             </div>
             <div className="flex flex-col gap-0.5">
               <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted leading-tight">
-                Falar com
+                {isSavedConversation ? "Conversa com" : "Falar com"}
               </span>
-              {isSystemAgent ? (
-                <span className="text-sm font-semibold text-text-primary leading-tight">
+              {isSavedConversation ? (
+                <span
+                  className="text-sm font-semibold text-text-primary leading-tight"
+                  title="Esta conversa foi feita com este agente. Comece uma nova conversa para falar com outro."
+                >
                   {currentAgent.name}
                   {currentAgent.role ? ` · ${currentAgent.role}` : ""}
                 </span>
@@ -103,7 +108,7 @@ export function ChatArea() {
                     <SelectValue placeholder="Selecionar agente" />
                   </SelectTrigger>
                   <SelectContent>
-                    {agents.map((a) => (
+                    {[...agents, ...systemAgents].map((a) => (
                       <SelectItem key={a.agent_id} value={a.agent_id}>
                         {a.name}
                         {a.role ? ` · ${a.role}` : ""}
@@ -219,6 +224,9 @@ export function ChatArea() {
                     content={msg.content}
                     isStreaming={msg.isStreaming}
                     toolHint={msg.toolHint}
+                    notes={msg.notes}
+                    pending={msg.pending}
+                    steps={msg.steps}
                   />
                 ))}
                 {needsThinkingBubble && <ChatMessage role="assistant" content="" isStreaming />}

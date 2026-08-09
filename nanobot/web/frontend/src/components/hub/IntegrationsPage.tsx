@@ -1065,6 +1065,14 @@ function CredentialDialog({
         toast("error", `Campos obrigatórios: ${missing.map((f) => f.label).join(", ")}`);
         return;
       }
+      // Fornecedor que aceita credenciais alternativas (token OU chave) marca
+      // todos os campos como opcionais. Aí "nenhum obrigatório" não pode virar
+      // "nenhum preenchido": sem isso o erro só apareceria na primeira execução.
+      const noneRequired = fields.length > 0 && fields.every((f) => !f.required);
+      if (noneRequired && !fields.some((f) => values[f.key]?.trim())) {
+        toast("error", "Preencha pelo menos um dos campos.");
+        return;
+      }
     }
     const secret: Record<string, string> = {};
     for (const [k, v] of Object.entries(values)) {

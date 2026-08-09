@@ -6,6 +6,7 @@ import {
   Sparkles,
   Wrench,
   Bell,
+  Inbox,
   Send,
   Plug,
   Database,
@@ -34,11 +35,21 @@ interface SidebarSection {
 function useSections(): SidebarSection[] {
   const agents = useStore((s) => s.agents);
   const agentsCount = agents.length;
+  const pendingCount = useStore((s) => s.openQuestions).length;
+  const noticeCount = useStore((s) => s.notices).length;
 
   return [
     {
       label: "Conversar",
-      items: [{ key: "chat", label: "Chat", icon: MessageSquare }],
+      items: [
+        {
+          key: "chat",
+          label: "Chat",
+          icon: MessageSquare,
+          badge: String(noticeCount || ""),
+          badgeTone: "green",
+        },
+      ],
     },
     {
       label: "Força de Trabalho Digital",
@@ -54,6 +65,13 @@ function useSections(): SidebarSection[] {
         { key: "agent-studio", label: "Criar Agente", icon: Sparkles },
         { key: "skills-catalog", label: "Minhas Skills", icon: Wrench },
         { key: "alerts", label: "Rotinas", icon: Bell, badgeTone: "orange" },
+        {
+          key: "activity",
+          label: "Atividade",
+          icon: Inbox,
+          badge: String(pendingCount || ""),
+          badgeTone: "orange",
+        },
       ],
     },
     {

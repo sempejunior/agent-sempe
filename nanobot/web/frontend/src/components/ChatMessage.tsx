@@ -1,8 +1,77 @@
 import { useState, useRef, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, User, Wrench, Copy, Check } from "lucide-react";
+import { Bot, User, Wrench, Copy, Check, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { TurnStep } from "@/lib/store";
+
+const TRUNCATION_MARK = "... (truncated)";
+
+/** O que o agente fez para chegar na resposta, fechado por padrão.
+ *
+ *  Fica fechado porque quem lê a conversa quer a conversa; abre porque quando
+ *  algo deu errado, a única resposta útil está aqui.
+ */
+function TurnAudit({ steps }: { steps: TurnStep[] }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-text-muted hover:text-text-secondary transition-colors cursor-pointer"
+      >
+        <ChevronRight
+          className={cn("w-3.5 h-3.5 transition-transform", open && "rotate-90")}
+        />
+        {steps.length === 1 ? "1 ferramenta neste turno" : `${steps.length} ferramentas neste turno`}
+      </button>
+
+      {open && (
+        <ol className="mt-2 space-y-2 border-l border-border pl-3">
+          {steps.map((step, i) => (
+            <li key={`${step.id}-${i}`} className="text-xs">
+              <div className="flex items-center gap-1.5 font-semibold text-text-secondary">
+                <Wrench className="w-3 h-3 text-purple/70" />
+                {step.name}
+              </div>
+              {step.arguments && (
+                <pre className="mt-1 overflow-x-auto rounded-lg bg-surface-alt px-2.5 py-1.5 text-[11px] leading-5 text-text-muted whitespace-pre-wrap break-all">
+                  {step.arguments}
+                </pre>
+              )}
+              <StepResult result={step.result} />
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+function StepResult({ result }: { result: string }) {
+  if (!result) {
+    return (
+      <p className="mt-1 text-[11px] italic text-text-muted">
+        Sem resultado gravado — o turno acabou antes desta ferramenta responder.
+      </p>
+    );
+  }
+  const cut = result.endsWith(TRUNCATION_MARK);
+  return (
+    <>
+      <pre className="mt-1 overflow-x-auto rounded-lg bg-surface px-2.5 py-1.5 text-[11px] leading-5 text-text-primary whitespace-pre-wrap break-words">
+        {cut ? result.slice(0, -TRUNCATION_MARK.length) : result}
+      </pre>
+      {cut && (
+        <p className="mt-0.5 text-[11px] italic text-text-muted">
+          Resultado cortado ao gravar — o agente viu o restante.
+        </p>
+      )}
+    </>
+  );
+}
 
 function CodeBlock(props: React.ComponentPropsWithoutRef<"pre"> & { node?: unknown }) {
   const [copied, setCopied] = useState(false);
@@ -51,9 +120,17 @@ interface Props {
   content: string;
   isStreaming?: boolean;
   toolHint?: string;
+  /** O que o agente já fez neste turno, em ordem. Some quando a resposta chega. */
+  notes?: string[];
+  /** O turno passou do teto e segue trabalhando com o chat liberado. */
+  pending?: boolean;
+  /** O que o agente fez para chegar nesta resposta, numa conversa recarregada. */
+  steps?: TurnStep[];
 }
 
-export function ChatMessage({ role, content, isStreaming, toolHint }: Props) {
+export function ChatMessage({
+  role, content, isStreaming, toolHint, notes, pending, steps,
+}: Props) {
   const isUser = role === "user";
   const isThinking = isStreaming && !content;
 
@@ -87,6 +164,23 @@ export function ChatMessage({ role, content, isStreaming, toolHint }: Props) {
             {isUser ? "Você" : "Sólides Agent"}
           </div>
 
+          {!isUser && isStreaming && notes && notes.length > 0 && (
+            <div className="mb-2 flex flex-col gap-1">
+              {notes.map((note, i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    "flex items-start gap-2 text-xs leading-5 animate-fade-in",
+                    i === notes.length - 1 ? "text-text-secondary" : "text-text-muted",
+                  )}
+                >
+                  <span className="mt-1.5 w-1 h-1 rounded-full bg-purple/60 shrink-0" />
+                  <span>{note}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {isUser ? (
             <div className="rounded-xl bg-purple px-5 py-3 text-sm font-medium leading-7 text-white shadow-sm whitespace-pre-wrap">
               {content}
@@ -103,7 +197,9 @@ export function ChatMessage({ role, content, isStreaming, toolHint }: Props) {
                     />
                   ))}
                 </div>
-                <span className="text-sm text-purple-hover font-medium">Pensando...</span>
+                <span className="text-sm text-purple-hover font-medium">
+                  {pending ? "Trabalhando em segundo plano..." : "Pensando..."}
+                </span>
               </div>
             </div>
           ) : (
@@ -116,6 +212,8 @@ export function ChatMessage({ role, content, isStreaming, toolHint }: Props) {
               )}
             </div>
           )}
+
+          {!isUser && steps && steps.length > 0 && <TurnAudit steps={steps} />}
 
           {/* Tool hint */}
           {isStreaming && (

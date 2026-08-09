@@ -14,7 +14,8 @@ qual pessoa é o PDI, se não estiver claro).
 ## Fontes de dados (agnóstico — use o que houver)
 
 Não dependa de nenhuma fonte específica; **descubra** o que está disponível e use:
-- Integrações de entrega/desempenho via MCP (ex.: `mcp_azure_devops_*`, um MCP de Jira, etc.) — o
+- Integrações de entrega/desempenho via MCP (Azure DevOps, Jira, etc.) — confira os nomes reais
+  das tools na seção `Integrations & MCPs` do seu contexto, porque eles derivam do slug. O
   que a pessoa entregou: itens concluídos, tipos, sprints, WIP, PRs.
 - Um relatório/dado que o usuário forneceu ou que você já gerou.
 - Documentos no RAG (`rag_search`) — inclusive o **PDI anterior** da pessoa.
@@ -30,8 +31,8 @@ no ano, story points, defeitos, lead/cycle time e retrabalho — já com a **aut
 é limpo após a entrega). Fluxo: descubra/pergunte o **projeto** (a org tem muitos; não chame
 `list_organizations`), chame `azure_devops_report(project="<nome>")`, e use a entrada da pessoa no
 resumo por pessoa que ela retorna. Atenção a **homônimos** (ex.: `lucas.cid` ≠ `lucas.silva`) —
-use o identificador exato do resumo. Para consultas pontuais fora do relatório, os tools
-`mcp_azure_devops_*` seguem disponíveis.
+use o identificador exato do resumo. Para consultas pontuais fora do relatório, as tools MCP do
+Azure seguem disponíveis, com o nome que a seção `Integrations & MCPs` mostrar.
 
 ## Método (objetivo, não roteiro rígido — adapte)
 

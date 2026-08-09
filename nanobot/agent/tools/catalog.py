@@ -52,6 +52,10 @@ class ToolContext:
     integration_repo: Any = None
     credential_repo: Any = None
     work_item_repo: Any = None
+    job_repo: Any = None
+    job_runner: Any = None
+    question_repo: Any = None
+    deliverable_repo: Any = None
     public_url: str | None = None
     active_integrations: set[str] = field(default_factory=set)
     display: bool = False
@@ -98,6 +102,8 @@ _REQUIREMENTS: dict[str, Callable[[ToolContext], bool]] = {
     "bus": lambda ctx: ctx.bus is not None,
     "user_repo": lambda ctx: bool(ctx.user_repo and ctx.user_id),
     "work_items": lambda ctx: bool(ctx.work_item_repo and ctx.user_id),
+    "jobs": lambda ctx: bool(ctx.job_repo and ctx.user_id),
+    "questions": lambda ctx: bool(ctx.question_repo and ctx.user_id),
     "display": lambda ctx: ctx.display,
 }
 
@@ -179,12 +185,16 @@ def _save_skill(ctx: ToolContext) -> "Tool":
 
 def _publish_page(ctx: ToolContext) -> "Tool":
     from nanobot.agent.tools.report_page import PublishPageTool
-    return PublishPageTool(workspace=ctx.workspace, public_url=ctx.public_url)
+    return PublishPageTool(workspace=ctx.workspace, public_url=ctx.public_url,
+                           deliverable_repo=ctx.deliverable_repo,
+                           user_id=ctx.user_id or "", agent_id=ctx.agent_id or "")
 
 
 def _publish_report(ctx: ToolContext) -> "Tool":
     from nanobot.agent.tools.report_page import PublishReportTool
-    return PublishReportTool(workspace=ctx.workspace, public_url=ctx.public_url)
+    return PublishReportTool(workspace=ctx.workspace, public_url=ctx.public_url,
+                             deliverable_repo=ctx.deliverable_repo,
+                             user_id=ctx.user_id or "", agent_id=ctx.agent_id or "")
 
 
 def _http_call(ctx: ToolContext) -> "Tool":
@@ -236,7 +246,20 @@ def _code_agent(ctx: ToolContext) -> "Tool":
     from nanobot.agent.tools.code_agent import CodeAgentTool
     return CodeAgentTool(user_id=ctx.user_id, integration_repo=ctx.integration_repo,
                          credential_repo=ctx.credential_repo, agent_dir=ctx.agent_dir,
-                         workspace=ctx.workspace, timeout=ctx.job_timeout)
+                         workspace=ctx.workspace, timeout=ctx.job_timeout,
+                         job_runner=ctx.job_runner)
+
+
+def _jobs(ctx: ToolContext) -> "Tool":
+    from nanobot.agent.tools.jobs import JobsTool
+    return JobsTool(user_id=ctx.user_id, job_repo=ctx.job_repo,
+                    job_runner=ctx.job_runner)
+
+
+def _ask_human(ctx: ToolContext) -> "Tool":
+    from nanobot.agent.tools.ask_human import AskHumanTool
+    return AskHumanTool(user_id=ctx.user_id, question_repo=ctx.question_repo,
+                        agent_id=ctx.agent_id or "")
 
 
 def _work_ledger(ctx: ToolContext) -> "Tool":
@@ -318,6 +341,10 @@ CATALOG: tuple[ToolSpec, ...] = (
                   "arquivos e roda comandos no repositório."),
     ToolSpec("work_ledger", "Registro de demandas trabalhadas", "Ambiente",
              _work_ledger, requires=("work_items",)),
+    ToolSpec("jobs", "Tarefas em segundo plano", "Ambiente", _jobs,
+             requires=("jobs",)),
+    ToolSpec("ask_human", "Perguntar a uma pessoa e seguir", "Autonomia", _ask_human,
+             requires=("questions",)),
     ToolSpec("exec", "Executar comandos no terminal", "Ambiente", _exec,
              permission=True,
              warn="Roda comandos arbitrários no ambiente do agente."),

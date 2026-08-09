@@ -2,6 +2,7 @@
 
 from typing import Any, Awaitable, Callable
 
+from nanobot.agent import notes
 from nanobot.agent.tools.base import Tool
 from nanobot.bus.events import OutboundMessage
 
@@ -93,6 +94,9 @@ class MessageTool(Tool):
         if not channel or not chat_id:
             return "Error: No target channel/chat specified"
 
+        if channel == "web":
+            return await self._note(content)
+
         if not self._send_callback:
             return "Error: Message sending not configured"
 
@@ -115,3 +119,16 @@ class MessageTool(Tool):
             return f"Message sent to {channel}:{chat_id}{media_info}"
         except Exception as e:
             return f"Error sending message: {str(e)}"
+
+    async def _note(self, content: str) -> str:
+        """On the web the message becomes a progress note, not an outbound message.
+
+        The bus delivers to chat platforms; the web panel is not one of them, so
+        an outbound message published here reached nobody. A note reaches the
+        person immediately and, unlike on the other channels, does not stand in
+        for the answer — the turn still delivers its text at the end.
+        """
+        await notes.emit(content)
+        self._sent_in_turn = True
+        return ("Nota entregue no chat. Ela é um aviso de andamento, não a "
+                "resposta: continue o trabalho e responda normalmente no fim.")

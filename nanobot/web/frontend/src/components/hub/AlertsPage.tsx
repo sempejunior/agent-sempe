@@ -297,7 +297,7 @@ export function AlertsPage() {
                   rows={5}
                   placeholder={
                     "Instrução completa, como você diria no chat — pode ter várias etapas.\n\n" +
-                    "Ex.: Liste no projeto Killer as tarefas de Bug e Débito Técnico que " +
+                    "Ex.: Liste no seu projeto as tarefas de Bug e Débito Técnico que " +
                     "mudaram de estado hoje, cruze com os pedidos de saída antecipada da " +
                     "base de RH e publique uma página com a leitura."
                   }

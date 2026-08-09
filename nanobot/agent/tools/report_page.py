@@ -10,6 +10,10 @@ Two tools live here:
 Both write under ``<workspace>/reports/<token>.html`` and return a link to
 ``/r/<token>``, served with a script-blocking CSP. The link is absolute when
 ``gateway.public_url`` is configured, otherwise relative to the app origin.
+
+Publishing is also recorded as a deliverable, so a report survives the
+conversation that produced it: the link used to exist only in the chat where it
+was generated, and closing that chat lost it.
 """
 
 from __future__ import annotations
@@ -22,12 +26,55 @@ from typing import Any
 from nanobot.agent.tools.base import Tool
 
 
+class _Publisher:
+    """Where a published page is written, linked and recorded.
+
+    Shared by both tools so the delivery is registered in one place: two copies
+    of this would drift, and the one that drifted would silently stop recording.
+    """
+
+    def __init__(self, workspace: Path, public_url: str | None = None,
+                 deliverable_repo: Any = None, user_id: str = "", agent_id: str = ""):
+        self._reports_dir = Path(workspace) / "reports"
+        self._public_url = (public_url or "").rstrip("/")
+        self._repo = deliverable_repo
+        self._user_id = user_id
+        self._agent_id = agent_id
+        self._origin_channel = ""
+        self._origin_chat_id = ""
+
+    def set_origin(self, *, channel: str = "", chat_id: str = "",
+                   agent_id: str = "", **_: Any) -> None:
+        self._origin_channel = channel
+        self._origin_chat_id = chat_id
+        self._agent_id = agent_id or self._agent_id
+
+    async def publish(self, *, kind: str, title: str, html: str) -> str:
+        token = uuid.uuid4().hex
+        self._reports_dir.mkdir(parents=True, exist_ok=True)
+        (self._reports_dir / f"{token}.html").write_text(html, encoding="utf-8")
+        link = f"{self._public_url}/r/{token}" if self._public_url else f"/r/{token}"
+        if self._repo and self._user_id:
+            await self._repo.record(
+                self._user_id, kind=kind, title=title, url=link, token=token,
+                agent_id=self._agent_id,
+                origin_channel=self._origin_channel,
+                origin_chat_id=self._origin_chat_id,
+            )
+        return link
+
+
 class PublishPageTool(Tool):
     """Write a self-contained HTML page to the reports dir and return its link."""
 
-    def __init__(self, workspace: Path, public_url: str | None = None):
-        self._reports_dir = Path(workspace) / "reports"
-        self._public_url = (public_url or "").rstrip("/")
+    def __init__(self, workspace: Path, public_url: str | None = None,
+                 deliverable_repo: Any = None, user_id: str = "", agent_id: str = ""):
+        self._pages = _Publisher(workspace, public_url, deliverable_repo,
+                                 user_id, agent_id)
+
+    def set_origin(self, **origin: Any) -> None:
+        """Remember the conversation, so the delivery links back to it."""
+        self._pages.set_origin(**origin)
 
     @property
     def name(self) -> str:
@@ -71,10 +118,7 @@ class PublishPageTool(Tool):
                 "Error: 'html' vazio ou inválido. Envie um documento HTML completo "
                 "e autocontido (CSS inline, sem scripts, sem recursos externos)."
             )
-        token = uuid.uuid4().hex
-        self._reports_dir.mkdir(parents=True, exist_ok=True)
-        (self._reports_dir / f"{token}.html").write_text(html, encoding="utf-8")
-        link = f"{self._public_url}/r/{token}" if self._public_url else f"/r/{token}"
+        link = await self._pages.publish(kind="page", title=title, html=html)
         return (
             f"Página publicada com sucesso.\n"
             f"Título: {title}\n"
@@ -269,9 +313,14 @@ def render_report(title: str, subtitle: str, sections: list[dict]) -> str:
 class PublishReportTool(Tool):
     """Render structured content into a rich report page and publish it."""
 
-    def __init__(self, workspace: Path, public_url: str | None = None):
-        self._reports_dir = Path(workspace) / "reports"
-        self._public_url = (public_url or "").rstrip("/")
+    def __init__(self, workspace: Path, public_url: str | None = None,
+                 deliverable_repo: Any = None, user_id: str = "", agent_id: str = ""):
+        self._pages = _Publisher(workspace, public_url, deliverable_repo,
+                                 user_id, agent_id)
+
+    def set_origin(self, **origin: Any) -> None:
+        """Remember the conversation, so the delivery links back to it."""
+        self._pages.set_origin(**origin)
 
     @property
     def name(self) -> str:
@@ -334,10 +383,7 @@ class PublishReportTool(Tool):
                 "(cards/bars/months/table/text/note)."
             )
         page = render_report(title, subtitle, sections)
-        token = uuid.uuid4().hex
-        self._reports_dir.mkdir(parents=True, exist_ok=True)
-        (self._reports_dir / f"{token}.html").write_text(page, encoding="utf-8")
-        link = f"{self._public_url}/r/{token}" if self._public_url else f"/r/{token}"
+        link = await self._pages.publish(kind="report", title=title, html=page)
         return (
             f"Relatório publicado com {len(sections)} seções no menu.\n"
             f"Título: {title}\n"

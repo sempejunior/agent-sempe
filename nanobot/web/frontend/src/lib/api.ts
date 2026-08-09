@@ -176,13 +176,30 @@ export async function getAgentMetrics(agentId: string): Promise<AgentMetrics> {
 export interface Session {
   session_key: string;
   title: string;
+  /** O agente que conduziu a conversa. Abrir a conversa seleciona ele. */
+  agent_id: string;
+  agent_name: string;
   message_count: number;
   updated_at: string;
+}
+
+/** Uma chamada de ferramenta como o modelo a emitiu. */
+export interface ToolCall {
+  id: string;
+  type?: string;
+  function: { name: string; arguments: string };
 }
 
 export interface Message {
   role: string;
   content: string;
+  /** Presente no assistente que chamou ferramentas. */
+  tool_calls?: ToolCall[];
+  /** Presente no resultado: liga de volta à chamada. */
+  tool_call_id?: string;
+  /** Nome da ferramenta, no resultado. */
+  name?: string;
+  timestamp?: string;
 }
 
 export async function listSessions(): Promise<Session[]> {
@@ -195,6 +212,85 @@ export async function getMessages(sessionKey: string): Promise<Message[]> {
 
 export async function deleteSession(sessionKey: string): Promise<{ ok: boolean }> {
   return request(`/sessions/${encodeURIComponent(sessionKey)}`, { method: "DELETE" });
+}
+
+// Pendências: perguntas que o agente deixou esperando uma pessoa
+export interface Question {
+  id: number;
+  agent_id: string;
+  question: string;
+  context: string;
+  subject: string;
+  subject_url: string;
+  subject_ref: string;
+  asked_where: string;
+  state: "open" | "answered" | "cancelled";
+  answer: string;
+  answered_by: string;
+  created_at: string;
+  answered_at?: string | null;
+}
+
+export async function listQuestions(state = "open"): Promise<Question[]> {
+  const query = state ? `?state=${encodeURIComponent(state)}` : "";
+  const data = await request<{ questions: Question[] }>(`/questions${query}`);
+  return data.questions;
+}
+
+export async function answerQuestion(
+  questionId: number,
+  answer: string,
+): Promise<{ ok: boolean; question: Question }> {
+  return request(`/questions/${questionId}/answer`, {
+    method: "POST",
+    body: JSON.stringify({ answer }),
+  });
+}
+
+export async function cancelQuestion(questionId: number): Promise<{ ok: boolean }> {
+  return request(`/questions/${questionId}`, { method: "DELETE" });
+}
+
+export async function cancelJob(jobId: string): Promise<{ ok: boolean }> {
+  return request(`/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+}
+
+export async function getJobLog(jobId: string): Promise<{ job_id: string; log: string }> {
+  return request(`/jobs/${encodeURIComponent(jobId)}/log`);
+}
+
+// Atividade
+export interface ActivityLink {
+  label: string;
+  url: string;
+}
+
+export interface ActivityItem {
+  id: string;
+  kind: "question" | "answer" | "job" | "demand" | "page";
+  title: string;
+  detail: string;
+  agent_id: string;
+  at: string;
+  links: ActivityLink[];
+  /** Presente em tarefas de fundo, para poder cancelar. */
+  job_id: string;
+  /** Presente na pergunta em aberto, para o formulário de resposta. */
+  question: Question | null;
+  /** A conversa de onde isso saiu, quando saiu de uma. */
+  session_key: string;
+}
+
+/** Perguntas, tarefas de fundo, demandas e páginas publicadas numa linha do
+ *  tempo só. O backend monta os três baldes; a tela só desenha. */
+export interface Activity {
+  waiting: ActivityItem[];
+  running: ActivityItem[];
+  delivered: ActivityItem[];
+}
+
+export async function getActivity(): Promise<Activity> {
+  return request<Activity>("/activity");
 }
 
 // Cron
@@ -909,10 +1005,16 @@ export async function deleteCredential(credentialId: number): Promise<{ ok: bool
 export type WsMessageType =
   | "response"
   | "progress"
+  | "handoff"
+  | "notice"
   | "tool_hint"
   | "trace"
   | "error"
   | "pong";
+
+/** Something the person should see even if they navigated away from the chat:
+ *  background work finished, or the agent is now blocked on an answer. */
+export type NoticeKind = "done" | "question";
 
 /** One step of a turn's execution, as the loop saw it. Opt-in per turn: it
  *  carries the assembled prompt and every tool result. */
@@ -950,10 +1052,15 @@ export interface TraceEvent {
   tools_used?: string[];
 }
 
-export interface WsIncoming extends Partial<TraceEvent> {
+export interface WsIncoming extends Omit<Partial<TraceEvent>, "kind"> {
   type: WsMessageType;
   content?: string;
   session_key?: string;
+  /** Which turn the frame belongs to. Absent on frames nobody asked for — a
+   *  background job reporting back — which is what tells them apart. */
+  turn_id?: string;
+  /** On `notice` only. */
+  kind?: NoticeKind | TraceEvent["kind"];
 }
 
 export function createChatSocket(token: string): WebSocket {

@@ -70,6 +70,12 @@ class APIEndpoint:
     ``body_from_credential`` maps a request body field to a credential field
     (``{"employeeUserId": "user_id"}``). It extends whatever the integration
     declares and takes precedence over it for the same body field.
+
+    ``default_query`` overrides the integration's own default for this endpoint
+    alone. Vendors version endpoints unevenly — the Azure comments API never
+    left preview and rejects the organization-wide ``api-version`` — and the
+    default belongs here rather than in a prompt telling the model to remember
+    an exception.
     """
 
     key: str
@@ -289,8 +295,12 @@ CATALOG: tuple[IntegrationEntry, ...] = (
             "A organização é o nome que aparece na URL: dev.azure.com/<organização>.",
             "Crie o token em dev.azure.com/<organização>/_usersSettings/tokens "
             "(User settings, canto superior direito → Personal access tokens → New Token).",
-            "Escopos mínimos de leitura: Work Items (Read), Code (Read), "
+            "Só para consultar o board: Work Items (Read), Code (Read), "
             "Project and Team (Read).",
+            "Para o agente também COMENTAR na demanda e abrir pull request, marque "
+            "Work Items (Read & Write) e Code (Read & Write). Um token só de leitura "
+            "passa em todas as consultas e falha com 403 no último passo — quando o "
+            "trabalho já foi feito.",
             "Copie o token e cole no campo abaixo — ele só é mostrado uma vez.",
         ),
         credential_fields=(
@@ -298,7 +308,8 @@ CATALOG: tuple[IntegrationEntry, ...] = (
                             hint="Nome na URL dev.azure.com/<organização>. ex: contoso"),
             CredentialField("pat", "Personal Access Token", "password",
                             hint="Crie em dev.azure.com/<org>/_usersSettings/tokens. "
-                                 "Escopos: Work Items (Read), Code (Read)."),
+                                 "Para comentar na demanda e abrir PR: Work Items "
+                                 "(Read & Write) e Code (Read & Write)."),
         ),
         auth=AuthSpec(mode="basic", username_field="", password_field="pat"),
         api=APIIntegration(
@@ -324,13 +335,69 @@ CATALOG: tuple[IntegrationEntry, ...] = (
                             "/{organization}/{project}/_apis/wit/workItems/{id}/comments",
                             "Comenta numa work item.",
                             query_params=("api-version",),
-                            body_params=("text",)),
+                            body_params=("text",),
+                            default_query={"api-version": "7.1-preview.3"}),
                 APIEndpoint("get_work_item", "GET", "/{organization}/_apis/wit/workitems/{id}",
                             "Retorna work item por ID.",
                             query_params=("api-version",)),
             ),
         ),
         git=GitSpec("https://dev.azure.com/{organization}/_git/{path}", "azure", "pat"),
+    ),
+    IntegrationEntry(
+        id="claude_code",
+        kind="cli",
+        name="Claude Code (agente de código)",
+        description=(
+            "Delega a escrita de código ao Claude Code rodando nesta máquina, "
+            "dentro do repositório clonado. O agente prepara o branch da demanda, "
+            "o Claude escreve e comita, e os testes decidem se vira pull request. "
+            "Roda sempre com o modelo Sonnet."
+        ),
+        category="devtools",
+        docs_url="https://code.claude.com/docs/en/headless",
+        credential_url="https://console.anthropic.com/settings/keys",
+        setup_steps=(
+            "São dois caminhos alternativos. Preencha UM dos campos abaixo e deixe "
+            "o outro vazio — nenhum dos dois é obrigatório sozinho.",
+            "CAMINHO 1 — Token da assinatura. É o mais rápido e não gera cobrança "
+            "nova: usa o plano Claude que você já tem. No SEU terminal (não aqui no "
+            "chat, para o token não ficar gravado na conversa) rode: "
+            "claude setup-token",
+            "Ele abre o navegador para você autorizar com a conta que já está "
+            "logada, e no fim imprime o token no terminal. Copie e cole no campo "
+            "'Token da assinatura'.",
+            "Não existe configuração de validade: esse token já nasce de longa "
+            "duração (é para isso que o comando serve). Ele vale até você revogar "
+            "o acesso na sua conta Claude ou trocar de plano. Se um dia parar de "
+            "funcionar, rode o comando de novo e cole o token novo aqui.",
+            "Não tem o comando 'claude' na máquina? Instale antes com: "
+            "curl -fsSL https://claude.ai/install.sh | bash",
+            "CAMINHO 2 — API Key. Use quando isto for para produção e você quiser "
+            "o gasto separado da assinatura. Abra console.anthropic.com → Settings "
+            "→ API Keys → Create Key, dê um nome que lembre para que serve, e copie "
+            "na hora: o valor completo só aparece no momento da criação.",
+            "Chave de console não tem campo de validade — vale até alguém revogar "
+            "no próprio console. Ela é cobrada por token consumido, então exige uma "
+            "organização com faturamento configurado.",
+            "Depois de salvar, instale o binário no botão 'Instalar' — são ~290 MB "
+            "e ficam no volume do workspace, então sobrevivem a recriar o container.",
+        ),
+        credential_fields=(
+            CredentialField("oauth_token", "Token da assinatura", "password",
+                            required=False,
+                            hint="Rode 'claude setup-token' no seu terminal e cole "
+                                 "o token que ele imprimir. Já é de longa duração — "
+                                 "não há validade para configurar. Deixe vazio se "
+                                 "for usar API key."),
+            CredentialField("api_key", "API Key da Anthropic", "password",
+                            required=False,
+                            hint="Começa com sk-ant-. console.anthropic.com → "
+                                 "Settings → API Keys → Create Key. Não expira: "
+                                 "vale até ser revogada no console. Deixe vazio se "
+                                 "for usar o token da assinatura."),
+        ),
+        auth=AuthSpec(mode="none"),
     ),
     IntegrationEntry(
         id="kiro",

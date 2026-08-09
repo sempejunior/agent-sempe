@@ -21,17 +21,26 @@ import { AgentTeamPage } from "@/components/hub/AgentTeamPage";
 import { AgentStorePage } from "@/components/hub/AgentStorePage";
 import { SkillsCatalogPage } from "@/components/hub/SkillsCatalogPage";
 import { AlertsPage } from "@/components/hub/AlertsPage";
+import { ActivityPage } from "@/components/hub/ActivityPage";
 import { McpManagerPage } from "@/components/hub/McpManagerPage";
 import { IntegrationsPage } from "@/components/hub/IntegrationsPage";
 import { DbManagerPage } from "@/components/hub/DbManagerPage";
 import { RagManagerPage } from "@/components/hub/RagManagerPage";
+import { ChatSessionList } from "@/components/ChatSessionList";
 import { Store } from "lucide-react";
 
 function MainContent() {
   const activeView = useStore((s) => s.activeView);
   switch (activeView) {
     case "chat":
-      return <ChatArea />;
+      return (
+        <div className="flex h-full min-h-0">
+          <ChatSessionList />
+          <div className="flex-1 min-w-0">
+            <ChatArea />
+          </div>
+        </div>
+      );
     case "agent-team":
       return <AgentTeamPage />;
     case "agents":
@@ -66,6 +75,8 @@ function MainContent() {
       return <CronPanel />;
     case "alerts":
       return <AlertsPage />;
+    case "activity":
+      return <ActivityPage />;
     case "rag":
       return <RagPanel />;
     case "rag-manager":

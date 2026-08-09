@@ -411,6 +411,7 @@ def gateway(
         app.state.repos = repos
         app.state.channels = channels
         app.state.config = config
+        app.state.bus = bus
         if db_conn:
             app.state.db = db_conn
 

@@ -5,6 +5,8 @@ import type {
   User,
   Session,
   Message,
+  Question,
+  NoticeKind,
   TraceEvent,
   WsIncoming,
 } from "./api";
@@ -23,6 +25,7 @@ import {
   deleteAgent as apiDeleteAgent,
   duplicateAgent as apiDuplicateAgent,
   getAgentTemplates,
+  listQuestions,
 } from "./api";
 import { toast } from "./toast";
 
@@ -47,15 +50,43 @@ export type View =
   | "rag-manager"
   | "cron"
   | "alerts"
+  | "activity"
   | "settings"
   | "clients";
+
+/** Uma ferramenta que o agente chamou, com o que voltou dela. */
+export interface TurnStep {
+  id: string;
+  name: string;
+  arguments: string;
+  result: string;
+}
 
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** O que o agente fez para chegar nesta resposta. Só em conversa recarregada:
+   *  no turno ao vivo o andamento aparece como notas. */
+  steps?: TurnStep[];
   isStreaming?: boolean;
   toolHint?: string;
+  /** Which turn produced this bubble. Two turns of the same socket run at the
+   *  same time, so "the last streaming bubble" is not a safe target. */
+  turnId?: string;
+  /** Progress notes, in order. Ephemeral: they are not part of the history and
+   *  do not survive a reload. */
+  notes?: string[];
+  /** The turn passed the soft ceiling and kept going in the background. */
+  pending?: boolean;
+}
+
+/** An alert worth showing outside the chat, because the person may be elsewhere. */
+export interface Notice {
+  id: string;
+  kind: NoticeKind;
+  text: string;
+  sessionKey: string | null;
 }
 
 interface WizardDraft {
@@ -92,6 +123,11 @@ interface AppState {
   messages: ChatMessage[];
   loadingSessions: boolean;
 
+  // Pendências — no store apenas porque o menu mostra a contagem
+  openQuestions: Question[];
+
+  notices: Notice[];
+
   // Templates + wizard
   templates: AgentTemplate[];
   wizardStep: WizardStep;
@@ -115,13 +151,14 @@ interface AppState {
   logout: () => void;
 
   loadSessions: () => Promise<void>;
+  loadOpenQuestions: () => Promise<void>;
   loadAgents: () => Promise<void>;
   selectAgent: (agentId: string) => Promise<void>;
   createAgent: (data: Partial<Agent>) => Promise<Agent | null>;
   updateAgent: (agentId: string, data: Partial<Agent>) => Promise<void>;
   deleteAgent: (agentId: string) => Promise<boolean>;
   duplicateAgent: (agentId: string) => Promise<Agent | null>;
-  selectSession: (key: string) => Promise<void>;
+  selectSession: (key: string, agentId?: string) => Promise<void>;
   newChat: () => void;
   removeSession: (key: string) => Promise<void>;
 
@@ -166,6 +203,51 @@ function nextId(): string {
   return `msg_${Date.now()}_${++msgCounter}`;
 }
 
+/** Remonta a conversa gravada, prendendo a cada resposta o que o agente fez para chegar nela.
+ *
+ *  O banco guarda a sequência plana que o modelo viu: assistente pedindo
+ *  ferramentas, resultados voltando, e por fim a resposta. Quem lê a conversa
+ *  quer o contrário — a resposta, com o trabalho pendurado nela. Um turno que
+ *  terminou sem texto (delegação disparada, teto estourado) ainda ganha um balão:
+ *  o trabalho existiu e sumiria sem onde se pendurar.
+ */
+function replayConversation(msgs: Message[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  let steps: TurnStep[] = [];
+
+  for (const m of msgs) {
+    if (m.role === "user") {
+      out.push({ id: nextId(), role: "user", content: m.content });
+      steps = [];
+    } else if (m.role === "assistant" && m.tool_calls?.length) {
+      steps.push(
+        ...m.tool_calls.map((call) => ({
+          id: call.id,
+          name: call.function?.name || "ferramenta",
+          arguments: call.function?.arguments || "",
+          result: "",
+        }))
+      );
+    } else if (m.role === "tool") {
+      const step = steps.find((s) => s.id === m.tool_call_id) ?? steps[steps.length - 1];
+      if (step) step.result = m.content;
+    } else if (m.role === "assistant" && m.content.trim()) {
+      out.push({
+        id: nextId(),
+        role: "assistant",
+        content: m.content,
+        ...(steps.length ? { steps } : {}),
+      });
+      steps = [];
+    }
+  }
+
+  if (steps.length) {
+    out.push({ id: nextId(), role: "assistant", content: "", steps });
+  }
+  return out;
+}
+
 let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useStore = create<AppState>((set, get) => ({
@@ -193,6 +275,9 @@ export const useStore = create<AppState>((set, get) => ({
   selectedClientId: null,
   editingAgentId: null,
 
+  openQuestions: [],
+  notices: [],
+
   templates: [],
   wizardStep: 1,
   wizardDraft: { ...EMPTY_WIZARD },
@@ -209,6 +294,7 @@ export const useStore = create<AppState>((set, get) => ({
       await get().loadAgents();
       get().connectWs();
       get().loadSessions();
+      get().loadOpenQuestions();
     } catch {
       localStorage.removeItem("nanobot_token");
       set({ token: null, user: null, authLoading: false });
@@ -224,6 +310,7 @@ export const useStore = create<AppState>((set, get) => ({
       await get().loadAgents();
       get().connectWs();
       get().loadSessions();
+      get().loadOpenQuestions();
     } catch (e) {
       set({ authError: (e as Error).message, authLoading: false });
     }
@@ -238,6 +325,7 @@ export const useStore = create<AppState>((set, get) => ({
       await get().loadAgents();
       get().connectWs();
       get().loadSessions();
+      get().loadOpenQuestions();
     } catch (e) {
       set({ authError: (e as Error).message, authLoading: false });
     }
@@ -255,7 +343,20 @@ export const useStore = create<AppState>((set, get) => ({
       activeAgentId: null,
       activeSessionKey: null,
       messages: [],
+      openQuestions: [],
+      notices: [],
     });
+  },
+
+  // ---- Pendências ----
+
+  async loadOpenQuestions() {
+    try {
+      set({ openQuestions: await listQuestions("open") });
+    } catch {
+      // Silencioso de propósito: é a contagem do menu, não o pedido de ninguém.
+      // A página de pendências reporta o erro quando alguém abre ela.
+    }
   },
 
   // ---- Sessions ----
@@ -354,16 +455,25 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  async selectSession(key: string) {
-    set({ activeSessionKey: key, messages: [], activeView: "chat" });
+  /** Abre uma conversa gravada.
+   *
+   *  Troca de agente quando a conversa é de outro: a busca é escopada por
+   *  agente, e sem trocar a tela abriria vazia. Devolve o campo de digitação
+   *  porque o turno que estava rodando é de outra conversa, e descarta uma
+   *  resposta lenta de conversa já abandonada em vez de deixá-la sobrescrever a
+   *  que está sendo lida.
+   */
+  async selectSession(key: string, agentId?: string) {
+    if (agentId && agentId !== get().activeAgentId) {
+      setActiveAgentId(agentId);
+      set({ activeAgentId: agentId });
+      get().loadSessions();
+    }
+    set({ activeSessionKey: key, messages: [], activeView: "chat", sending: false });
     try {
       const msgs = await getMessages(key);
-      const chatMsgs: ChatMessage[] = msgs.map((m: Message) => ({
-        id: nextId(),
-        role: m.role as "user" | "assistant",
-        content: m.content,
-      }));
-      set({ messages: chatMsgs });
+      if (get().activeSessionKey !== key) return;
+      set({ messages: replayConversation(msgs) });
     } catch (e) {
       toast("error", `Failed to load messages: ${(e as Error).message}`);
     }
@@ -428,53 +538,65 @@ export const useStore = create<AppState>((set, get) => ({
       }, 30000);
     };
 
+    /** Acha o balão do turno pelo turn_id, criando um quando ainda não existe.
+     *
+     *  Casar por "o último balão que está escrevendo" erra: dois turnos do mesmo
+     *  socket rodam ao mesmo tempo, e um resultado de segundo plano chega sem
+     *  turno nenhum.
+     */
+    const patchTurn = (turnId: string, patch: (m: ChatMessage) => ChatMessage) => {
+      const msgs = get().messages;
+      if (msgs.some((m) => m.turnId === turnId)) {
+        set({ messages: msgs.map((m) => (m.turnId === turnId ? patch(m) : m)) });
+        return;
+      }
+      const fresh: ChatMessage = {
+        id: nextId(),
+        role: "assistant",
+        content: "",
+        isStreaming: true,
+        turnId,
+      };
+      set({ messages: [...msgs, patch(fresh)] });
+    };
+
+    /** Levanta um aviso: o menu mostra a contagem e o toast avisa na hora. */
+    const raiseNotice = (kind: NoticeKind, text: string, sessionKey?: string) => {
+      if (!text) return;
+      set({
+        notices: [
+          ...get().notices,
+          { id: nextId(), kind, text, sessionKey: sessionKey ?? null },
+        ].slice(-20),
+      });
+      toast(kind === "question" ? "info" : "success", text);
+    };
+
     ws.onmessage = (evt) => {
       const data: WsIncoming = JSON.parse(evt.data);
       const { messages } = get();
 
       if (data.type === "progress") {
-        const last = messages[messages.length - 1];
-        if (last && last.role === "assistant" && last.isStreaming) {
-          set({
-            messages: messages.map((m) =>
-              m.id === last.id ? { ...m, content: data.content || "" } : m
-            ),
-          });
-        } else {
-          set({
-            messages: [
-              ...messages,
-              {
-                id: nextId(),
-                role: "assistant",
-                content: data.content || "",
-                isStreaming: true,
-              },
-            ],
-          });
-        }
+        if (!data.turn_id || !data.content) return;
+        patchTurn(data.turn_id, (m) => ({
+          ...m,
+          notes: [...(m.notes || []), data.content as string],
+        }));
       } else if (data.type === "tool_hint") {
-        const last = messages[messages.length - 1];
-        if (last && last.role === "assistant" && last.isStreaming) {
-          set({
-            messages: messages.map((m) =>
-              m.id === last.id ? { ...m, toolHint: data.content || "" } : m
-            ),
-          });
-        } else {
-          set({
-            messages: [
-              ...messages,
-              {
-                id: nextId(),
-                role: "assistant",
-                content: "",
-                isStreaming: true,
-                toolHint: data.content || "",
-              },
-            ],
-          });
-        }
+        if (!data.turn_id) return;
+        patchTurn(data.turn_id, (m) => ({ ...m, toolHint: data.content || "" }));
+      } else if (data.type === "handoff") {
+        if (!data.turn_id) return;
+        patchTurn(data.turn_id, (m) => ({
+          ...m,
+          pending: true,
+          notes: [...(m.notes || []), data.content || ""],
+        }));
+        set({ sending: false });
+        raiseNotice("done", data.content || "", data.session_key);
+      } else if (data.type === "notice") {
+        raiseNotice((data.kind as NoticeKind) || "done", data.content || "", data.session_key);
+        if (data.kind === "question") get().loadOpenQuestions();
       } else if (data.type === "response") {
         if (get().traceEnabled) {
           set({
@@ -484,28 +606,30 @@ export const useStore = create<AppState>((set, get) => ({
             ].slice(-400),
           });
         }
-        const last = messages[messages.length - 1];
-        if (last && last.role === "assistant" && last.isStreaming) {
+        if (data.turn_id) {
+          patchTurn(data.turn_id, (m) => ({
+            ...m,
+            content: data.content || "",
+            isStreaming: false,
+            pending: false,
+            toolHint: undefined,
+          }));
           set({
-            messages: messages.map((m) =>
-              m.id === last.id
-                ? { ...m, content: data.content || "", isStreaming: false, toolHint: undefined }
-                : m
-            ),
             sending: false,
             activeSessionKey: data.session_key || get().activeSessionKey,
           });
-        } else {
+        } else if (!data.session_key || data.session_key === get().activeSessionKey) {
           set({
             messages: [
-              ...messages,
+              ...get().messages,
               { id: nextId(), role: "assistant", content: data.content || "" },
             ],
-            sending: false,
-            activeSessionKey: data.session_key || get().activeSessionKey,
           });
         }
         get().loadSessions();
+        // Um turno pode ter aberto ou fechado uma pendência — inclusive um turno
+        // que ninguém pediu, vindo de uma tarefa de fundo ou de uma resposta.
+        get().loadOpenQuestions();
       } else if (data.type === "trace") {
         const { type: _type, session_key: _key, ...event } = data;
         if (event.kind === "turn") {
@@ -519,13 +643,23 @@ export const useStore = create<AppState>((set, get) => ({
         // prompt or a tool result, and the panel only ever shows the recent tail.
         set({ trace: [...get().trace, event as TraceEvent].slice(-400) });
       } else if (data.type === "error") {
-        set({
-          messages: [
-            ...messages,
-            { id: nextId(), role: "assistant", content: `Error: ${data.content}` },
-          ],
-          sending: false,
-        });
+        if (data.turn_id) {
+          patchTurn(data.turn_id, (m) => ({
+            ...m,
+            content: `Error: ${data.content}`,
+            isStreaming: false,
+            pending: false,
+            toolHint: undefined,
+          }));
+        } else {
+          set({
+            messages: [
+              ...get().messages,
+              { id: nextId(), role: "assistant", content: `Error: ${data.content}` },
+            ],
+          });
+        }
+        set({ sending: false });
       }
     };
 
@@ -601,8 +735,9 @@ export const useStore = create<AppState>((set, get) => ({
     set({ sidebarOpen: !get().sidebarOpen });
   },
 
+  /** Abrir o chat também limpa os avisos: o que eles anunciam está lá dentro. */
   setActiveView(view: View) {
-    set({ activeView: view });
+    set({ activeView: view, ...(view === "chat" ? { notices: [] } : {}) });
   },
 
   setSelectedClientId(id: string | null) {

@@ -18,9 +18,12 @@ if TYPE_CHECKING:
         ChannelBindingRepository,
         CredentialRepository,
         CronRepository,
+        DeliverableRepository,
         IntegrationRepository,
+        JobRepository,
         MemoryRepository,
         MessageRepository,
+        QuestionRepository,
         RetrieverRepository,
         SessionRepository,
         SkillRepository,
@@ -54,6 +57,9 @@ class RepositoryFactory:
     credentials: CredentialRepository
     integrations: IntegrationRepository
     work_items: WorkItemRepository
+    jobs: JobRepository
+    questions: QuestionRepository
+    deliverables: DeliverableRepository
 
 
 def create_sqlite_factory(db) -> RepositoryFactory:
@@ -70,8 +76,11 @@ def create_sqlite_factory(db) -> RepositoryFactory:
     from nanobot.db.sqlite.client_repo import SQLiteClientRepository
     from nanobot.db.sqlite.credentials_repo import SQLiteCredentialRepository
     from nanobot.db.sqlite.cron_repo import SQLiteCronRepository
+    from nanobot.db.sqlite.deliverable_repo import SQLiteDeliverableRepository
     from nanobot.db.sqlite.integrations_repo import SQLiteIntegrationRepository
+    from nanobot.db.sqlite.job_repo import SQLiteJobRepository
     from nanobot.db.sqlite.memory_repo import SQLiteMemoryRepository
+    from nanobot.db.sqlite.question_repo import SQLiteQuestionRepository
     from nanobot.db.sqlite.rag_repo import SQLiteRetrieverRepository
     from nanobot.db.sqlite.session_repo import SQLiteMessageRepository, SQLiteSessionRepository
     from nanobot.db.sqlite.skill_repo import SQLiteSkillRepository
@@ -97,4 +106,7 @@ def create_sqlite_factory(db) -> RepositoryFactory:
         credentials=SQLiteCredentialRepository(db),
         integrations=SQLiteIntegrationRepository(db),
         work_items=SQLiteWorkItemRepository(db),
+        jobs=SQLiteJobRepository(db),
+        questions=SQLiteQuestionRepository(db),
+        deliverables=SQLiteDeliverableRepository(db),
     )

@@ -95,6 +95,15 @@ class MessageRepository(Protocol):
 
     async def count(self, session_id: int) -> int: ...
 
+    async def first_asked(self, session_ids: list[int]) -> dict[int, str]:
+        """The first thing a person actually asked, per session.
+
+        For naming conversations in a list. Resolved for every session in one
+        query on purpose: doing it per session turned listing the sidebar into
+        one query per conversation, on every turn.
+        """
+        ...
+
     async def delete_all(self, session_id: int) -> int:
         """Delete all messages for a session. Returns count deleted."""
         ...
@@ -268,6 +277,27 @@ class AuditRepository(Protocol):
 
 
 @runtime_checkable
+class DeliverableRepository(Protocol):
+    """What the agent produced and handed over: published reports and pages.
+
+    A published page used to be a file on disk and a link in one conversation.
+    Recording it is what lets the product answer "what has this agent delivered
+    to me", and what keeps a delivery from being lost with the chat that made it.
+    """
+
+    async def record(
+        self, user_id: str, *, kind: str, title: str, url: str, token: str,
+        agent_id: str = "", origin_channel: str = "", origin_chat_id: str = "",
+    ) -> dict[str, Any] | None:
+        """Register one delivery. Recording the same token twice is a no-op."""
+        ...
+
+    async def list_deliverables(
+        self, user_id: str, *, limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+
+
+@runtime_checkable
 class WorkItemRepository(Protocol):
     """Which demands an autonomous routine already worked, and what came out.
 
@@ -279,6 +309,7 @@ class WorkItemRepository(Protocol):
     async def claim(
         self, user_id: str, *, source: str, external_id: str, agent_id: str = "",
         title: str = "", stale_after_s: int = 3600,
+        origin_channel: str = "", origin_chat_id: str = "",
     ) -> dict[str, Any]:
         """Try to take ownership of one demand.
 
@@ -289,16 +320,49 @@ class WorkItemRepository(Protocol):
         """
         ...
 
-    async def complete(
-        self, user_id: str, *, source: str, external_id: str, pr_url: str,
-        branch: str = "", note: str = "",
-    ) -> bool:
-        """Mark the demand done. ``pr_url`` is required: no PR, not done."""
+    async def link_repo(
+        self, user_id: str, *, source: str, external_id: str, repo: str, branch: str,
+    ) -> dict[str, Any]:
+        """Declare a repository this demand touches, with its working branch.
+
+        Returns the row plus a ``linked`` flag: False means that repository
+        already has a branch for this demand, which is the rule "one branch per
+        demand per repository" refusing a second one.
+        """
         ...
+
+    async def complete_repo(
+        self, user_id: str, *, source: str, external_id: str, repo: str,
+        pr_url: str, note: str = "",
+    ) -> dict[str, Any]:
+        """Record the pull request opened for one of the demand's repositories.
+
+        The demand itself only reaches ``done`` once every linked repository has
+        a PR — which is what stops a two-repository demand from being closed by
+        the first one.
+        """
+        ...
+
+    async def list_repos(
+        self, user_id: str, *, source: str, external_id: str,
+    ) -> list[dict[str, Any]]: ...
 
     async def fail(
         self, user_id: str, *, source: str, external_id: str, note: str,
     ) -> bool: ...
+
+    async def wait(
+        self, user_id: str, *, source: str, external_id: str, note: str,
+    ) -> bool:
+        """Park the item: it needs a person, not another attempt. ``claim`` refuses
+        a parked item, which is what keeps a sweep from re-working it."""
+        ...
+
+    async def resume(
+        self, user_id: str, *, source: str, external_id: str, note: str = "",
+    ) -> bool:
+        """Put a parked item back to work — the only way out of ``waiting``."""
+        ...
 
     async def get(
         self, user_id: str, *, source: str, external_id: str,
@@ -307,3 +371,100 @@ class WorkItemRepository(Protocol):
     async def list_items(
         self, user_id: str, *, state: str | None = None, limit: int = 50,
     ) -> list[dict[str, Any]]: ...
+
+
+@runtime_checkable
+class JobRepository(Protocol):
+    """Work that outlives the turn that started it.
+
+    A tool driving a process for tens of minutes cannot answer inside one turn:
+    it registers a job, returns the handle, and the conclusion comes back later
+    as a new turn in the session recorded here.
+    """
+
+    async def create(
+        self, user_id: str, *, job_id: str, kind: str, agent_id: str = "",
+        label: str = "", origin_channel: str = "", origin_chat_id: str = "",
+        params: dict[str, Any] | None = None, timeout_s: int = 1800,
+    ) -> dict[str, Any]:
+        """Register a job in ``queued``. Returns the stored row."""
+        ...
+
+    async def start(
+        self, user_id: str, job_id: str, *, pid: int | None = None,
+        log_path: str = "",
+    ) -> bool:
+        """Move to ``running``. ``pid`` is what lets a reaper kill an orphan."""
+        ...
+
+    async def attach_process(
+        self, user_id: str, job_id: str, *, pid: int, log_path: str = "",
+    ) -> bool:
+        """Record the child the job spawned, once it exists."""
+        ...
+
+    async def finish(
+        self, user_id: str, job_id: str, *, state: str, result: str = "",
+        error: str = "",
+    ) -> bool: ...
+
+    async def get(self, user_id: str, job_id: str) -> dict[str, Any] | None: ...
+
+    async def list_jobs(
+        self, user_id: str, *, state: str | None = None, limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+
+    async def list_unfinished(self) -> list[dict[str, Any]]:
+        """Every job left ``queued`` or ``running``, across users.
+
+        Used once at startup: a restart kills the tasks but not the rows, and a
+        job stuck in ``running`` forever would block its demand from ever being
+        retried.
+        """
+        ...
+
+
+@runtime_checkable
+class QuestionRepository(Protocol):
+    """What an agent is waiting on a person to answer.
+
+    Distinct from a failure on purpose: a failure is something the machine may
+    retry, this is not. Keeping them apart is what lets a routine skip a parked
+    item instead of re-working it, and what makes "what is missing an answer"
+    answerable at all.
+
+    The subject is a label plus a link, never a foreign key — an agent waiting on
+    an approval uses the same register as one waiting on a business rule.
+    """
+
+    async def ask(
+        self, user_id: str, *, question: str, agent_id: str = "", context: str = "",
+        subject: str = "", subject_url: str = "", subject_ref: str = "",
+        asked_where: str = "", origin_channel: str = "", origin_chat_id: str = "",
+    ) -> dict[str, Any]:
+        """Open a question, or hand back the identical one already open.
+
+        Returns the row plus a ``created`` flag: False means this was already
+        being waited on, which is what keeps a nightly sweep from duplicating it.
+        """
+        ...
+
+    async def answer(
+        self, user_id: str, question_id: int, *, answer: str, answered_by: str,
+    ) -> dict[str, Any] | None:
+        """Close an open question. Returns the updated row, or None if not open."""
+        ...
+
+    async def cancel(self, user_id: str, question_id: int) -> bool:
+        """Drop a question that stopped mattering. Never automatic: letting one
+        expire on a timer would lose the fact that nobody ever answered."""
+        ...
+
+    async def get(self, user_id: str, question_id: int) -> dict[str, Any] | None: ...
+
+    async def list_questions(
+        self, user_id: str, *, state: str | None = "open", agent_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+
+    async def count_open(self, user_id: str) -> int: ...

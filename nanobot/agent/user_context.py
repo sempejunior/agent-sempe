@@ -113,6 +113,7 @@ async def build_user_context(
     builtin_skills_dir: Path | None = None,
     agent_id: str | None = None,
     public_url: str | None = None,
+    job_runner: Any | None = None,
 ) -> UserContext:
     """Build a UserContext from the user's DB record.
 
@@ -197,6 +198,8 @@ async def build_user_context(
         custom_instructions=agent_config.get("custom_instructions", ""),
         rag_enabled=retriever is not None,
         integration_repo=repos.integrations,
+        question_repo=getattr(repos, "questions", None),
+        agent_id=agent_id,
         agent_bootstrap=agent_doc.get("bootstrap", {}) or {},
         agent_name=agent_doc.get("name", "") or "",
     )
@@ -218,6 +221,10 @@ async def build_user_context(
         integration_repo=repos.integrations,
         credential_repo=repos.credentials,
         work_item_repo=repos.work_items,
+        job_repo=getattr(repos, "jobs", None),
+        job_runner=job_runner,
+        question_repo=getattr(repos, "questions", None),
+        deliverable_repo=getattr(repos, "deliverables", None),
         public_url=public_url,
         active_integrations=active_integrations,
     )
@@ -259,6 +266,10 @@ def build_tool_registry(
     integration_repo: Any | None = None,
     credential_repo: Any | None = None,
     work_item_repo: Any | None = None,
+    job_repo: Any | None = None,
+    job_runner: Any | None = None,
+    question_repo: Any | None = None,
+    deliverable_repo: Any | None = None,
     public_url: str | None = None,
     active_integrations: set[str] | None = None,
 ) -> ToolRegistry:
@@ -288,6 +299,10 @@ def build_tool_registry(
         integration_repo=integration_repo,
         credential_repo=credential_repo,
         work_item_repo=work_item_repo,
+        job_repo=job_repo,
+        job_runner=job_runner,
+        question_repo=question_repo,
+        deliverable_repo=deliverable_repo,
         public_url=public_url,
         active_integrations=set(active_integrations or ()),
         display=bool(os.environ.get("DISPLAY")),

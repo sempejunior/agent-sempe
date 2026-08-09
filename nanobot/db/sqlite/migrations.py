@@ -633,6 +633,151 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_key
 CREATE INDEX IF NOT EXISTS idx_work_items_state
     ON work_items(user_id, state, updated_at DESC);
 """),
+
+    (12, """
+-- ===================== v12: background jobs =====================
+-- Work that outlives the turn that started it. Delegating to a code agent CLI
+-- takes tens of minutes; a tool call cannot wait that long without holding the
+-- worker and blowing the turn ceiling, so the tool registers a job and returns a
+-- handle instead.
+-- origin_channel/origin_chat_id are what make the conclusion land back in the
+-- session that asked for the work, rather than nowhere.
+-- pid is for the reaper: the child runs in its own session and survives a
+-- gateway restart, so a job orphaned by a restart has to be killed by pid or it
+-- keeps editing a repository nobody is watching anymore.
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    agent_id       TEXT NOT NULL DEFAULT '',
+    job_id         TEXT NOT NULL,
+    kind           TEXT NOT NULL,
+    label          TEXT NOT NULL DEFAULT '',
+    state          TEXT NOT NULL DEFAULT 'queued',
+    origin_channel TEXT NOT NULL DEFAULT '',
+    origin_chat_id TEXT NOT NULL DEFAULT '',
+    params         TEXT NOT NULL DEFAULT '{}',
+    result         TEXT NOT NULL DEFAULT '',
+    error          TEXT NOT NULL DEFAULT '',
+    pid            INTEGER,
+    log_path       TEXT NOT NULL DEFAULT '',
+    timeout_s      INTEGER NOT NULL DEFAULT 1800,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at     TEXT,
+    finished_at    TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_key ON jobs(user_id, job_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_listing
+    ON jobs(user_id, state, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_unfinished ON jobs(state);
+"""),
+
+    (13, """
+-- ===================== v13: questions waiting on a human =====================
+-- Where an agent records that it cannot go on without a decision only a person
+-- can make. Not a failure: a failure is retryable by the machine, this is not.
+-- Keeping the two apart is what lets a routine skip a parked item instead of
+-- re-working it every night, and what makes "what is missing an answer" a
+-- question anyone can ask the product.
+-- Deliberately generic: the subject is a label plus a link, never a foreign key,
+-- so an agent waiting on a PDI approval uses the same register as one waiting on
+-- a business rule for a bug.
+-- origin_channel/origin_chat_id follow the jobs table: they are what let the
+-- answer resume the conversation that got stuck, instead of landing nowhere.
+
+CREATE TABLE IF NOT EXISTS questions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id        TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    agent_id       TEXT NOT NULL DEFAULT '',
+    question       TEXT NOT NULL,
+    context        TEXT NOT NULL DEFAULT '',
+    subject        TEXT NOT NULL DEFAULT '',
+    subject_url    TEXT NOT NULL DEFAULT '',
+    subject_ref    TEXT NOT NULL DEFAULT '',
+    asked_where    TEXT NOT NULL DEFAULT '',
+    state          TEXT NOT NULL DEFAULT 'open',
+    answer         TEXT NOT NULL DEFAULT '',
+    answered_by    TEXT NOT NULL DEFAULT '',
+    origin_channel TEXT NOT NULL DEFAULT '',
+    origin_chat_id TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    answered_at    TEXT
+);
+
+-- The mechanism, same as work_items: asking twice about the same subject is an
+-- insert that loses and hands back the question already open, so a routine that
+-- sweeps every night does not fill the inbox with duplicates.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_open
+    ON questions(user_id, agent_id, subject_ref, question) WHERE state = 'open';
+CREATE INDEX IF NOT EXISTS idx_questions_listing
+    ON questions(user_id, state, created_at DESC);
+"""),
+
+    (14, """
+-- ===================== v14: one demand, many repositories =====================
+-- A demand is not the same thing as a pull request. "Add an onboarding FAQ"
+-- legitimately means a change in the backend and another in the frontend, and
+-- the ledger modelled a single branch and a single PR per demand: the second
+-- repository's PR silently overwrote the first's.
+-- The claim stays on the demand — that is what stops two runs from taking the
+-- same item — and the repositories hang off it. The UNIQUE index is the rule
+-- "one branch per demand per repository", now in the database instead of only
+-- in a prompt.
+-- work_items.branch and work_items.pr_url are dropped by the fixup below: a
+-- scalar beside this table is a second source of truth that drifts.
+
+CREATE TABLE IF NOT EXISTS work_item_repos (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_item_id INTEGER NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+    repo         TEXT NOT NULL,
+    branch       TEXT NOT NULL DEFAULT '',
+    pr_url       TEXT NOT NULL DEFAULT '',
+    note         TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_repos_key
+    ON work_item_repos(work_item_id, repo);
+"""),
+
+    (15, """
+-- ===================== v15: what the agent delivered =====================
+-- A published report was a file on disk and a link in one conversation: no
+-- owner, no title, no date. Whoever closed that chat lost the delivery, and the
+-- product had no answer to "what has this agent produced for me".
+-- The token stays the access control (the page is served by unguessable URL);
+-- this table only records that the delivery happened and who it belongs to.
+
+CREATE TABLE IF NOT EXISTS deliverables (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    agent_id   TEXT NOT NULL DEFAULT '',
+    kind       TEXT NOT NULL,
+    title      TEXT NOT NULL DEFAULT '',
+    url        TEXT NOT NULL,
+    token      TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deliverables_token ON deliverables(token);
+CREATE INDEX IF NOT EXISTS idx_deliverables_listing
+    ON deliverables(user_id, created_at DESC);
+"""),
+
+    (16, """
+-- ================ v16: where each piece of work came from ================
+-- Jobs and questions already recorded the conversation that started them, and
+-- that is what lets an answer resume the right chat. Demands and published
+-- pages did not, so the activity screen could show what was delivered and never
+-- where to go to understand it.
+-- Same two columns and same meaning as jobs/questions, filled by the same
+-- set_origin the loop already hands to tools.
+-- Columns are added by the post-migration fixup below, to stay idempotent
+-- across databases that already carry a higher schema_version.
+SELECT 1;
+"""),
 ]
 
 async def _safe_add_column(db: "aiosqlite.Connection", table: str, column: str, definition: str) -> None:
@@ -640,6 +785,13 @@ async def _safe_add_column(db: "aiosqlite.Connection", table: str, column: str, 
     columns = [row[1] for row in await cursor.fetchall()]
     if column not in columns:
         await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+async def _safe_drop_column(db: "aiosqlite.Connection", table: str, column: str) -> None:
+    cursor = await db.execute(f"PRAGMA table_info({table})")
+    columns = [row[1] for row in await cursor.fetchall()]
+    if column in columns:
+        await db.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
 
 
 async def _ensure_agents_table(db: "aiosqlite.Connection") -> None:
@@ -781,6 +933,8 @@ async def apply_migrations(db: "aiosqlite.Connection") -> None:
     await _fixup_v6_cron(db)
     await _fixup_v10_template_guardrails(db)
     await _fixup_v11_skill_origin(db)
+    await _fixup_v14_work_item_repos(db)
+    await _fixup_v16_origin_columns(db)
     await _seed_agent_templates_if_empty(db)
     await _backfill_template_guardrails(db)
     await _backfill_missing_templates(db)
@@ -885,6 +1039,44 @@ async def _consolidate_pdi_templates(db: "aiosqlite.Connection") -> None:
                 "UPDATE agent_templates SET tools=? WHERE id='pdi_desenvolvimento'",
                 (json.dumps(tools, ensure_ascii=False),),
             )
+    await db.commit()
+
+
+async def _fixup_v14_work_item_repos(db: "aiosqlite.Connection") -> None:
+    """Move the demand's branch and PR into the per-repository table, then drop them.
+
+    Idempotent: databases that already ran it have no columns left to move.
+    """
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='work_item_repos'"
+    )
+    if not await cursor.fetchone():
+        return
+    cursor = await db.execute("PRAGMA table_info(work_items)")
+    columns = [row[1] for row in await cursor.fetchall()]
+    if "pr_url" not in columns and "branch" not in columns:
+        return
+
+    await db.execute(
+        """INSERT OR IGNORE INTO work_item_repos (work_item_id, repo, branch, pr_url)
+           SELECT id, '', branch, pr_url FROM work_items
+            WHERE branch != '' OR pr_url != ''"""
+    )
+    await _safe_drop_column(db, "work_items", "branch")
+    await _safe_drop_column(db, "work_items", "pr_url")
+    await db.commit()
+
+
+async def _fixup_v16_origin_columns(db: "aiosqlite.Connection") -> None:
+    """Record which conversation a demand and a published page came from."""
+    for table in ("work_items", "deliverables"):
+        cursor = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,),
+        )
+        if not await cursor.fetchone():
+            continue
+        await _safe_add_column(db, table, "origin_channel", "TEXT NOT NULL DEFAULT ''")
+        await _safe_add_column(db, table, "origin_chat_id", "TEXT NOT NULL DEFAULT ''")
     await db.commit()
 
 

@@ -11,7 +11,9 @@ to git by an askpass helper reading it from the child's environment, and any
 occurrence of it is scrubbed from the output before returning.
 
 "Always a branch and a pull request, never a merge" is enforced here rather than
-asked for in a prompt: ``commit`` and ``push`` refuse the default branch.
+asked for in a prompt: ``branch``, ``commit`` and ``push`` refuse the protected
+branches (see ``branches.py``) — the default branch git reports, plus the
+convention names like ``develop`` that no remote publishes.
 """
 
 from __future__ import annotations
@@ -23,7 +25,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+from nanobot.agent import notes
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.branches import is_protected, protected_names
+from nanobot.agent.tools.process import kill_process_group
 from nanobot.integrations.catalog import CATALOG, get_integration
 
 _ASKPASS = "/usr/local/bin/nanobot-git-askpass"
@@ -45,6 +50,9 @@ def git_origins() -> tuple[str, ...]:
 class RepoTool(Tool):
     """Clone, branch, inspect and push repositories of activated integrations."""
 
+    parallel_safe = False
+    """Git commands mutate one working tree; a concurrent batch is a race on it."""
+
     def __init__(self, *, user_id: str, integration_repo: Any, credential_repo: Any,
                  agent_dir: Path):
         self._user_id = user_id
@@ -63,7 +71,8 @@ class RepoTool(Tool):
             "GitHub, Azure Repos). Ações: ensure (clona ou atualiza), status, diff, "
             "branch, commit, push. Não faz merge e não abre o pull request — para "
             "abrir o PR/MR use http_call no endpoint da integração. Nunca commita "
-            "nem envia para o branch default."
+            "nem envia para main, master, develop ou o branch default: crie um "
+            "branch de trabalho por demanda."
         )
 
     @property
@@ -131,10 +140,12 @@ class RepoTool(Tool):
         local = self._root / origin / _slug(path)
         fresh = not (local / ".git").is_dir()
         if fresh:
+            await notes.emit(f"Clonando {path}…")
             local.parent.mkdir(parents=True, exist_ok=True)
             await self._git(["clone", url, str(local)], cwd=local.parent,
                             env=env, secret=secret)
         else:
+            await notes.emit(f"Atualizando {path}…")
             await self._git(["remote", "set-url", "origin", url], cwd=local,
                             env=env, secret=secret)
             await self._git(["fetch", "--prune", "origin"], cwd=local,
@@ -166,9 +177,10 @@ class RepoTool(Tool):
         if not _BRANCH_RE.match(name or ""):
             raise _RepoError("nome de branch inválido")
         default = await self._default_branch(local)
-        if name == default:
+        if is_protected(name, default):
             raise _RepoError(
-                f"'{name}' é o branch default — crie um branch de trabalho separado"
+                f"'{name}' é um branch protegido ({protected_names(default)}) — "
+                "use um nome de branch de trabalho, como fix/1234-descricao"
             )
         base = from_ref or f"origin/{default}"
         await self._git(["checkout", "-B", name, base], cwd=local)
@@ -179,7 +191,7 @@ class RepoTool(Tool):
         local = self._local(repo)
         if not message.strip():
             raise _RepoError("commit precisa de message")
-        await self._refuse_default(local)
+        await self._refuse_protected(local)
         await self._git(["add", "--", *(paths or ["."])], cwd=local)
         staged = await self._git(["diff", "--cached", "--name-only"], cwd=local)
         if not staged.strip():
@@ -190,12 +202,13 @@ class RepoTool(Tool):
 
     async def _push(self, repo: str = "", **_: Any) -> str:
         local = self._local(repo)
-        branch = await self._refuse_default(local)
+        branch = await self._refuse_protected(local)
         origin = self._origin_of(local)
         entry = get_integration(origin)
         credential = await self._credential(origin)
         secret = credential.get(entry.git.auth_secret_field, "") if entry and entry.git else ""
         env = {"NANOBOT_GIT_PASSWORD": secret} if secret else {}
+        await notes.emit(f"Enviando o branch {branch} de {local.name}…")
         await self._git(["push", "--set-upstream", "origin", branch], cwd=local,
                         env=env, secret=secret)
         return f"Branch '{branch}' enviado. Abra o PR/MR com http_call."
@@ -228,13 +241,13 @@ class RepoTool(Tool):
                 return candidate
         return "main"
 
-    async def _refuse_default(self, local: Path) -> str:
+    async def _refuse_protected(self, local: Path) -> str:
         branch = (await self._git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=local)).strip()
         default = await self._default_branch(local)
-        if branch == default:
+        if is_protected(branch, default):
             raise _RepoError(
-                f"você está no branch default ('{branch}') — crie um branch de "
-                "trabalho antes de commitar ou enviar"
+                f"'{branch}' é um branch protegido ({protected_names(default)}) — "
+                "crie um branch de trabalho para a demanda antes de commitar ou enviar"
             )
         return branch
 
@@ -306,8 +319,11 @@ class RepoTool(Tool):
         try:
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=_TIMEOUT_S)
         except asyncio.TimeoutError:
-            process.kill()
+            await kill_process_group(process)
             raise _RepoError(f"git {args[0]} passou de {_TIMEOUT_S}s") from None
+        except asyncio.CancelledError:
+            await kill_process_group(process)
+            raise
         out = _scrub(stdout.decode("utf-8", errors="replace"), secret)
         if len(out) > _MAX_OUTPUT_CHARS:
             out = out[:_MAX_OUTPUT_CHARS] + "\n... (saída truncada)"

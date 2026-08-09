@@ -100,7 +100,7 @@ async def test_commit_on_the_default_branch_is_refused(tool):
 
     out = await tool.execute(action="commit", repo=info["repo"], message="tenta")
 
-    assert "branch default" in out
+    assert "branch protegido" in out
 
 
 async def test_push_on_the_default_branch_is_refused(tool):
@@ -108,7 +108,7 @@ async def test_push_on_the_default_branch_is_refused(tool):
 
     out = await tool.execute(action="push", repo=info["repo"])
 
-    assert "branch default" in out
+    assert "branch protegido" in out
 
 
 async def test_branch_refuses_the_default_name(tool):
@@ -116,7 +116,7 @@ async def test_branch_refuses_the_default_name(tool):
 
     out = await tool.execute(action="branch", repo=info["repo"], name="main")
 
-    assert "branch default" in out
+    assert "branch protegido" in out
 
 
 async def test_the_full_cycle_branch_commit_push(tool, origin):
@@ -193,3 +193,31 @@ async def test_an_https_remote_gets_the_username():
                               "grupo/projeto")
     assert url == "https://oauth2@gitlab.com/grupo/projeto.git"
     assert "x" not in url
+
+
+async def test_develop_is_refused_even_when_it_is_not_the_default(tool):
+    """O buraco que a trava antiga tinha: default é main, então develop passava.
+
+    Nenhum remoto declara develop como protegido — é convenção. Por isso o nome
+    está no código, e não numa frase de prompt.
+    """
+    info = await _ensure(tool)
+    await tool.execute(action="branch", repo=info["repo"], name="fix/temp")
+    import subprocess
+    from pathlib import Path
+    subprocess.run(["git", "checkout", "-q", "-B", "develop"],
+                   cwd=info["repo"], check=True, capture_output=True)
+    (Path(info["repo"]) / "app.py").write_text("valor = 3\n", encoding="utf-8")
+
+    out = await tool.execute(action="commit", repo=info["repo"], message="tenta")
+
+    assert "branch protegido" in out
+    assert "develop" in out
+
+
+async def test_creating_a_branch_named_develop_is_refused(tool):
+    info = await _ensure(tool)
+
+    out = await tool.execute(action="branch", repo=info["repo"], name="develop")
+
+    assert "branch protegido" in out

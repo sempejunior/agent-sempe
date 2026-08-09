@@ -16,11 +16,11 @@ separately.
 import asyncio
 import os
 import re
-import signal
 from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.process import kill_process_group
 
 _ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TERM")
 _MAX_OUTPUT_CHARS = 10_000
@@ -28,6 +28,9 @@ _MAX_OUTPUT_CHARS = 10_000
 
 class ExecTool(Tool):
     """Tool to execute shell commands."""
+
+    parallel_safe = False
+    """Commands share one working tree; a concurrent batch is a race on it."""
 
     def __init__(
         self,
@@ -131,8 +134,11 @@ class ExecTool(Tool):
                     timeout=self.timeout
                 )
             except asyncio.TimeoutError:
-                await self._terminate(process)
+                await kill_process_group(process)
                 return f"Error: Command timed out after {self.timeout} seconds"
+            except asyncio.CancelledError:
+                await kill_process_group(process)
+                raise
 
             output_parts = []
 
@@ -157,26 +163,6 @@ class ExecTool(Tool):
 
         except Exception as e:
             return f"Error executing command: {str(e)}"
-
-    @staticmethod
-    async def _terminate(process: asyncio.subprocess.Process) -> None:
-        """Kill the whole process group, not just the shell.
-
-        ``npm`` and ``pytest`` spawn children; killing the shell alone leaves
-        them running and holding the pipes open.
-        """
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            if process.returncode is not None:
-                return
-            try:
-                os.killpg(os.getpgid(process.pid), sig)
-            except (ProcessLookupError, PermissionError):
-                process.kill()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5.0)
-                return
-            except asyncio.TimeoutError:
-                continue
 
     def _guard_command(self, command: str) -> str | None:
         """Reject commands matching a destructive pattern."""

@@ -24,6 +24,13 @@ class Tool(ABC):
     parallel_safe: bool = True
     """Whether this tool may run concurrently with other tools in the same batch."""
 
+    timeout_s: int | None = None
+    """Ceiling for a single call, when the registry's default is too short.
+
+    A tool that drives a long external process knows its own budget; without
+    declaring it here that budget is unreachable, because the registry bounds
+    every call by the same default."""
+
     @property
     @abstractmethod
     def name(self) -> str:

@@ -231,7 +231,7 @@ class SessionManager:
         for k in ("tool_calls", "tool_call_id", "name"):
             if m.get(k):
                 msg[k] = m[k]
-        msg["timestamp"] = m.get("created_at", "")
+        msg["timestamp"] = m.get("timestamp", "")
         return msg
 
     def _get_session_path(self, key: str) -> Path:

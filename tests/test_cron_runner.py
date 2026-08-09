@@ -86,15 +86,15 @@ async def test_deliver_to_a_channel_publishes_on_the_bus(agent, repos):
 async def test_deliver_to_the_web_uses_the_socket_push(agent, repos):
     pushed = []
 
-    async def push_web(user_id, job_id, text):
-        pushed.append((user_id, job_id, text))
+    async def push_web(*, user_id, session_key, ref, text):
+        pushed.append((user_id, session_key, ref, text))
 
     callback = build_cron_callback(agent=agent, bus=AsyncMock(), repos=repos,
                                   push_web=push_web)
 
     await callback(_job(deliver=True, channel="web"))
 
-    assert pushed == [("u1", "j1", "resultado da rotina")]
+    assert pushed == [("u1", "web:web:u1", "j1", "resultado da rotina")]
 
 
 async def test_an_empty_result_is_not_delivered(agent, repos):

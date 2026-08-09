@@ -23,3 +23,6 @@ botpy.log
 .claude/
 .playwright-mcp/
 *.png
+
+# PDF gerado a partir do markdown: artefato binario, nao versionado
+docs/*.pdf

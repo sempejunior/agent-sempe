@@ -120,6 +120,8 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self.public_url = public_url
+        self.job_runner: Any = None
+        """Set after construction: a JobRunner needs this loop to announce results."""
 
         self._repos = repos
         self._rag_config = rag_config
@@ -287,6 +289,11 @@ class AgentLoop:
             if isinstance(cron_tool, CronTool):
                 cron_tool.set_context(channel, chat_id, user_id=user_id, agent_id=agent_id)
 
+        for tool in _tools.tools:
+            if set_origin := getattr(tool, "set_origin", None):
+                set_origin(channel=channel, chat_id=chat_id,
+                           user_id=user_id, agent_id=agent_id)
+
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
         """Remove <think>…</think> blocks that some models embed in content."""
@@ -344,6 +351,7 @@ class AgentLoop:
             cron_service=self.cron_service,
             agent_id=agent_id,
             public_url=self.public_url,
+            job_runner=self.job_runner,
         )
 
         agent_doc = await self._repos.agents.get_agent(user_id, uctx.agent_id)
@@ -862,7 +870,11 @@ class AgentLoop:
             "duration_s": round(duration_s, 1),
         }
 
-    _TOOL_RESULT_MAX_CHARS = 500
+    _TOOL_RESULT_MAX_CHARS = 4_000
+    """How much of a tool result is kept on disk. Only the persistence path uses
+    it — the model already saw the whole thing. At 500 the record kept the call's
+    arguments in full and threw the answer away, which made a past turn
+    impossible to audit."""
 
     def _save_turn(
         self, session: Session, messages: list[dict], skip: int,

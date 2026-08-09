@@ -13,7 +13,11 @@ from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 
 if TYPE_CHECKING:
-    from nanobot.db.repositories import IntegrationRepository, UserRepository
+    from nanobot.db.repositories import (
+        IntegrationRepository,
+        QuestionRepository,
+        UserRepository,
+    )
     from nanobot.integrations.catalog import IntegrationEntry
 
 
@@ -44,6 +48,8 @@ class ContextBuilder:
         custom_instructions: str = "",
         rag_enabled: bool = False,
         integration_repo: "IntegrationRepository | None" = None,
+        question_repo: "QuestionRepository | None" = None,
+        agent_id: str = "",
         agent_bootstrap: dict[str, str] | None = None,
         agent_name: str = "",
     ):
@@ -56,6 +62,8 @@ class ContextBuilder:
         self._custom_instructions = custom_instructions
         self._rag_enabled = rag_enabled
         self._integration_repo = integration_repo
+        self._question_repo = question_repo
+        self._agent_id = agent_id
         self._agent_bootstrap = agent_bootstrap or {}
         self._agent_name = agent_name
         self._mode: str = "db" if user_repo is not None and user_id is not None else "fs"
@@ -292,6 +300,8 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         files = list(self.BOOTSTRAP_FILES)
         if self._rag_enabled:
             files.append("RAG.md")
+        if self._question_repo is not None:
+            files.append("QUESTIONS.md")
         return files
 
     async def _load_bootstrap_files(self) -> str:
@@ -384,6 +394,9 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         messages.extend(history)
 
         runtime_block = self._build_runtime_context(channel, chat_id)
+        waiting = await self._build_waiting_section(channel, chat_id)
+        if waiting:
+            runtime_block = f"{runtime_block}\n\n{waiting}"
         prefixed_message = f"{runtime_block}\n\n{current_message}" if runtime_block else current_message
         user_content = self._build_user_content(prefixed_message, media)
         messages.append({"role": "user", "content": user_content})
@@ -400,6 +413,52 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         if channel and chat_id:
             lines.append(f"Channel: {channel}")
             lines.append(f"Chat ID: {chat_id}")
+        return "\n".join(lines)
+
+    async def _build_waiting_section(
+        self, channel: str | None, chat_id: str | None,
+    ) -> str:
+        """Questions this conversation is waiting on, plus a count of the others.
+
+        Volatile, so it belongs here rather than in the system prompt. Scoped to
+        this conversation on purpose: those are the ones whose answer may arrive
+        in the next message, and the ones the agent must not ask again. Everything
+        else is one line with a number, because a hundred open questions must not
+        cost a hundred lines on every turn.
+
+        Empty means no section at all — the cost is zero when nothing is pending.
+        """
+        if not self._question_repo or not self._user_id:
+            return ""
+        try:
+            rows = await self._question_repo.list_questions(
+                self._user_id, state="open", agent_id=self._agent_id or None,
+            )
+        except Exception:
+            return ""
+        if not rows:
+            return ""
+
+        session = f"{channel}:{chat_id}" if channel and chat_id else ""
+        mine = [r for r in rows if _origin_of(r) == session] if session else []
+        lines = ["## Perguntas suas em aberto"]
+        for row in mine:
+            subject = row.get("subject") or row.get("subject_ref") or "sem assunto"
+            lines.append(
+                f"- [{row.get('id')}] {subject}: {row.get('question')}"
+            )
+        elsewhere = len(rows) - len(mine)
+        if elsewhere:
+            lines.append(
+                f"- (mais {elsewhere} em outras conversas — "
+                "ask_human(action='list') mostra todas)"
+            )
+        if mine:
+            lines.append(
+                "Já estão registradas e aguardando resposta: não pergunte de novo. "
+                "Se a mensagem abaixo responde uma delas, feche com "
+                "ask_human(action='answer') e retome o que estava parado."
+            )
         return "\n".join(lines)
 
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
@@ -455,3 +514,10 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
         messages.append(msg)
         return messages
+
+
+def _origin_of(row: dict[str, Any]) -> str:
+    """The session key a question came from, in the loop's own format."""
+    channel = row.get("origin_channel") or ""
+    chat_id = row.get("origin_chat_id") or ""
+    return f"{channel}:{chat_id}" if channel else ""

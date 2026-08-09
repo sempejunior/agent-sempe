@@ -35,9 +35,17 @@ PROMPT_FILES = {
                 "Examples: use as fallback only, always search before answering, "
                 "never ingest without asking, etc.",
     },
+    "QUESTIONS.md": {
+        "label": "Pendências",
+        "description": "Quando parar e perguntar a uma pessoa em vez de decidir.",
+        "hint": "Ajuste o que este agente pode decidir sozinho e o que precisa "
+                "sempre de confirmação de alguém. Exemplos: nunca decidir regra "
+                "de negócio, sempre perguntar antes de mexer em dado de cliente, "
+                "quem é a pessoa certa para cada tipo de dúvida.",
+    },
 }
 
-PROMPT_ORDER = ["SOUL.md", "AGENTS.md", "USER.md", "RAG.md"]
+PROMPT_ORDER = ["SOUL.md", "AGENTS.md", "USER.md", "RAG.md", "QUESTIONS.md"]
 
 
 def load_base_prompt(filename: str) -> str:
