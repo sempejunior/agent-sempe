@@ -1,5 +1,19 @@
 # CLAUDE.md — Sólides Agent Hub
 
+> **Read `AGENTS.md` first.** It carries the one rule that applies before any other: the codebase
+> is split into **change zones**, and the agent core (`agent/loop.py`, `agent/context.py`,
+> `session/manager.py`, `providers/`, `agent/tools/registry.py`, `bus/`) is **frozen** — new
+> capability enters through a tool, a skill, an integration or a template, never by editing the
+> loop. Touching the core is allowed only for a proven defect or an explicit request that knows
+> the blast radius, and always with a test that fails before and passes after.
+>
+> The **why** behind the design lives in `vault/`: `vault/_home.md` explains how the product
+> works and where it is headed, `vault/10-decisoes/` holds the ADRs. Before changing something
+> that already has an ADR, read it — its *Descartado* section is what keeps a settled discussion
+> from reopening.
+>
+> This file stays the source of **how** to write code here. It does not repeat the vault.
+
 ## What this project is
 
 **Sólides Agent Hub** is a fork of [nanobot](https://github.com/) turned into a **multiuser,
