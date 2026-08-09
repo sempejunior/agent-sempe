@@ -187,7 +187,7 @@ class ReadSkillTool(Tool):
     async def _not_found(self, name: str) -> str:
         """Answer a miss with the names that exist, not just with a failure.
 
-        A model that derives a skill name from context ("area Start 2.0" ->
+        A model that derives a skill name from context ("area Vendas" ->
         ``projeto-start-2.0``) retries variations until it gives up, and the
         skill it needed is right there under a slightly different name.
         """

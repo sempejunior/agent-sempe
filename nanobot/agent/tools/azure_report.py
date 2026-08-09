@@ -11,9 +11,9 @@ Novidades v2 (além de volume/velocidade/tipos/tamanho):
   - WIP atual e aging por profissional
 
 Uso:
-    python3 generate.py --project "Killer"
-    python3 generate.py --project "Killer" --year 2026 --output ~/rel.html
-    python3 generate.py --project "Killer" --no-flow   # pula análise de revisions (mais rápido)
+    python3 generate.py --project "MeuProjeto"
+    python3 generate.py --project "MeuProjeto" --year 2026 --output ~/rel.html
+    python3 generate.py --project "MeuProjeto" --no-flow   # pula análise de revisions (mais rápido)
 
 Org e PAT são lidos de ~/.kiro/settings/mcp.json (servidor "azure-devops").
 """
@@ -671,7 +671,7 @@ class AzureReportTool(Tool):
             "type": "object",
             "properties": {
                 "project": {"type": "string",
-                            "description": "Nome do projeto no Azure DevOps (ex.: Killer)."},
+                            "description": "Nome do projeto no Azure DevOps (ex.: MeuProjeto)."},
                 "year": {"type": "integer", "description": "Ano analisado. Default: ano atual."},
                 "no_flow": {"type": "boolean",
                             "description": "Pula métricas de fluxo (revisions) — mais rápido."},

@@ -33,7 +33,7 @@ def sample_sections():
 
 
 def test_render_report_structure():
-    html = render_report("Killer 2026", "Azure DevOps · gerado hoje", sample_sections())
+    html = render_report("MeuProjeto 2026", "Azure DevOps · gerado hoje", sample_sections())
     assert '<a href="#overview" class="nav-link">📊 Visão</a>' in html
     assert '<a href="#p-lucas-cid" class="nav-link">lucas.cid</a>' in html
     assert '<section id="overview">' in html
@@ -47,7 +47,7 @@ def test_render_report_structure():
 
 
 def test_render_report_escapes_content():
-    html = render_report("Killer 2026", "", sample_sections())
+    html = render_report("MeuProjeto 2026", "", sample_sections())
     assert "&lt;script&gt;" in html
 
 

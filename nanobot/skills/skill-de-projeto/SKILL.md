@@ -52,7 +52,7 @@ responde "o do Start" e você continua sem o caminho.
 
 Ruim, e é um aviso de sistema em vez de uma frase:
 
-> Aguardando o caminho do primeiro repositório relacionado ao projeto `Killer\Start 2.0`
+> Aguardando o caminho do primeiro repositório relacionado ao projeto `Projeto\Área do Time`
 > (GitLab/GitHub).
 
 Bom:
@@ -98,8 +98,8 @@ A chave que o agente vai ter em mãos quando abrir a demanda: `System.TeamProjec
 vê ao escolher entre as skills disponíveis — se ela não citar a área e o repo, ele não acha esta
 skill a partir da demanda. Exemplo de description que funciona:
 
-> Manual do projeto Start 2.0 — demandas da área `Killer\Start 2.0` no Azure Boards, código em
-> `grupo/start-vibecode` no GitLab. Use ao atender bug ou requisição dessa área.
+> Manual do projeto da área — demandas da área `Projeto\Área do Time` no Azure Boards, código em
+> `grupo/projeto-backend` no GitLab. Use ao atender bug ou requisição dessa área.
 
 Curta e específica. Description longa é paga em todo prompt de todo agente que enxerga a skill.
 
